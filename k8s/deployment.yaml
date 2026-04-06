@@ -1,0 +1,242 @@
+---
+# Dify API Server
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dify-api
+  namespace: bionic-platform
+  labels:
+    app: dify-api
+    app.kubernetes.io/managed-by: bionic-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dify-api
+  template:
+    metadata:
+      labels:
+        app: dify-api
+    spec:
+      containers:
+      - name: dify-api
+        image: langgenius/dify-api:1.5.0
+        ports:
+        - containerPort: 5001
+        envFrom:
+        - configMapRef:
+            name: dify-config
+        env:
+        - name: MODE
+          value: "api"
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: "1"
+            memory: 2Gi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5001
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5001
+          initialDelaySeconds: 10
+          periodSeconds: 5
+---
+# Dify Worker (Celery async tasks)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dify-worker
+  namespace: bionic-platform
+  labels:
+    app: dify-worker
+    app.kubernetes.io/managed-by: bionic-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dify-worker
+  template:
+    metadata:
+      labels:
+        app: dify-worker
+    spec:
+      containers:
+      - name: dify-worker
+        image: langgenius/dify-api:1.5.0
+        envFrom:
+        - configMapRef:
+            name: dify-config
+        env:
+        - name: MODE
+          value: "worker"
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: "1"
+            memory: 2Gi
+---
+# Dify Web UI (Next.js frontend)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dify-web
+  namespace: bionic-platform
+  labels:
+    app: dify-web
+    app.kubernetes.io/managed-by: bionic-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dify-web
+  template:
+    metadata:
+      labels:
+        app: dify-web
+    spec:
+      containers:
+      - name: dify-web
+        image: langgenius/dify-web:1.5.0
+        ports:
+        - containerPort: 3000
+        env:
+        - name: CONSOLE_API_URL
+          value: "/dify"
+        - name: APP_API_URL
+          value: "/dify"
+        - name: NEXT_PUBLIC_ALLOW_EMBED
+          value: "true"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+---
+# Dify Sandbox (code execution)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dify-sandbox
+  namespace: bionic-platform
+  labels:
+    app: dify-sandbox
+    app.kubernetes.io/managed-by: bionic-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dify-sandbox
+  template:
+    metadata:
+      labels:
+        app: dify-sandbox
+    spec:
+      containers:
+      - name: dify-sandbox
+        image: langgenius/dify-sandbox:0.2.10
+        ports:
+        - containerPort: 8194
+        env:
+        - name: API_KEY
+          value: "dify-sandbox"
+        - name: GIN_MODE
+          value: "release"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+---
+# Dify Plugin Daemon
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dify-plugin-daemon
+  namespace: bionic-platform
+  labels:
+    app: dify-plugin-daemon
+    app.kubernetes.io/managed-by: bionic-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dify-plugin-daemon
+  template:
+    metadata:
+      labels:
+        app: dify-plugin-daemon
+    spec:
+      containers:
+      - name: plugin-daemon
+        image: langgenius/dify-plugin-daemon:0.5.6-local
+        ports:
+        - containerPort: 5002
+        env:
+        - name: DB_HOST
+          value: "pg-ceph-rw.pg.svc.cluster.local"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_USERNAME
+          value: "postgres"
+        - name: DB_PASSWORD
+          valueFrom:
+            configMapKeyRef:
+              name: dify-config
+              key: DB_PASSWORD
+        - name: DB_DATABASE
+          value: "dify"
+        - name: REDIS_HOST
+          value: "redis-livekit.redis.svc.cluster.local"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: SERVER_PORT
+          value: "5002"
+        - name: SERVER_KEY
+          valueFrom:
+            configMapKeyRef:
+              name: dify-config
+              key: SECRET_KEY
+        - name: DIFY_INNER_API_URL
+          value: "http://dify-api.bionic-platform.svc.cluster.local:5001"
+        - name: DIFY_INNER_API_KEY
+          valueFrom:
+            configMapKeyRef:
+              name: dify-config
+              key: INNER_API_KEY
+        - name: PLUGIN_REMOTE_INSTALLING_HOST
+          value: "0.0.0.0"
+        - name: PLUGIN_REMOTE_INSTALLING_PORT
+          value: "5003"
+        - name: PLUGIN_WORKING_PATH
+          value: "/app/working"
+        - name: PLATFORM
+          value: "local"
+        - name: STORAGE_TYPE
+          value: "local"
+        - name: PLUGIN_STORAGE_PATH
+          value: "/app/storage"
+        - name: MAX_PLUGIN_PACKAGE_SIZE
+          value: "52428800"
+        - name: FORCE_VERIFYING_SIGNATURE
+          value: "false"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
