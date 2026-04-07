@@ -41,7 +41,11 @@ export interface SessionUser {
   sub: string;
   email: string;
   name: string;
+  /** Coarse app role used by the legacy adminProcedure check. */
   role: "admin" | "user";
+  /** Full set of Keycloak realm roles for this user (case-insensitive
+   *  match against e.g. "Admin", "Analyst"). Used by analystOrAdminProcedure. */
+  realmRoles: string[];
 }
 
 async function createSessionToken(user: SessionUser): Promise<string> {
@@ -121,13 +125,15 @@ export function createAuthRouter(): Router {
 
       // Map Keycloak roles to app roles
       const realmRoles: string[] = payload.realm_access?.roles || [];
-      const role: "admin" | "user" = realmRoles.includes("admin") ? "admin" : "user";
+      const rolesLower = realmRoles.map((r) => r.toLowerCase());
+      const role: "admin" | "user" = rolesLower.includes("admin") ? "admin" : "user";
 
       const user: SessionUser = {
         sub: payload.sub,
         email: payload.email || "",
         name: payload.name || payload.preferred_username || "",
         role,
+        realmRoles,
       };
 
       const sessionToken = await createSessionToken(user);

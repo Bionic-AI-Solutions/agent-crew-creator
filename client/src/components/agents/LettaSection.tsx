@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Brain, FileText, Wrench, Server, Users, Plus, Upload, Trash2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
-import { LETTA_LLM_MODELS, AVAILABLE_CREWS } from "@shared/providerOptions";
+import { LETTA_LLM_MODELS } from "@shared/providerOptions";
 import DocumentUpload from "./DocumentUpload";
 import ToolSelector from "./ToolSelector";
 import McpServerSelector from "./McpServerSelector";

@@ -1,5 +1,14 @@
 /**
- * Crew template installer — one-click install via Dify SSO.
+ * Crew template installer.
+ *
+ * Auth model: this server holds the Dify console admin credentials in
+ * env (DIFY_ADMIN_EMAIL / DIFY_ADMIN_PASSWORD) and uses Dify's *password*
+ * login to obtain a console session token. This is NOT Keycloak SSO —
+ * the end user's Keycloak session is never forwarded to Dify. The
+ * end-user-facing flow looks like one click because the platform performs
+ * the install on their behalf using the platform's own service identity.
+ * Audit implication: anything installCrewTemplate does in Dify is owned
+ * by whoever DIFY_ADMIN_EMAIL points at, not by the calling user.
  *
  * Flow:
  *   1. Load template YAML, validate user-supplied config.
@@ -7,15 +16,18 @@
  *      - config.* come from the user (configSchema fields).
  *      - auto.* are server-resolved (Letta URLs/keys, MCP search URL/key,
  *        notify webhook URL/token, agent's Letta agentId).
- *   3. Login to Dify console as the platform admin (reuses the existing
- *      DIFY_ADMIN_EMAIL/DIFY_ADMIN_PASSWORD pattern from getDifyEmbedUrl).
- *   4. POST the rendered DSL to /console/api/apps/import → returns app_id.
- *   5. Create an API key for the new app via /console/api/apps/{id}/api-keys.
- *   6. Insert a `crews` row, write the api key into Vault, link the crew to
- *      the agent in `agent_crews`.
- *   7. If the template declares postInstall: scrape_website, kick off the
- *      site-scraper which crawls the URL via Search MCP and writes chunks as
- *      Letta archival passages on the agent's Letta agentId.
+ *   3. If a previous install of the same template exists for this app,
+ *      delete the orphan Dify app and Vault key first.
+ *   4. Login to Dify console as the platform admin (password login).
+ *   5. POST the rendered DSL to /console/api/apps/imports (json yaml-content
+ *      mode) — falls back to multipart /console/api/apps/import if the
+ *      console version doesn't accept the json variant.
+ *   6. Create an API key for the new app via /console/api/apps/{id}/api-keys.
+ *   7. Insert a `crews` row, write the api key into Vault, link the crew
+ *      to the agent in `agent_crews`.
+ *   8. If the template declares postInstall: scrape_website, kick off the
+ *      site-scraper which crawls the URL via Search MCP and writes chunks
+ *      as Letta archival passages on the agent's Letta agentId.
  */
 import { createLogger } from "../_core/logger.js";
 import {
@@ -49,24 +61,81 @@ async function loginDify(): Promise<string> {
   return token;
 }
 
+/**
+ * Import a Dify app DSL. Tries the JSON yaml-content variant first
+ * (`/console/api/apps/imports`, used by the console "import from text"
+ * dialog) and falls back to the multipart `/console/api/apps/import`
+ * endpoint if the first variant returns a 4xx — keeps us working across
+ * Dify console versions without operators having to choose.
+ */
 async function importDsl(token: string, dsl: string, name: string): Promise<string> {
-  // Dify accepts either multipart import or YAML content via JSON. Use the
-  // YAML-content variant which the console UI also uses for "import from text".
-  const res = await fetch(`${DIFY_INTERNAL}/console/api/apps/imports`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ mode: "yaml-content", yaml_content: dsl, name }),
-  });
-  if (!res.ok) {
-    throw new Error(`Dify DSL import failed (${res.status}): ${await res.text()}`);
+  // Variant 1: JSON yaml-content
+  try {
+    const res = await fetch(`${DIFY_INTERNAL}/console/api/apps/imports`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ mode: "yaml-content", yaml_content: dsl, name }),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as any;
+      const appId = data?.app_id || data?.id;
+      if (appId) return appId;
+      throw new Error("Dify json import returned no app_id");
+    }
+    if (res.status < 400 || res.status >= 500) {
+      throw new Error(`Dify json import failed (${res.status}): ${await res.text()}`);
+    }
+    log.warn("Dify json import returned 4xx — falling back to multipart", {
+      status: res.status,
+    });
+  } catch (err) {
+    log.warn("Dify json import threw — falling back to multipart", {
+      error: String(err),
+    });
   }
-  const data = (await res.json()) as any;
-  const appId = data?.app_id || data?.id;
-  if (!appId) throw new Error("Dify import returned no app_id");
-  return appId;
+
+  // Variant 2: multipart file upload
+  const formData = new FormData();
+  const blob = new Blob([dsl], { type: "application/yaml" });
+  formData.append("file", blob, "workflow.yml");
+  if (name) formData.append("name", name);
+  const res2 = await fetch(`${DIFY_INTERNAL}/console/api/apps/import`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+  if (!res2.ok) {
+    throw new Error(`Dify multipart import failed (${res2.status}): ${await res2.text()}`);
+  }
+  const data2 = (await res2.json()) as any;
+  const appId2 = data2?.app_id || data2?.id;
+  if (!appId2) throw new Error("Dify multipart import returned no app_id");
+  return appId2;
+}
+
+/** Best-effort delete of a Dify app. Logs but does not throw on failure
+ *  so that re-install never gets stuck on a stale orphan. */
+async function deleteDifyApp(token: string, appId: string): Promise<void> {
+  try {
+    const res = await fetch(`${DIFY_INTERNAL}/console/api/apps/${appId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.ok || res.status === 404) {
+      log.info("Deleted old Dify app", { appId, status: res.status });
+      return;
+    }
+    log.warn("Dify app delete returned non-OK", {
+      appId,
+      status: res.status,
+      body: await res.text(),
+    });
+  } catch (err) {
+    log.warn("Dify app delete threw", { appId, error: String(err) });
+  }
 }
 
 async function createApiKey(token: string, appId: string): Promise<string> {
@@ -145,6 +214,9 @@ export interface InstallContext {
   appSlug: string;
   lettaAgentId: string | null;
   config: Record<string, string>;
+  /** If a previous install of the same template exists, the caller passes
+   *  its difyAppId here so we can delete the orphan before re-importing. */
+  previousDifyAppId?: string | null;
 }
 
 export interface InstallResult {
@@ -163,6 +235,21 @@ export async function installTemplate(ctx: InstallContext): Promise<InstallResul
   const template = getTemplate(ctx.templateId);
   if (!template) throw new Error(`Unknown template: ${ctx.templateId}`);
 
+  // Hard precondition for templates whose runtime depends on Letta archival
+  // (currently customer_service, document_qa). Without a Letta agent we
+  // would silently produce a degraded crew that always retrieves "(no
+  // passages)" — better to fail loudly at install time and let the user
+  // provision a Letta agent first.
+  const needsLetta =
+    template.metadata.postInstall === "scrape_website" ||
+    template.metadata.id === "document_qa" ||
+    template.metadata.id === "customer_service";
+  if (needsLetta && !ctx.lettaAgentId) {
+    throw new Error(
+      `Template "${template.metadata.label}" requires the agent to have a Letta agent provisioned (no lettaAgentId on agentConfig).`,
+    );
+  }
+
   // Render config first (validates required fields), then auto-config.
   const dslWithConfig = renderDsl(template, ctx.config);
   const auto = await resolveAutoConfig({
@@ -175,9 +262,25 @@ export async function installTemplate(ctx: InstallContext): Promise<InstallResul
     templateId: ctx.templateId,
     agentConfigId: ctx.agentConfigId,
     appId: ctx.appId,
+    reinstall: Boolean(ctx.previousDifyAppId),
   });
 
   const token = await loginDify();
+
+  // Reinstall: best-effort delete the orphan Dify app and remove its
+  // Vault key BEFORE creating the new one. We don't fail the reinstall
+  // on cleanup errors (the old app may already be gone), but we log them.
+  if (ctx.previousDifyAppId) {
+    await deleteDifyApp(token, ctx.previousDifyAppId);
+    try {
+      const existing = (await readAppSecret(ctx.appSlug)) || {};
+      delete existing[`dify_crew_${template.metadata.id}_api_key`];
+      await writeAppSecret(ctx.appSlug, existing);
+    } catch (err) {
+      log.warn("Vault key cleanup on reinstall failed", { error: String(err) });
+    }
+  }
+
   const difyAppId = await importDsl(token, renderedDsl, template.metadata.label);
   const difyApiKey = await createApiKey(token, difyAppId);
 
@@ -206,12 +309,9 @@ export async function installTemplate(ctx: InstallContext): Promise<InstallResul
           error: String(err),
         }),
       );
-    } else {
-      log.warn("scrape_website requested but missing website_url or lettaAgentId", {
-        hasUrl: Boolean(websiteUrl),
-        hasAgent: Boolean(ctx.lettaAgentId),
-      });
     }
+    // No else branch — needsLetta check above already prevented the
+    // missing-lettaAgentId case from getting here.
   }
 
   return { difyAppId, difyApiKey, template, renderedDsl, postInstallStarted };

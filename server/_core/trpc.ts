@@ -55,3 +55,24 @@ const isAdmin = middleware(async ({ ctx, next }) => {
 });
 
 export const adminProcedure = t.procedure.use(isAdmin);
+
+/** Analyst or Admin — used by the crew templates feature. Either the
+ *  legacy "admin" coarse role OR the realm role "Analyst" / "Admin"
+ *  (case-insensitive) grants access. Falls through to FORBIDDEN otherwise. */
+const isAnalystOrAdmin = middleware(async ({ ctx, next }) => {
+  if (!ctx.user) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+  }
+  const roles = (ctx.user.realmRoles || []).map((r) => r.toLowerCase());
+  const allowed =
+    ctx.user.role === "admin" || roles.includes("admin") || roles.includes("analyst");
+  if (!allowed) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Analyst or Admin role required",
+    });
+  }
+  return next({ ctx: { ...ctx, user: ctx.user } });
+});
+
+export const analystOrAdminProcedure = t.procedure.use(isAnalystOrAdmin);

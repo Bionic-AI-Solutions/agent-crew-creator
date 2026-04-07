@@ -21,7 +21,15 @@ import {
   CheckCircle2,
   XCircle,
   Loader2,
+  Plus,
 } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 
@@ -66,6 +74,14 @@ export default function CrewBuilder({ agentId, appId }: Props) {
   const [installTpl, setInstallTpl] = useState<TemplateMeta | null>(null);
   const [installConfig, setInstallConfig] = useState<Record<string, string>>({});
 
+  // Advanced "register manually" dialog state — for crews built directly
+  // in the Dify editor that don't come from a template.
+  const [showManualDialog, setShowManualDialog] = useState(false);
+  const [manualName, setManualName] = useState("");
+  const [manualDescription, setManualDescription] = useState("");
+  const [manualMode, setManualMode] = useState<"workflow" | "agent-chat" | "completion">("workflow");
+  const [manualApiKey, setManualApiKey] = useState("");
+
   // Mutations
   const installMutation = trpc.agentsCrud.installCrewTemplate.useMutation({
     onSuccess: (res) => {
@@ -87,6 +103,18 @@ export default function CrewBuilder({ agentId, appId }: Props) {
       toast.success("Crew deleted");
       utils.agentsCrud.listCrews.invalidate({ appId });
     },
+  });
+
+  const createCrewMutation = trpc.agentsCrud.createCrew.useMutation({
+    onSuccess: () => {
+      toast.success("Crew registered");
+      setShowManualDialog(false);
+      setManualName("");
+      setManualDescription("");
+      setManualApiKey("");
+      utils.agentsCrud.listCrews.invalidate({ appId });
+    },
+    onError: (err) => toast.error(err.message),
   });
 
   const setCrewsMutation = trpc.agentsCrud.setAgentCrews.useMutation({
@@ -113,6 +141,21 @@ export default function CrewBuilder({ agentId, appId }: Props) {
       initial[f.key] = "";
     });
     setInstallConfig(initial);
+  };
+
+  const handleManualRegister = () => {
+    const slug = manualName.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+    if (!slug) {
+      toast.error("Name is required");
+      return;
+    }
+    createCrewMutation.mutate({
+      appId,
+      name: slug,
+      description: manualDescription || undefined,
+      mode: manualMode,
+      difyAppApiKey: manualApiKey || undefined,
+    });
   };
 
   const handleInstall = () => {
@@ -154,16 +197,26 @@ export default function CrewBuilder({ agentId, appId }: Props) {
           <CardTitle className="text-sm flex items-center gap-2">
             <Users className="h-4 w-4" /> Crews
           </CardTitle>
-          {difyEmbed?.externalUrl && (
+          <div className="flex gap-2">
             <Button
               size="sm"
-              variant="outline"
-              onClick={() => window.open("/dify-login", "_blank")}
-              title="Open Dify to customise installed crews"
+              variant="ghost"
+              onClick={() => setShowManualDialog(true)}
+              title="Register a Dify workflow you built by hand"
             >
-              <ExternalLink className="h-3 w-3 mr-1" /> Open Dify Editor
+              <Plus className="h-3 w-3 mr-1" /> Advanced
             </Button>
-          )}
+            {difyEmbed?.externalUrl && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => window.open("/dify-login", "_blank")}
+                title="Open Dify to customise installed crews"
+              >
+                <ExternalLink className="h-3 w-3 mr-1" /> Open Dify Editor
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           {crewsLoading ? (
@@ -324,6 +377,79 @@ export default function CrewBuilder({ agentId, appId }: Props) {
           )}
         </CardContent>
       </Card>
+
+      {/* ── Advanced: Register manually ────────────────────────── */}
+      <Dialog open={showManualDialog} onOpenChange={setShowManualDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Register Crew Manually</DialogTitle>
+            <DialogDescription>
+              For Dify workflows you built directly in the editor. Paste the
+              app's API key here so the agent can call it. For most use cases,
+              prefer one-click templates below.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <label className="text-sm font-medium">Name</label>
+              <Input
+                placeholder="my_custom_crew"
+                value={manualName}
+                onChange={(e) => setManualName(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Lowercase, underscores only
+              </p>
+            </div>
+            <div>
+              <label className="text-sm font-medium">Description</label>
+              <Textarea
+                placeholder="What does this crew do?"
+                value={manualDescription}
+                onChange={(e) => setManualDescription(e.target.value)}
+                rows={2}
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium">Mode</label>
+              <Select
+                value={manualMode}
+                onValueChange={(v) =>
+                  setManualMode(v as "workflow" | "agent-chat" | "completion")
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="workflow">Workflow</SelectItem>
+                  <SelectItem value="agent-chat">Agent Chat</SelectItem>
+                  <SelectItem value="completion">Completion</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-sm font-medium">Dify App API Key</label>
+              <Input
+                type="password"
+                placeholder="app-xxxxxxxx"
+                value={manualApiKey}
+                onChange={(e) => setManualApiKey(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                From the Dify console → your app → API Access
+              </p>
+            </div>
+            <Button
+              onClick={handleManualRegister}
+              disabled={createCrewMutation.isPending || !manualName}
+              className="w-full"
+            >
+              {createCrewMutation.isPending ? "Registering…" : "Register Crew"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* ── Install Dialog ─────────────────────────────────────── */}
       <Dialog open={Boolean(installTpl)} onOpenChange={(o) => !o && setInstallTpl(null)}>

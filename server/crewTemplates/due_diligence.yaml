@@ -1,7 +1,11 @@
 metadata:
   id: due_diligence
   label: Due Diligence Bot
-  description: Multi-stage research on a target (company, product, person). Generates infographics, a custom-formatted PDF, and dispatches notifications via webhook and email when complete.
+  description: |
+    Generic single-pass due-diligence for any target (company, product, person, market).
+    One Search MCP query → research synth → analysis → markdown dossier → PDF + webhook + email.
+    Choose this for fast, lightweight research. For full 7-stage VC investment analysis with
+    competitor mapping, financial modeling, and risk scoring, use VC Due Diligence instead.
   mode: workflow
   icon: "📑"
   configSchema:

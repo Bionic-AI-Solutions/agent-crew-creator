@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { eq } from "drizzle-orm";
-import { router, adminProcedure, protectedProcedure } from "./_core/trpc.js";
+import { router, adminProcedure, protectedProcedure, analystOrAdminProcedure } from "./_core/trpc.js";
 import { createLogger } from "./_core/logger.js";
 import {
   agentConfigs,
@@ -512,7 +512,7 @@ export const agentRouter = router({
    * for the given agent. Reuses the platform admin SSO to Dify, so the user
    * does not need to paste any API keys.
    */
-  installCrewTemplate: adminProcedure
+  installCrewTemplate: analystOrAdminProcedure
     .input(
       z.object({
         agentConfigId: z.number(),
@@ -533,6 +533,16 @@ export const agentRouter = router({
       const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
       if (!app) throw new Error("App not found");
 
+      // Reinstall path: if a crew with this template id already exists for
+      // this app, capture its difyAppId so the installer can delete the
+      // orphan Dify app + Vault key before re-importing. Without this we'd
+      // accumulate dead Dify apps and stale keys on every re-install.
+      const [existingCrew] = await ctx.db
+        .select()
+        .from(crews)
+        .where(and(eq(crews.appId, app.id), eq(crews.name, input.templateId)))
+        .limit(1);
+
       const { installTemplate } = await import("./services/crewInstaller.js");
       const result = await installTemplate({
         templateId: input.templateId,
@@ -541,6 +551,7 @@ export const agentRouter = router({
         appSlug: app.slug,
         lettaAgentId: agent.lettaAgentId,
         config: input.config,
+        previousDifyAppId: existingCrew?.difyAppId || null,
       });
 
       // Insert the crews row.

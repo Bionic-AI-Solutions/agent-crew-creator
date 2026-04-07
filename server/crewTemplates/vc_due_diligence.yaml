@@ -2,12 +2,14 @@ metadata:
   id: vc_due_diligence
   label: VC Due Diligence
   description: |
-    Seven-stage VC investment analysis pipeline modelled on the Bionic
-    ADK reference crew. Stages: Company Research → Market Analysis →
-    Financial Modeling → Risk Assessment → Investor Memo → Report → Notify.
-    Uses local Qwen 3.5-27B for all LLM calls and the local Search MCP for
-    web research. The final dossier is rendered as a McKinsey-style PDF
-    and dispatched via Gmail SMTP relay + webhook.
+    Seven-stage VC investment analysis pipeline modelled on the Bionic ADK
+    reference crew. Stages: Company Research → Market Analysis → Financial
+    Modeling → Risk Assessment → Investor Memo → Report → Notify. Two
+    Search MCP passes (company + market), five LLM calls. Slower than
+    "Due Diligence Bot" but produces a full investment-grade dossier with
+    Bear/Base/Bull projections, competitor map, risk score, and recommendation.
+    Final dossier is rendered as a McKinsey-style PDF and dispatched via
+    Gmail SMTP relay + webhook.
   mode: workflow
   icon: "💼"
   configSchema:
