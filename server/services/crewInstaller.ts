@@ -101,18 +101,19 @@ async function resolveAutoConfig(opts: {
   }
   const mcpUrl = process.env.SEARCH_MCP_BASE_URL || "https://mcp.baisoln.com/search";
 
-  // Letta
+  // Letta — actual cluster service is letta-server.letta.svc.cluster.local:8283
   const lettaBase =
     process.env.LETTA_BASE_URL ||
-    "http://letta.bionic-platform.svc.cluster.local:8283";
+    "http://letta-server.letta.svc.cluster.local:8283";
   const lettaKey = process.env.LETTA_API_KEY || "";
 
   // Notify webhook URL — point Dify pods at our internal server
+  // Service: bionic-platform.bionic-platform.svc.cluster.local:80 → 3000
   const notifyBase =
     process.env.BIONIC_INTERNAL_BASE_URL ||
-    `http://bionic-platform-server.${DIFY_NS}.svc.cluster.local:3000`;
+    `http://bionic-platform.bionic-platform.svc.cluster.local`;
   const notifyUrl = `${notifyBase}/api/webhooks/notify`;
-  const notifyToken = getNotifyToken();
+  const notifyToken = await getNotifyToken();
 
   return {
     mcp_search_url: mcpUrl,

@@ -54,3 +54,13 @@ data:
   # ── Agent deployment ─────────────────────────────────────────
   # Agents deploy to their app's namespace (e.g., guruji, physics-tutor)
   AGENT_TEMPLATE_IMAGE: docker4zerocool/bionic-agent:latest
+
+  # ── Crew templates (one-click installable Dify workflows) ────
+  # Internal URL Dify pods POST to for the due-diligence notify webhook
+  BIONIC_INTERNAL_BASE_URL: http://bionic-platform.bionic-platform.svc.cluster.local
+  # External REST endpoint of the local Search MCP
+  SEARCH_MCP_BASE_URL: https://mcp.baisoln.com/search
+  # Gmail SMTP relay (cluster egress IP must be whitelisted in Workspace)
+  MAIL_FROM: info@bionicaisolutions.com
+  MAIL_SMTP_HOST: smtp-relay.gmail.com
+  MAIL_SMTP_PORT: "587"

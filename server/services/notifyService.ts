@@ -12,6 +12,7 @@
 import type { Request, Response } from "express";
 import { createLogger } from "../_core/logger.js";
 import { sendMail } from "./mailer.js";
+import { renderReportPdf } from "./pdfReport.js";
 
 const log = createLogger("Notify");
 
@@ -23,59 +24,28 @@ interface NotifyPayload {
   dossier_markdown?: string;
 }
 
-export function getNotifyToken(): string {
-  return process.env.NOTIFY_WEBHOOK_TOKEN || "";
+let _notifyTokenCache: string | null = null;
+export async function getNotifyToken(): Promise<string> {
+  if (_notifyTokenCache !== null) return _notifyTokenCache;
+  const fromEnv = process.env.NOTIFY_WEBHOOK_TOKEN;
+  if (fromEnv) {
+    _notifyTokenCache = fromEnv;
+    return fromEnv;
+  }
+  try {
+    const { readPlatformSecret } = await import("../vaultClient.js");
+    const v = await readPlatformSecret("notify");
+    _notifyTokenCache = v?.webhook_token || "";
+    return _notifyTokenCache;
+  } catch {
+    _notifyTokenCache = "";
+    return "";
+  }
 }
 
-/**
- * Render markdown to a minimal PDF. We avoid pulling a full headless-browser
- * dependency by emitting a single-page PDF whose content stream is the
- * markdown rendered as monospaced text. Good enough for an email attachment
- * the analyst will preview before sharing externally; can be upgraded later
- * to weasyprint / puppeteer if richer typography is needed.
- */
-function markdownToPdfBuffer(title: string, markdown: string): Buffer {
-  const escape = (s: string) =>
-    s.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
-  const lines = `${title}\n${"=".repeat(title.length)}\n\n${markdown}`.split(/\r?\n/);
-  // Build a content stream: start at top-left of A4, 11pt Courier, 14pt leading
-  const content: string[] = ["BT", "/F1 11 Tf", "14 TL", "50 800 Td"];
-  for (const line of lines) {
-    // Wrap lines longer than ~95 chars
-    const chunks = line.match(/.{1,95}/g) || [""];
-    for (const chunk of chunks) {
-      content.push(`(${escape(chunk)}) Tj T*`);
-    }
-  }
-  content.push("ET");
-  const stream = content.join("\n");
-
-  const objects: string[] = [];
-  const offsets: number[] = [];
-  let pdf = "%PDF-1.4\n";
-  const push = (obj: string) => {
-    offsets.push(pdf.length);
-    pdf += obj;
-    objects.push(obj);
-  };
-  push("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
-  push("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
-  push(
-    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n",
-  );
-  push(`4 0 obj\n<< /Length ${stream.length} >>\nstream\n${stream}\nendstream\nendobj\n`);
-  push("5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>\nendobj\n");
-  const xrefOffset = pdf.length;
-  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  for (const off of offsets) {
-    pdf += `${off.toString().padStart(10, "0")} 00000 n \n`;
-  }
-  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
-  return Buffer.from(pdf, "binary");
-}
 
 export async function handleNotifyWebhook(req: Request, res: Response): Promise<void> {
-  const expected = getNotifyToken();
+  const expected = await getNotifyToken();
   if (expected) {
     const got = req.header("x-bionic-token");
     if (got !== expected) {
@@ -98,7 +68,12 @@ export async function handleNotifyWebhook(req: Request, res: Response): Promise<
         ? [
             {
               filename: `${payload.subject.replace(/[^a-z0-9-_]+/gi, "_")}.pdf`,
-              content: markdownToPdfBuffer(payload.subject, dossier),
+              content: await renderReportPdf({
+                title: payload.subject,
+                subtitle: "Investment Due Diligence Report",
+                preparedFor: payload.to_email,
+                markdown: dossier,
+              }),
               contentType: "application/pdf",
             },
           ]

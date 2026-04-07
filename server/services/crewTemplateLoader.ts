@@ -53,14 +53,28 @@ export interface CrewTemplate {
 let cache: CrewTemplate[] | null = null;
 
 function templatesDir(): string {
-  // When compiled, __dirname is dist/server/services. Source files live in
-  // server/crewTemplates relative to repo root. Resolve via import.meta.url.
+  // We want this to work in three layouts:
+  //   1. dev (tsx):     server/services/*.ts → ../crewTemplates
+  //   2. compiled JS:   dist/server/services/*.js → ../crewTemplates  (build copies the YAMLs)
+  //   3. container cwd: /app/server/crewTemplates  or  /app/dist/server/crewTemplates
+  // Plus an explicit override via CREW_TEMPLATES_DIR for unusual layouts.
+  if (process.env.CREW_TEMPLATES_DIR) {
+    try {
+      readdirSync(process.env.CREW_TEMPLATES_DIR);
+      return process.env.CREW_TEMPLATES_DIR;
+    } catch {
+      /* fall through */
+    }
+  }
   const here = dirname(fileURLToPath(import.meta.url));
-  // Try both source and dist layouts
   const candidates = [
     join(here, "..", "crewTemplates"),
+    join(here, "..", "..", "crewTemplates"),
     join(here, "..", "..", "..", "server", "crewTemplates"),
     join(process.cwd(), "server", "crewTemplates"),
+    join(process.cwd(), "dist", "server", "crewTemplates"),
+    "/app/server/crewTemplates",
+    "/app/dist/server/crewTemplates",
   ];
   for (const c of candidates) {
     try {
@@ -70,7 +84,10 @@ function templatesDir(): string {
       /* try next */
     }
   }
-  throw new Error("Could not locate server/crewTemplates directory");
+  throw new Error(
+    `Could not locate server/crewTemplates directory. Tried: ${candidates.join(", ")}. ` +
+      `Set CREW_TEMPLATES_DIR to override.`,
+  );
 }
 
 function load(): CrewTemplate[] {

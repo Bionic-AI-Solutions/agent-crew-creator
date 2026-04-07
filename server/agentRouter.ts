@@ -435,6 +435,79 @@ export const agentRouter = router({
   }),
 
   /**
+   * Platform-level one-shot setup for the crew templates feature:
+   *  - Writes the Search MCP API key to Vault (platform/search-mcp)
+   *  - Creates the platform-wide Keycloak realm roles "Admin" and "Analyst"
+   *    (idempotent — safe to re-run)
+   *  - Reports which env vars are still missing for full functionality
+   */
+  setupCrewPlatform: adminProcedure
+    .input(
+      z.object({
+        searchMcpApiKey: z.string().min(20).optional(),
+        notifyWebhookToken: z.string().min(8).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const result: {
+        vault: string;
+        keycloak: string[];
+        envChecks: Record<string, boolean>;
+      } = {
+        vault: "skipped",
+        keycloak: [],
+        envChecks: {},
+      };
+
+      // 1. Vault — write the platform Search MCP key (if provided)
+      if (input.searchMcpApiKey) {
+        const { writePlatformSecret, readPlatformSecret } = await import(
+          "./vaultClient.js"
+        );
+        const existing = (await readPlatformSecret("search-mcp")) || {};
+        existing.api_key = input.searchMcpApiKey;
+        await writePlatformSecret("search-mcp", existing);
+        result.vault = "wrote secret/data/platform/search-mcp";
+      }
+      if (input.notifyWebhookToken) {
+        const { writePlatformSecret, readPlatformSecret } = await import(
+          "./vaultClient.js"
+        );
+        const existing = (await readPlatformSecret("notify")) || {};
+        existing.webhook_token = input.notifyWebhookToken;
+        await writePlatformSecret("notify", existing);
+      }
+
+      // 2. Keycloak realm roles
+      try {
+        const { createRealmRole } = await import("./services/keycloakAdmin.js");
+        await createRealmRole("Admin", "Platform administrator (full access)");
+        await createRealmRole(
+          "Analyst",
+          "Analyst — can install and run crew templates, no admin",
+        );
+        result.keycloak.push("Admin", "Analyst");
+      } catch (err) {
+        log.warn("Keycloak role provisioning failed", { error: String(err) });
+        result.keycloak = [];
+      }
+
+      // 3. Env-var sanity report (does not throw — just informs the caller)
+      result.envChecks = {
+        MAIL_FROM: Boolean(process.env.MAIL_FROM),
+        LETTA_BASE_URL: Boolean(process.env.LETTA_BASE_URL),
+        DIFY_ADMIN_EMAIL: Boolean(process.env.DIFY_ADMIN_EMAIL),
+        DIFY_ADMIN_PASSWORD: Boolean(process.env.DIFY_ADMIN_PASSWORD),
+        VAULT_ADDR: Boolean(process.env.VAULT_ADDR),
+        VAULT_TOKEN: Boolean(process.env.VAULT_TOKEN),
+        BIONIC_INTERNAL_BASE_URL: Boolean(process.env.BIONIC_INTERNAL_BASE_URL),
+      };
+
+      log.info("Crew platform setup complete", result);
+      return result;
+    }),
+
+  /**
    * One-click install a crew template into Dify and register it as a crew
    * for the given agent. Reuses the platform admin SSO to Dify, so the user
    * does not need to paste any API keys.

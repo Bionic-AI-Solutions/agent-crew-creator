@@ -181,6 +181,29 @@ export async function deleteRoles(slug: string): Promise<void> {
   }
 }
 
+/**
+ * Create a single realm-level role (idempotent). Used for platform-wide
+ * roles like "Admin" and "Analyst" that gate the crew templates UI.
+ */
+export async function createRealmRole(name: string, description?: string): Promise<void> {
+  try {
+    await adminRequest("POST", "/roles", { name, description: description || `${name} role` });
+    log.info("Created realm role", { name });
+  } catch (err: any) {
+    if (String(err).includes("409")) {
+      log.info("Realm role already exists", { name });
+      return;
+    }
+    throw err;
+  }
+}
+
+/** List realm-level roles. */
+export async function listRealmRoles(): Promise<Array<{ id: string; name: string }>> {
+  const roles = await adminRequest("GET", "/roles");
+  return Array.isArray(roles) ? roles : [];
+}
+
 export async function exportClientConfig(slug: string): Promise<unknown> {
   try {
     const clients = await adminRequest("GET", `/clients?clientId=${slug}-`);
@@ -194,6 +217,8 @@ export const keycloakAdmin = {
   createPublicClient,
   createConfidentialClient,
   createRoles,
+  createRealmRole,
+  listRealmRoles,
   deleteClients,
   deleteRoles,
   exportClientConfig,
