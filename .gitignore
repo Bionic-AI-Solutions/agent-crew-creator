@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .env
-*.pyc
+*.log
+.DS_Store
 __pycache__/
-/tmp/
+*.pyc
+.pytest_cache/

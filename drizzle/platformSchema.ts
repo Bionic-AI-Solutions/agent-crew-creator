@@ -71,7 +71,9 @@ export const agentConfigs = pgTable(
     ttsProvider: varchar("tts_provider", { length: 50 }).default("gpu-ai").notNull(),
     ttsVoice: varchar("tts_voice", { length: 200 }).default("Sudhir-IndexTTS2"),
     systemPrompt: text("system_prompt"),
+    visionEnabled: boolean("vision_enabled").default(false).notNull(),
     avatarEnabled: boolean("avatar_enabled").default(false).notNull(),
+    backgroundAudioEnabled: boolean("background_audio_enabled").default(false).notNull(),
     captureMode: varchar("capture_mode", { length: 20 }).default("off").notNull(),
     captureInterval: integer("capture_interval").default(5),
 
@@ -275,6 +277,31 @@ export const agentDocuments = pgTable(
 
 // ── Type helpers ────────────────────────────────────────────────
 
+// ── User Memory Blocks (per-user Letta memory isolation) ────────
+
+export const userMemoryBlocks = pgTable(
+  "user_memory_blocks",
+  {
+    id: serial("id").primaryKey(),
+    appId: integer("app_id")
+      .notNull()
+      .references(() => apps.id, { onDelete: "cascade" }),
+    agentConfigId: integer("agent_config_id")
+      .notNull()
+      .references(() => agentConfigs.id, { onDelete: "cascade" }),
+    userId: varchar("user_id", { length: 255 }).notNull(),
+    blockLabel: varchar("block_label", { length: 100 }).default("human").notNull(),
+    lettaBlockId: varchar("letta_block_id", { length: 255 }).notNull(),
+    lastSessionAt: timestamp("last_session_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_user_memory_unique").on(table.agentConfigId, table.userId, table.blockLabel),
+    index("idx_user_memory_app").on(table.appId),
+    index("idx_user_memory_user").on(table.userId),
+  ],
+);
+
 export interface ProvisioningStepRecord {
   name: string;
   label: string;
@@ -295,3 +322,4 @@ export type ProvisioningJob = typeof provisioningJobs.$inferSelect;
 export type Crew = typeof crews.$inferSelect;
 export type InsertCrew = typeof crews.$inferInsert;
 export type CrewExecution = typeof crewExecutions.$inferSelect;
+export type UserMemoryBlock = typeof userMemoryBlocks.$inferSelect;

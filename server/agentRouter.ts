@@ -13,7 +13,9 @@ import {
   apps,
   crews,
   crewExecutions,
+  userMemoryBlocks,
 } from "../drizzle/platformSchema.js";
+import { and } from "drizzle-orm";
 import { AVAILABLE_CREWS, DEFAULT_CREW_TEMPLATES } from "../shared/providerOptions.js";
 import { desc } from "drizzle-orm";
 
@@ -184,7 +186,9 @@ export const agentRouter = router({
         ttsProvider: z.string().optional(),
         ttsVoice: z.string().nullable().optional(),
         systemPrompt: z.string().nullable().optional(),
+        visionEnabled: z.boolean().optional(),
         avatarEnabled: z.boolean().optional(),
+        backgroundAudioEnabled: z.boolean().optional(),
         captureMode: z.string().optional(),
         captureInterval: z.number().optional(),
         lettaAgentName: z.string().nullable().optional(),
@@ -584,20 +588,33 @@ export const agentRouter = router({
       const [app] = await ctx.db.select().from(apps).where(eq(apps.id, input.appId)).limit(1);
       if (!app) return null;
 
-      // Dify is a shared platform service in bionic-platform namespace
       const DIFY_NS = "bionic-platform";
-      const difyWebUrl = `http://dify-web.${DIFY_NS}.svc.cluster.local:3000`;
+      const difyApiUrl = `http://dify-api.${DIFY_NS}.svc.cluster.local:5001`;
+      const externalDifyUrl = process.env.DIFY_EXTERNAL_BASE_URL || "https://dify.baisoln.com";
 
-      // External URL for browser iframe embedding — proxy through platform HTTPS
-      // /dify proxies to the shared Dify instance; append /apps to skip the dashboard
-      const externalDifyUrl = process.env.DIFY_EXTERNAL_BASE_URL
-        ? `${process.env.DIFY_EXTERNAL_BASE_URL}/apps`
-        : `/dify/apps`;
+      // Get a Dify session token so the user doesn't have to login separately
+      let difyToken: string | null = null;
+      try {
+        const difyEmail = process.env.DIFY_ADMIN_EMAIL || "admin@bionic.local";
+        const difyPassword = process.env.DIFY_ADMIN_PASSWORD || "B10n1cD1fy!2026";
+        const loginRes = await fetch(`${difyApiUrl}/console/api/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: difyEmail, password: difyPassword }),
+        });
+        if (loginRes.ok) {
+          const loginData = await loginRes.json() as any;
+          difyToken = loginData?.data?.access_token || null;
+        }
+      } catch {
+        // Dify may not be available — token will be null, user logs in manually
+      }
 
       return {
-        internalUrl: difyWebUrl,
+        internalUrl: `http://dify-web.${DIFY_NS}.svc.cluster.local:3000`,
         externalUrl: externalDifyUrl,
         slug: app.slug,
+        difyToken,
       };
     }),
 
@@ -704,5 +721,103 @@ export const agentRouter = router({
       } catch {
         return { status: agent.deploymentStatus, replicas: 0, message: "Unable to check status" };
       }
+    }),
+
+  // ── User Memory Blocks (per-user isolation) ──────────────────
+
+  /** List all user memory blocks for an agent. */
+  listUserMemoryBlocks: protectedProcedure
+    .input(z.object({ agentConfigId: z.number() }))
+    .query(async ({ ctx, input }) => {
+      if (!ctx.db) return [];
+      return ctx.db
+        .select()
+        .from(userMemoryBlocks)
+        .where(eq(userMemoryBlocks.agentConfigId, input.agentConfigId))
+        .orderBy(desc(userMemoryBlocks.lastSessionAt));
+    }),
+
+  /** Get or create a user memory block. Called by the agent on session start. */
+  ensureUserBlock: adminProcedure
+    .input(z.object({
+      agentConfigId: z.number(),
+      appId: z.number(),
+      userId: z.string().min(1),
+      blockLabel: z.string().default("human"),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      if (!ctx.db) throw new Error("Database not available");
+
+      // Check if block already exists
+      const [existing] = await ctx.db
+        .select()
+        .from(userMemoryBlocks)
+        .where(
+          and(
+            eq(userMemoryBlocks.agentConfigId, input.agentConfigId),
+            eq(userMemoryBlocks.userId, input.userId),
+            eq(userMemoryBlocks.blockLabel, input.blockLabel),
+          ),
+        )
+        .limit(1);
+
+      if (existing) {
+        // Update last session timestamp
+        await ctx.db
+          .update(userMemoryBlocks)
+          .set({ lastSessionAt: new Date() })
+          .where(eq(userMemoryBlocks.id, existing.id));
+        return existing;
+      }
+
+      // Create a new Letta block for this user
+      const { lettaAdmin } = await import("./services/lettaAdmin.js");
+      const block = await lettaAdmin.createBlock(
+        input.blockLabel,
+        `User: ${input.userId}\nPreferences: (none yet)\nContext: (new session)`,
+        { limit: 20000, description: `Per-user ${input.blockLabel} block for ${input.userId}` },
+      );
+
+      // Register in DB
+      const [record] = await ctx.db
+        .insert(userMemoryBlocks)
+        .values({
+          appId: input.appId,
+          agentConfigId: input.agentConfigId,
+          userId: input.userId,
+          blockLabel: input.blockLabel,
+          lettaBlockId: block.id,
+          lastSessionAt: new Date(),
+        })
+        .returning();
+
+      log.info("Created user memory block", { userId: input.userId, blockId: block.id });
+      return record;
+    }),
+
+  /** Delete a user's memory block (admin cleanup). */
+  deleteUserBlock: adminProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      if (!ctx.db) throw new Error("Database not available");
+
+      const [record] = await ctx.db
+        .select()
+        .from(userMemoryBlocks)
+        .where(eq(userMemoryBlocks.id, input.id))
+        .limit(1);
+      if (!record) throw new Error("Block not found");
+
+      // Delete from Letta
+      try {
+        const { lettaAdmin } = await import("./services/lettaAdmin.js");
+        await lettaAdmin.deleteBlock(record.lettaBlockId);
+      } catch (err) {
+        log.warn("Failed to delete Letta block", { blockId: record.lettaBlockId, error: String(err) });
+      }
+
+      // Delete from DB
+      await ctx.db.delete(userMemoryBlocks).where(eq(userMemoryBlocks.id, input.id));
+      return { success: true };
     }),
 });

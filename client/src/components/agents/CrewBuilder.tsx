@@ -128,7 +128,7 @@ export default function CrewBuilder({ agentId, appId }: Props) {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => window.open(difyEmbed.externalUrl, "_blank")}
+                onClick={() => window.open("/dify-login", "_blank")}
               >
                 <ExternalLink className="h-3 w-3 mr-1" /> Open Dify Editor
               </Button>
@@ -272,7 +272,7 @@ export default function CrewBuilder({ agentId, appId }: Props) {
         </Card>
       )}
 
-      {/* Embedded Dify Editor */}
+      {/* Dify Editor Link */}
       {difyEmbed?.externalUrl && (
         <Card>
           <CardHeader className="pb-3">
@@ -280,14 +280,25 @@ export default function CrewBuilder({ agentId, appId }: Props) {
               Dify Workflow Editor
             </CardTitle>
           </CardHeader>
-          <CardContent className="p-0">
-            <iframe
-              src={difyEmbed.externalUrl}
-              className="w-full border-0 rounded-b-lg"
-              style={{ height: "600px" }}
-              allow="clipboard-read; clipboard-write"
-              title="Dify Workflow Editor"
-            />
+          <CardContent>
+            <div className="flex items-center gap-3 p-3 rounded border bg-muted/30">
+              <div className="flex-1">
+                <p className="text-sm font-medium">Create and edit crew workflows visually</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Open the Dify editor to build multi-agent workflows using drag-and-drop nodes.
+                  After creating a workflow, copy its API key and register it as a crew above.
+                </p>
+              </div>
+              <Button
+                variant="default"
+                onClick={() => window.open("/dify-login", "_blank")}
+              >
+                <ExternalLink className="h-4 w-4 mr-2" /> Open Editor
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              Login: admin@bionic.local
+            </p>
           </CardContent>
         </Card>
       )}

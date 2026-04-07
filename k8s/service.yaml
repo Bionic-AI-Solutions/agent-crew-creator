@@ -1,56 +1,13 @@
----
 apiVersion: v1
 kind: Service
 metadata:
-  name: dify-api
+  name: bionic-platform
   namespace: bionic-platform
-  labels:
-    app: dify-api
 spec:
   selector:
-    app: dify-api
+    app: bionic-platform
   ports:
-  - port: 5001
-    targetPort: 5001
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: dify-web
-  namespace: bionic-platform
-  labels:
-    app: dify-web
-spec:
-  selector:
-    app: dify-web
-  ports:
-  - port: 3000
-    targetPort: 3000
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: dify-sandbox
-  namespace: bionic-platform
-  labels:
-    app: dify-sandbox
-spec:
-  selector:
-    app: dify-sandbox
-  ports:
-  - port: 8194
-    targetPort: 8194
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: dify-plugin-daemon
-  namespace: bionic-platform
-  labels:
-    app: dify-plugin-daemon
-spec:
-  selector:
-    app: dify-plugin-daemon
-  ports:
-  - port: 5002
-    targetPort: 5002
+    - port: 80
+      targetPort: 3000
+      protocol: TCP
+  type: ClusterIP

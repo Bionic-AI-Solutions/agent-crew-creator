@@ -1,47 +1,56 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: dify-config
+  name: bionic-platform-config
   namespace: bionic-platform
-  labels:
-    app: dify
-    app.kubernetes.io/managed-by: bionic-platform
 data:
-  # Core
-  MODE: "api"
-  SECRET_KEY: "${DIFY_SECRET_KEY}"
-  CONSOLE_WEB_URL: ""
-  CONSOLE_API_URL: ""
-  SERVICE_API_URL: ""
+  PORT: "3000"
+  NODE_ENV: production
 
-  # Database — shared platform Postgres (CloudNativePG)
-  DB_USERNAME: "postgres"
-  DB_PASSWORD: "${PG_PASSWORD}"
-  DB_HOST: "pg-ceph-rw.pg.svc.cluster.local"
-  DB_PORT: "5432"
-  DB_DATABASE: "dify"
+  # ── Keycloak ─────────────────────────────────────────────────
+  # Public URL (for browser OIDC redirects)
+  KEYCLOAK_URL: https://auth.bionicaisolutions.com
+  KEYCLOAK_REALM: Bionic
+  KEYCLOAK_REDIRECT_URI: https://platform.baisoln.com/api/auth/callback
+  # Internal URL (for admin API calls — no Kong hop)
+  KEYCLOAK_INTERNAL_URL: http://keycloak.keycloak.svc.cluster.local:80
 
-  # Redis
-  REDIS_HOST: "redis-livekit.redis.svc.cluster.local"
-  REDIS_PORT: "6379"
-  REDIS_DB: "1"
+  # ── Vault ────────────────────────────────────────────────────
+  VAULT_ADDR: http://vault-internal.vault.svc.cluster.local:8200
 
-  # Storage — MinIO
-  STORAGE_TYPE: "s3"
-  S3_ENDPOINT: "http://minio-tenant-hl.minio.svc.cluster.local:9000"
-  S3_BUCKET_NAME: "bionic-dify"
-  S3_USE_AWS_MANAGED_IAM: "false"
+  # ── LiveKit ──────────────────────────────────────────────────
+  # External URL (for browser WebRTC clients)
+  LIVEKIT_URL: wss://livekit.bionicaisolutions.com
+  # Internal URL (for agent pods — no TLS hop)
+  LIVEKIT_INTERNAL_URL: ws://livekit-server.livekit.svc.cluster.local:7880
+  K8S_LIVEKIT_NAMESPACE: livekit
+  LIVEKIT_KEYS_SECRET_NAME: livekit-api-keys
 
-  # Plugin Daemon
-  PLUGIN_API_URL: "http://dify-plugin-daemon.bionic-platform.svc.cluster.local:5002"
-  PLUGIN_API_KEY: "${DIFY_SECRET_KEY}"
-  PLUGIN_DAEMON_URL: "http://dify-plugin-daemon.bionic-platform.svc.cluster.local:5002"
-  PLUGIN_DAEMON_KEY: "${DIFY_SECRET_KEY}"
-  INNER_API_KEY: "${DIFY_INNER_API_KEY}"
-  FORCE_VERIFYING_SIGNATURE: "false"
+  # ── Letta ────────────────────────────────────────────────────
+  # Internal URL (server-to-server)
+  LETTA_BASE_URL: http://letta-server.letta.svc.cluster.local:8283
+  LETTA_INTERNAL_URL: http://letta-server.letta.svc.cluster.local:8283
 
-  # Embedding
-  NEXT_PUBLIC_ALLOW_EMBED: "true"
+  # ── Langfuse ─────────────────────────────────────────────────
+  # External (for dashboard links shown to users)
+  LANGFUSE_HOST: https://langfuse.bionicaisolutions.com
+  # Internal (for agent telemetry — no Kong hop)
+  LANGFUSE_INTERNAL_URL: http://langfuse-web.langfuse.svc.cluster.local:3000
 
-  # Logging
-  LOG_LEVEL: "INFO"
+  # ── GPU-AI MCP ───────────────────────────────────────────────
+  # Internal (for agent STT/TTS — no Kong hop)
+  GPU_AI_MCP_INTERNAL_URL: http://mcp-ai-mcp-server.mcp.svc.cluster.local:8009/mcp
+
+  # ── MinIO ────────────────────────────────────────────────────
+  MINIO_ENDPOINT: minio-tenant-hl.minio.svc.cluster.local:9000
+  MINIO_USE_SSL: "false"
+
+  # ── Redis ────────────────────────────────────────────────────
+  REDIS_URL: redis://redis-cluster.redis.svc.cluster.local:6379
+
+  # ── Webhooks (external, needs public URL) ────────────────────
+  WEBHOOK_BASE_URL: https://platform.baisoln.com
+
+  # ── Agent deployment ─────────────────────────────────────────
+  # Agents deploy to their app's namespace (e.g., guruji, physics-tutor)
+  AGENT_TEMPLATE_IMAGE: docker4zerocool/bionic-agent:latest

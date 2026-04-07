@@ -1,9 +1,20 @@
-"""Orchestrator: routes crew execution to Dify workflow engine."""
+"""Orchestrator: routes crew execution to Dify workflow engine.
+
+DEPRECATED: This module is no longer used in the two-brain architecture.
+The Letta secondary agent now has a `run_crew` custom tool registered
+server-side that calls Dify directly. This file is kept as a reference
+for the Dify API contract and result parsing logic.
+
+See: server/services/lettaAdmin.ts → buildRunCrewSourceCode()
+"""
 
 import json
 import logging
 import httpx
 from config import settings
+from langfuse import observe, propagate_attributes
+
+from observability.langfuse_setup import clip_attr, init_langfuse
 
 logger = logging.getLogger("orchestrator")
 
@@ -40,6 +51,7 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"Failed to load crew registry: {e}")
 
+    @observe(name="crew.execute", as_type="chain", capture_input=False, capture_output=False)
     async def execute_crew(self, crew_name: str, context: dict, user_id: str) -> dict:
         """Execute a crew by dispatching to its Dify workflow.
 
@@ -51,54 +63,66 @@ class Orchestrator:
         Returns:
             Dict with 'summary', 'artifacts', 'crew', 'status', and optional error info.
         """
-        if crew_name not in self.enabled_crews:
-            return {
-                "summary": f"Crew '{crew_name}' is not enabled for this agent",
-                "artifacts": [],
-                "crew": crew_name,
-                "status": "error",
-            }
+        init_langfuse()
+        with propagate_attributes(
+            user_id=clip_attr(user_id),
+            session_id=clip_attr(crew_name),
+            trace_name=clip_attr(f"crew:{crew_name}"),
+            tags=["crew-orchestrator", clip_attr(settings.app_slug)],
+            metadata={
+                "app_slug": clip_attr(settings.app_slug),
+                "crew": clip_attr(crew_name),
+            },
+        ):
+            if crew_name not in self.enabled_crews:
+                return {
+                    "summary": f"Crew '{crew_name}' is not enabled for this agent",
+                    "artifacts": [],
+                    "crew": crew_name,
+                    "status": "error",
+                }
 
-        crew_config = self.crew_registry.get(crew_name)
-        if not crew_config or not crew_config.dify_app_api_key:
-            return {
-                "summary": f"Crew '{crew_name}' is not configured (missing Dify API key)",
-                "artifacts": [],
-                "crew": crew_name,
-                "status": "error",
-            }
+            crew_config = self.crew_registry.get(crew_name)
+            if not crew_config or not crew_config.dify_app_api_key:
+                return {
+                    "summary": f"Crew '{crew_name}' is not configured (missing Dify API key)",
+                    "artifacts": [],
+                    "crew": crew_name,
+                    "status": "error",
+                }
 
-        if not settings.dify_base_url:
-            return {
-                "summary": "Dify crew engine not configured (DIFY_BASE_URL not set)",
-                "artifacts": [],
-                "crew": crew_name,
-                "status": "error",
-            }
+            if not settings.dify_base_url:
+                return {
+                    "summary": "Dify crew engine not configured (DIFY_BASE_URL not set)",
+                    "artifacts": [],
+                    "crew": crew_name,
+                    "status": "error",
+                }
 
-        logger.info(f"Executing crew '{crew_name}' via Dify (mode={crew_config.mode})")
+            logger.info(f"Executing crew '{crew_name}' via Dify (mode={crew_config.mode})")
 
-        try:
-            result = await self._call_dify_workflow(crew_config, context, user_id)
-            return {
-                "summary": self._extract_summary(result),
-                "artifacts": self._extract_artifacts(result),
-                "crew": crew_name,
-                "status": "completed",
-                "dify_run_id": result.get("workflow_run_id", ""),
-                "elapsed_time": result.get("elapsed_time"),
-                "total_tokens": result.get("total_tokens"),
-            }
-        except Exception as e:
-            logger.error(f"Crew '{crew_name}' execution failed: {e}")
-            return {
-                "summary": f"Crew '{crew_name}' failed: {str(e)}",
-                "artifacts": [],
-                "crew": crew_name,
-                "status": "failed",
-                "error": str(e),
-            }
+            try:
+                result = await self._call_dify_workflow(crew_config, context, user_id)
+                return {
+                    "summary": self._extract_summary(result),
+                    "artifacts": self._extract_artifacts(result),
+                    "crew": crew_name,
+                    "status": "completed",
+                    "dify_run_id": result.get("workflow_run_id", ""),
+                    "elapsed_time": result.get("elapsed_time"),
+                    "total_tokens": result.get("total_tokens"),
+                }
+            except Exception as e:
+                logger.error(f"Crew '{crew_name}' execution failed: {e}")
+                return {
+                    "summary": f"Crew '{crew_name}' failed: {str(e)}",
+                    "artifacts": [],
+                    "crew": crew_name,
+                    "status": "failed",
+                    "error": str(e),
+                }
 
+    @observe(name="dify.workflow.run", as_type="span", capture_input=False, capture_output=False)
     async def _call_dify_workflow(
         self, crew: CrewConfig, context: dict, user_id: str
     ) -> dict:

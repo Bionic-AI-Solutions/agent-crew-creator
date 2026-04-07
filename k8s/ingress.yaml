@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bionic-platform
+  namespace: bionic-platform
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    konghq.com/strip-path: "false"
+    konghq.com/preserve-host: "true"
+    konghq.com/protocols: http,https
+    konghq.com/https-redirect-status-code: "301"
+spec:
+  ingressClassName: kong
+  tls:
+    - hosts:
+        - platform.baisoln.com
+      secretName: bionic-platform-tls
+  rules:
+    - host: platform.baisoln.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: bionic-platform
+                port:
+                  number: 80
