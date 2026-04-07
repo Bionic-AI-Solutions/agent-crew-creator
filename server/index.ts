@@ -29,6 +29,12 @@ app.use(express.json({ limit: "50mb" }));
 // ── Health check ────────────────────────────────────────────────
 app.get("/healthz", (_req, res) => res.json({ status: "ok" }));
 
+// ── Notification webhook (called by Dify due-diligence workflow) ─
+import { handleNotifyWebhook } from "./services/notifyService.js";
+app.post("/api/webhooks/notify", (req, res) => {
+  void handleNotifyWebhook(req, res);
+});
+
 // ── Auth routes ─────────────────────────────────────────────────
 app.use("/api/auth", createAuthRouter());
 
@@ -62,7 +68,7 @@ app.post("/api/agents/:agentId/documents", upload.single("file"), async (req, re
     const db = await getDb();
     if (!db) { res.status(500).json({ error: "Database not available" }); return; }
 
-    const agentId = parseInt(req.params.agentId, 10);
+    const agentId = parseInt(String(req.params.agentId), 10);
     const file = req.file;
     if (!file) { res.status(400).json({ error: "No file uploaded" }); return; }
 

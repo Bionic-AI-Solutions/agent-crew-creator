@@ -8,22 +8,14 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Users,
-  Plus,
   ExternalLink,
-  Play,
+  Sparkles,
   Trash2,
   Clock,
   CheckCircle2,
@@ -38,30 +30,54 @@ interface Props {
   appId: number;
 }
 
+interface ConfigField {
+  key: string;
+  label: string;
+  type: "text" | "url" | "email" | "textarea";
+  required: boolean;
+  placeholder?: string;
+  description?: string;
+}
+
+interface TemplateMeta {
+  id: string;
+  label: string;
+  description: string;
+  mode: "workflow" | "agent-chat" | "completion";
+  icon?: string;
+  configSchema?: ConfigField[];
+  postInstall?: "scrape_website" | "none";
+}
+
 export default function CrewBuilder({ agentId, appId }: Props) {
   const utils = trpc.useUtils();
-  const [showCreateDialog, setShowCreateDialog] = useState(false);
-  const [newCrewName, setNewCrewName] = useState("");
-  const [newCrewDescription, setNewCrewDescription] = useState("");
-  const [newCrewMode, setNewCrewMode] = useState("workflow");
-  const [newCrewDifyApiKey, setNewCrewDifyApiKey] = useState("");
 
   // Queries
   const { data: crews, isLoading: crewsLoading } = trpc.agentsCrud.listCrews.useQuery({ appId });
   const { data: agent } = trpc.agentsCrud.getById.useQuery({ id: agentId });
   const { data: templates } = trpc.agentsCrud.listCrewTemplates.useQuery();
   const { data: difyEmbed } = trpc.agentsCrud.getDifyEmbedUrl.useQuery({ appId });
-  const { data: executions } = trpc.agentsCrud.listCrewExecutions.useQuery({ agentConfigId: agentId, limit: 10 });
+  const { data: executions } = trpc.agentsCrud.listCrewExecutions.useQuery({
+    agentConfigId: agentId,
+    limit: 10,
+  });
+
+  // Install dialog state
+  const [installTpl, setInstallTpl] = useState<TemplateMeta | null>(null);
+  const [installConfig, setInstallConfig] = useState<Record<string, string>>({});
 
   // Mutations
-  const createCrewMutation = trpc.agentsCrud.createCrew.useMutation({
-    onSuccess: () => {
-      toast.success("Crew created");
-      setShowCreateDialog(false);
-      setNewCrewName("");
-      setNewCrewDescription("");
-      setNewCrewDifyApiKey("");
+  const installMutation = trpc.agentsCrud.installCrewTemplate.useMutation({
+    onSuccess: (res) => {
+      toast.success(
+        res.postInstallStarted
+          ? "Crew installed — background setup running"
+          : "Crew installed",
+      );
+      setInstallTpl(null);
+      setInstallConfig({});
       utils.agentsCrud.listCrews.invalidate({ appId });
+      utils.agentsCrud.getById.invalidate({ id: agentId });
     },
     onError: (err) => toast.error(err.message),
   });
@@ -81,6 +97,7 @@ export default function CrewBuilder({ agentId, appId }: Props) {
   });
 
   const selectedCrews = agent?.crews?.map((c) => c.crewName) || [];
+  const installedTemplateIds = new Set((crews || []).map((c) => c.name));
 
   const toggleCrew = (crewName: string) => {
     const newCrews = selectedCrews.includes(crewName)
@@ -89,14 +106,28 @@ export default function CrewBuilder({ agentId, appId }: Props) {
     setCrewsMutation.mutate({ agentConfigId: agentId, crewNames: newCrews });
   };
 
-  const handleCreateCrew = () => {
-    if (!newCrewName) return;
-    createCrewMutation.mutate({
-      appId,
-      name: newCrewName.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, ""),
-      description: newCrewDescription || undefined,
-      mode: newCrewMode as "workflow" | "agent-chat" | "completion",
-      difyAppApiKey: newCrewDifyApiKey || undefined,
+  const openInstall = (tpl: TemplateMeta) => {
+    setInstallTpl(tpl);
+    const initial: Record<string, string> = {};
+    (tpl.configSchema || []).forEach((f) => {
+      initial[f.key] = "";
+    });
+    setInstallConfig(initial);
+  };
+
+  const handleInstall = () => {
+    if (!installTpl) return;
+    const missing = (installTpl.configSchema || []).find(
+      (f) => f.required && !installConfig[f.key]?.trim(),
+    );
+    if (missing) {
+      toast.error(`Missing required field: ${missing.label}`);
+      return;
+    }
+    installMutation.mutate({
+      agentConfigId: agentId,
+      templateId: installTpl.id,
+      config: installConfig,
     });
   };
 
@@ -117,94 +148,31 @@ export default function CrewBuilder({ agentId, appId }: Props) {
 
   return (
     <div className="space-y-4">
-      {/* Crew Management */}
+      {/* ── Section 1: Installed Crews ─────────────────────────── */}
       <Card>
         <CardHeader className="pb-3 flex flex-row items-center justify-between">
           <CardTitle className="text-sm flex items-center gap-2">
-            <Users className="h-4 w-4" /> Crews (Dify Workflows)
+            <Users className="h-4 w-4" /> Crews
           </CardTitle>
-          <div className="flex gap-2">
-            {difyEmbed?.externalUrl && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => window.open("/dify-login", "_blank")}
-              >
-                <ExternalLink className="h-3 w-3 mr-1" /> Open Dify Editor
-              </Button>
-            )}
-            <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-              <DialogTrigger asChild>
-                <Button size="sm" variant="outline">
-                  <Plus className="h-3 w-3 mr-1" /> New Crew
-                </Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Create New Crew</DialogTitle>
-                </DialogHeader>
-                <div className="space-y-4">
-                  <div>
-                    <label className="text-sm font-medium">Name</label>
-                    <Input
-                      placeholder="deep_research"
-                      value={newCrewName}
-                      onChange={(e) => setNewCrewName(e.target.value)}
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Lowercase, underscores only (e.g., deep_research)
-                    </p>
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium">Description</label>
-                    <Textarea
-                      placeholder="What does this crew do?"
-                      value={newCrewDescription}
-                      onChange={(e) => setNewCrewDescription(e.target.value)}
-                      rows={2}
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium">Workflow Mode</label>
-                    <Select value={newCrewMode} onValueChange={setNewCrewMode}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="workflow">Workflow (Sequential/Parallel)</SelectItem>
-                        <SelectItem value="agent-chat">Agent Chat (ReAct / Self-healing)</SelectItem>
-                        <SelectItem value="completion">Completion (Single-step)</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium">Dify App API Key</label>
-                    <Input
-                      placeholder="app-xxxxxxxx"
-                      value={newCrewDifyApiKey}
-                      onChange={(e) => setNewCrewDifyApiKey(e.target.value)}
-                      type="password"
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Create the workflow in Dify first, then paste its API key here
-                    </p>
-                  </div>
-                  <Button onClick={handleCreateCrew} disabled={createCrewMutation.isPending || !newCrewName}>
-                    {createCrewMutation.isPending ? "Creating..." : "Create Crew"}
-                  </Button>
-                </div>
-              </DialogContent>
-            </Dialog>
-          </div>
+          {difyEmbed?.externalUrl && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => window.open("/dify-login", "_blank")}
+              title="Open Dify to customise installed crews"
+            >
+              <ExternalLink className="h-3 w-3 mr-1" /> Open Dify Editor
+            </Button>
+          )}
         </CardHeader>
         <CardContent>
           {crewsLoading ? (
             <p className="text-xs text-muted-foreground">Loading crews...</p>
           ) : !crews || crews.length === 0 ? (
             <div className="text-center py-6">
-              <p className="text-sm text-muted-foreground mb-2">No crews created yet</p>
+              <p className="text-sm text-muted-foreground mb-1">No crews installed yet</p>
               <p className="text-xs text-muted-foreground">
-                Create a workflow in Dify, then register it as a crew here
+                Pick a template below to install one with a single click.
               </p>
             </div>
           ) : (
@@ -222,9 +190,13 @@ export default function CrewBuilder({ agentId, appId }: Props) {
                         {crew.mode}
                       </Badge>
                       {crew.difyAppApiKey ? (
-                        <Badge variant="default" className="text-xs bg-green-600">configured</Badge>
+                        <Badge variant="default" className="text-xs bg-green-600">
+                          ready
+                        </Badge>
                       ) : (
-                        <Badge variant="secondary" className="text-xs">no API key</Badge>
+                        <Badge variant="secondary" className="text-xs">
+                          no API key
+                        </Badge>
                       )}
                     </div>
                     {crew.description && (
@@ -250,60 +222,67 @@ export default function CrewBuilder({ agentId, appId }: Props) {
         </CardContent>
       </Card>
 
-      {/* Crew Templates */}
-      {templates && templates.length > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm">Crew Templates</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {templates.map((tpl) => (
-                <div key={tpl.name} className="p-2 rounded border text-xs">
-                  <div className="font-medium">{tpl.label}</div>
-                  <p className="text-muted-foreground">{tpl.description}</p>
-                </div>
-              ))}
+      {/* ── Section 2: Template Gallery ────────────────────────── */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Sparkles className="h-4 w-4" /> Crew Templates
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {!templates || templates.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No templates available</p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {(templates as TemplateMeta[]).map((tpl) => {
+                const installed = installedTemplateIds.has(tpl.id);
+                const requiresConfig = (tpl.configSchema || []).some((f) => f.required);
+                return (
+                  <div
+                    key={tpl.id}
+                    className="p-3 rounded border flex flex-col gap-2 bg-card"
+                  >
+                    <div className="flex items-start gap-2">
+                      <span className="text-xl leading-none">{tpl.icon || "✨"}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-medium">{tpl.label}</span>
+                          <Badge variant="outline" className="text-xs">
+                            {tpl.mode}
+                          </Badge>
+                          {requiresConfig && (
+                            <Badge variant="secondary" className="text-xs">
+                              config
+                            </Badge>
+                          )}
+                          {tpl.postInstall === "scrape_website" && (
+                            <Badge variant="secondary" className="text-xs">
+                              scrapes site
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {tpl.description}
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant={installed ? "outline" : "default"}
+                      onClick={() => openInstall(tpl)}
+                      disabled={installMutation.isPending}
+                    >
+                      {installed ? "Reinstall" : "Install"}
+                    </Button>
+                  </div>
+                );
+              })}
             </div>
-            <p className="text-xs text-muted-foreground mt-2">
-              Import these templates in your Dify editor, then register the API key above
-            </p>
-          </CardContent>
-        </Card>
-      )}
+          )}
+        </CardContent>
+      </Card>
 
-      {/* Dify Editor Link */}
-      {difyEmbed?.externalUrl && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm flex items-center gap-2">
-              Dify Workflow Editor
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center gap-3 p-3 rounded border bg-muted/30">
-              <div className="flex-1">
-                <p className="text-sm font-medium">Create and edit crew workflows visually</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Open the Dify editor to build multi-agent workflows using drag-and-drop nodes.
-                  After creating a workflow, copy its API key and register it as a crew above.
-                </p>
-              </div>
-              <Button
-                variant="default"
-                onClick={() => window.open("/dify-login", "_blank")}
-              >
-                <ExternalLink className="h-4 w-4 mr-2" /> Open Editor
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground mt-2">
-              Login: admin@bionic.local
-            </p>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Execution History */}
+      {/* ── Section 3: Execution History ───────────────────────── */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm flex items-center gap-2">
@@ -316,18 +295,27 @@ export default function CrewBuilder({ agentId, appId }: Props) {
           ) : (
             <div className="space-y-1">
               {executions.map((exec: any) => (
-                <div key={exec.id} className="flex items-center gap-2 text-xs py-1 border-b last:border-0">
+                <div
+                  key={exec.id}
+                  className="flex items-center gap-2 text-xs py-1 border-b last:border-0"
+                >
                   {statusIcon(exec.status)}
                   <span className="font-mono">{exec.difyRunId?.slice(0, 8) || "—"}</span>
                   <span className="text-muted-foreground">
-                    {exec.elapsedTimeMs ? `${(exec.elapsedTimeMs / 1000).toFixed(1)}s` : "—"}
+                    {exec.elapsedTimeMs
+                      ? `${(exec.elapsedTimeMs / 1000).toFixed(1)}s`
+                      : "—"}
                   </span>
                   <span className="text-muted-foreground flex-1 truncate">
                     {typeof exec.taskPayload === "object" && exec.taskPayload
-                      ? (exec.taskPayload as any).task || JSON.stringify(exec.taskPayload).slice(0, 50)
+                      ? (exec.taskPayload as any).task ||
+                        JSON.stringify(exec.taskPayload).slice(0, 50)
                       : "—"}
                   </span>
-                  <Badge variant={exec.status === "succeeded" ? "default" : "secondary"} className="text-xs">
+                  <Badge
+                    variant={exec.status === "succeeded" ? "default" : "secondary"}
+                    className="text-xs"
+                  >
                     {exec.status}
                   </Badge>
                 </div>
@@ -336,6 +324,71 @@ export default function CrewBuilder({ agentId, appId }: Props) {
           )}
         </CardContent>
       </Card>
+
+      {/* ── Install Dialog ─────────────────────────────────────── */}
+      <Dialog open={Boolean(installTpl)} onOpenChange={(o) => !o && setInstallTpl(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <span className="text-xl">{installTpl?.icon}</span>
+              Install: {installTpl?.label}
+            </DialogTitle>
+            <DialogDescription>{installTpl?.description}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {(installTpl?.configSchema || []).length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No configuration needed. Click Install to deploy this crew into Dify and
+                attach it to the agent.
+              </p>
+            ) : (
+              (installTpl?.configSchema || []).map((field) => (
+                <div key={field.key}>
+                  <label className="text-sm font-medium">
+                    {field.label}
+                    {field.required && <span className="text-red-500 ml-1">*</span>}
+                  </label>
+                  {field.type === "textarea" ? (
+                    <Textarea
+                      placeholder={field.placeholder}
+                      value={installConfig[field.key] || ""}
+                      onChange={(e) =>
+                        setInstallConfig({ ...installConfig, [field.key]: e.target.value })
+                      }
+                      rows={3}
+                    />
+                  ) : (
+                    <Input
+                      type={field.type === "email" ? "email" : "text"}
+                      placeholder={field.placeholder}
+                      value={installConfig[field.key] || ""}
+                      onChange={(e) =>
+                        setInstallConfig({ ...installConfig, [field.key]: e.target.value })
+                      }
+                    />
+                  )}
+                  {field.description && (
+                    <p className="text-xs text-muted-foreground mt-1">{field.description}</p>
+                  )}
+                </div>
+              ))
+            )}
+            <Button
+              onClick={handleInstall}
+              disabled={installMutation.isPending}
+              className="w-full"
+            >
+              {installMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Installing…
+                </>
+              ) : (
+                "Install Crew"
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

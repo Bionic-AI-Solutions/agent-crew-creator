@@ -1,0 +1,124 @@
+metadata:
+  id: data_analyst
+  label: Data Analyst
+  description: SQL generation and execution against a connected database. Takes a natural-language question, returns SQL plus a structured findings narrative.
+  mode: workflow
+  icon: "📊"
+  configSchema:
+    - key: database_dialect
+      label: SQL Dialect
+      type: text
+      required: true
+      placeholder: "postgres"
+      description: "postgres | mysql | sqlite | mssql"
+    - key: schema_hint
+      label: Schema Hint
+      type: textarea
+      required: false
+      placeholder: "users(id, email, created_at)\norders(id, user_id, total, created_at)"
+      description: "Brief description of relevant tables and columns"
+  postInstall: none
+difyDsl: |
+  app:
+    description: "Data analyst — NL to SQL with findings narrative"
+    icon: "\U0001F4CA"
+    icon_background: "#DCFCE7"
+    mode: workflow
+    name: Data Analyst
+    use_icon_as_answer_icon: false
+  kind: app
+  version: 0.1.5
+  workflow:
+    conversation_variables: []
+    environment_variables: []
+    features: {}
+    graph:
+      edges:
+      - {id: e1, source: start, sourceHandle: source, target: build_payload, targetHandle: target, type: custom}
+      - {id: e2, source: build_payload, sourceHandle: source, target: analyse, targetHandle: target, type: custom}
+      - {id: e3, source: analyse, sourceHandle: source, target: extract_output, targetHandle: target, type: custom}
+      - {id: e4, source: extract_output, sourceHandle: source, target: end, targetHandle: target, type: custom}
+      nodes:
+      - data:
+          title: Start
+          type: start
+          variables:
+          - {label: Question, max_length: 2000, required: true, type: paragraph, variable: question}
+        id: start
+        position: {x: 0, "y": 200}
+        type: start
+      - data:
+          title: "Build Analyst Payload"
+          type: code
+          code_language: python3
+          code: |
+            import json
+            def main(question: str) -> dict:
+                dialect = "{{config.database_dialect}}"
+                schema = """{{config.schema_hint}}"""
+                payload = {
+                    "model": "qwen3.5-27b-fp8",
+                    "messages": [
+                        {"role": "system", "content": f"You are a senior data analyst writing {dialect} SQL. Given the schema below and a question, output: 1) SQL query in a fenced ```sql block 2) Step-by-step reasoning 3) Expected findings narrative. Schema:\n{schema}"},
+                        {"role": "user", "content": question}
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 2000
+                }
+                return {"payload": json.dumps(payload)}
+          variables:
+          - {variable: question, value_selector: ["start", "question"]}
+          outputs:
+            payload: {type: string}
+        id: build_payload
+        position: {x: 250, "y": 200}
+        type: code
+      - data:
+          title: "Analyst LLM"
+          type: http-request
+          method: POST
+          url: "http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions"
+          headers: "Content-Type: application/json"
+          params: ""
+          body:
+            type: raw-text
+            data: "{{#build_payload.payload#}}"
+          authorization: {type: no-auth}
+          timeout: {connect: 10, read: 120, write: 30}
+        id: analyse
+        position: {x: 500, "y": 200}
+        type: http-request
+      - data:
+          title: "Extract Output"
+          type: code
+          code_language: python3
+          code: |
+            import json, re
+            def main(body: str) -> dict:
+                try:
+                    d = json.loads(body)
+                    text = d["choices"][0]["message"]["content"]
+                    if "<think>" in text:
+                        text = text.split("</think>")[-1].strip()
+                    sql_match = re.search(r"```sql\s*(.*?)```", text, re.DOTALL)
+                    sql = sql_match.group(1).strip() if sql_match else ""
+                    return {"analysis": text, "sql": sql}
+                except Exception as e:
+                    return {"analysis": f"Error: {e}", "sql": ""}
+          variables:
+          - {variable: body, value_selector: ["analyse", "body"]}
+          outputs:
+            analysis: {type: string}
+            sql: {type: string}
+        id: extract_output
+        position: {x: 750, "y": 200}
+        type: code
+      - data:
+          title: End
+          type: end
+          outputs:
+          - {value_selector: ["extract_output", "analysis"], variable: result}
+          - {value_selector: ["extract_output", "sql"], variable: sql}
+        id: end
+        position: {x: 1000, "y": 200}
+        type: end

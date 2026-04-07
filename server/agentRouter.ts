@@ -16,7 +16,7 @@ import {
   userMemoryBlocks,
 } from "../drizzle/platformSchema.js";
 import { and } from "drizzle-orm";
-import { AVAILABLE_CREWS, DEFAULT_CREW_TEMPLATES } from "../shared/providerOptions.js";
+import { AVAILABLE_CREWS } from "../shared/providerOptions.js";
 import { desc } from "drizzle-orm";
 
 // ── Default System Prompts ──────────────────────────────────────
@@ -428,8 +428,94 @@ export const agentRouter = router({
         .orderBy(crews.createdAt);
     }),
 
-  /** Get available crew templates for import. */
-  listCrewTemplates: protectedProcedure.query(() => DEFAULT_CREW_TEMPLATES),
+  /** Get available crew templates for one-click install. */
+  listCrewTemplates: protectedProcedure.query(async () => {
+    const { listTemplates } = await import("./services/crewTemplateLoader.js");
+    return listTemplates();
+  }),
+
+  /**
+   * One-click install a crew template into Dify and register it as a crew
+   * for the given agent. Reuses the platform admin SSO to Dify, so the user
+   * does not need to paste any API keys.
+   */
+  installCrewTemplate: adminProcedure
+    .input(
+      z.object({
+        agentConfigId: z.number(),
+        templateId: z.string(),
+        config: z.record(z.string()).default({}),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (!ctx.db) throw new Error("Database not available");
+
+      // Look up the agent + its app (slug, lettaAgentId).
+      const [agent] = await ctx.db
+        .select()
+        .from(agentConfigs)
+        .where(eq(agentConfigs.id, input.agentConfigId))
+        .limit(1);
+      if (!agent) throw new Error("Agent not found");
+      const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
+      if (!app) throw new Error("App not found");
+
+      const { installTemplate } = await import("./services/crewInstaller.js");
+      const result = await installTemplate({
+        templateId: input.templateId,
+        agentConfigId: input.agentConfigId,
+        appId: app.id,
+        appSlug: app.slug,
+        lettaAgentId: agent.lettaAgentId,
+        config: input.config,
+      });
+
+      // Insert the crews row.
+      const crewName = result.template.metadata.id;
+      const [crew] = await ctx.db
+        .insert(crews)
+        .values({
+          appId: app.id,
+          name: crewName,
+          description: result.template.metadata.description,
+          difyAppId: result.difyAppId,
+          difyAppApiKey: result.difyApiKey,
+          mode: result.template.metadata.mode,
+          isTemplate: false,
+          config: input.config,
+        })
+        .onConflictDoUpdate({
+          target: [crews.appId, crews.name],
+          set: {
+            difyAppId: result.difyAppId,
+            difyAppApiKey: result.difyApiKey,
+            description: result.template.metadata.description,
+            mode: result.template.metadata.mode,
+            config: input.config,
+            updatedAt: new Date(),
+          },
+        })
+        .returning();
+
+      // Link to the agent (idempotent).
+      await ctx.db
+        .insert(agentCrews)
+        .values({ agentConfigId: input.agentConfigId, crewName })
+        .onConflictDoNothing();
+
+      log.info("Crew template installed", {
+        templateId: input.templateId,
+        agentConfigId: input.agentConfigId,
+        crewId: crew.id,
+        difyAppId: result.difyAppId,
+        postInstallStarted: result.postInstallStarted,
+      });
+
+      return {
+        crew,
+        postInstallStarted: result.postInstallStarted,
+      };
+    }),
 
   /** Legacy: list available crews (backward compat). */
   listAvailableCrews: protectedProcedure

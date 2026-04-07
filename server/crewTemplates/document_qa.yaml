@@ -1,0 +1,147 @@
+metadata:
+  id: document_qa
+  label: Document Q&A
+  description: RAG over uploaded PDFs and documents stored in the agent's Letta archival memory. Returns grounded answers with passage citations.
+  mode: workflow
+  icon: "📄"
+  configSchema: []
+  postInstall: none
+difyDsl: |
+  app:
+    description: "Document Q&A — RAG over Letta archival passages"
+    icon: "\U0001F4C4"
+    icon_background: "#E0F2FE"
+    mode: workflow
+    name: Document Q&A
+    use_icon_as_answer_icon: false
+  kind: app
+  version: 0.1.5
+  workflow:
+    conversation_variables: []
+    environment_variables: []
+    features: {}
+    graph:
+      edges:
+      - {id: e1, source: start, sourceHandle: source, target: retrieve, targetHandle: target, type: custom}
+      - {id: e2, source: retrieve, sourceHandle: source, target: extract_passages, targetHandle: target, type: custom}
+      - {id: e3, source: extract_passages, sourceHandle: source, target: build_payload, targetHandle: target, type: custom}
+      - {id: e4, source: build_payload, sourceHandle: source, target: answer, targetHandle: target, type: custom}
+      - {id: e5, source: answer, sourceHandle: source, target: extract_answer, targetHandle: target, type: custom}
+      - {id: e6, source: extract_answer, sourceHandle: source, target: end, targetHandle: target, type: custom}
+      nodes:
+      - data:
+          title: Start
+          type: start
+          variables:
+          - {label: Question, max_length: 2000, required: true, type: paragraph, variable: question}
+        id: start
+        position: {x: 0, "y": 200}
+        type: start
+      - data:
+          title: "Retrieve Passages"
+          type: http-request
+          method: GET
+          url: "{{auto.letta_base_url}}/v1/agents/{{auto.letta_agent_id}}/archival?search={{#start.question#}}&limit=8"
+          headers: |
+            Authorization: Bearer {{auto.letta_api_key}}
+          params: ""
+          body: {type: none}
+          authorization: {type: no-auth}
+          timeout: {connect: 10, read: 30, write: 10}
+        id: retrieve
+        position: {x: 250, "y": 200}
+        type: http-request
+      - data:
+          title: "Extract Passages"
+          type: code
+          code_language: python3
+          code: |
+            import json
+            def main(body: str) -> dict:
+                try:
+                    d = json.loads(body)
+                    items = d if isinstance(d, list) else d.get("data", [])
+                    formatted = "\n\n".join(
+                        f"[{i+1}] {p.get('text','')}" for i, p in enumerate(items)
+                    )
+                    return {"passages": formatted or "(no relevant passages found)"}
+                except Exception as e:
+                    return {"passages": f"Error: {e}"}
+          variables:
+          - {variable: body, value_selector: ["retrieve", "body"]}
+          outputs:
+            passages: {type: string}
+        id: extract_passages
+        position: {x: 450, "y": 200}
+        type: code
+      - data:
+          title: "Build Answer Payload"
+          type: code
+          code_language: python3
+          code: |
+            import json
+            def main(question: str, passages: str) -> dict:
+                payload = {
+                    "model": "qwen3.5-27b-fp8",
+                    "messages": [
+                        {"role": "system", "content": "You answer questions using only the provided passages. Cite passages by number [n]. If the answer is not present, say so."},
+                        {"role": "user", "content": f"Question: {question}\n\nPassages:\n{passages}"}
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 1500
+                }
+                return {"payload": json.dumps(payload)}
+          variables:
+          - {variable: question, value_selector: ["start", "question"]}
+          - {variable: passages, value_selector: ["extract_passages", "passages"]}
+          outputs:
+            payload: {type: string}
+        id: build_payload
+        position: {x: 600, "y": 200}
+        type: code
+      - data:
+          title: "Generate Answer"
+          type: http-request
+          method: POST
+          url: "http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions"
+          headers: "Content-Type: application/json"
+          params: ""
+          body:
+            type: raw-text
+            data: "{{#build_payload.payload#}}"
+          authorization: {type: no-auth}
+          timeout: {connect: 10, read: 120, write: 30}
+        id: answer
+        position: {x: 800, "y": 200}
+        type: http-request
+      - data:
+          title: "Extract Answer"
+          type: code
+          code_language: python3
+          code: |
+            import json
+            def main(body: str) -> dict:
+                try:
+                    d = json.loads(body)
+                    text = d["choices"][0]["message"]["content"]
+                    if "<think>" in text:
+                        text = text.split("</think>")[-1].strip()
+                    return {"answer": text}
+                except Exception as e:
+                    return {"answer": f"Error: {e}"}
+          variables:
+          - {variable: body, value_selector: ["answer", "body"]}
+          outputs:
+            answer: {type: string}
+        id: extract_answer
+        position: {x: 1000, "y": 200}
+        type: code
+      - data:
+          title: End
+          type: end
+          outputs:
+          - {value_selector: ["extract_answer", "answer"], variable: result}
+          - {value_selector: ["extract_passages", "passages"], variable: passages}
+        id: end
+        position: {x: 1200, "y": 200}
+        type: end

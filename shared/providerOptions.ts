@@ -118,16 +118,9 @@ export interface CrewDefinition {
   isTemplate?: boolean;
 }
 
-/** Default crew templates available for import into Dify. */
-export const DEFAULT_CREW_TEMPLATES: CrewDefinition[] = [
-  { name: "deep_research", label: "Deep Research", description: "Web search → multi-source synthesis → structured report (ReAct agent)" },
-  { name: "data_analysis", label: "Data Analysis", description: "File input → Python analysis → visualization → findings (code interpreter)" },
-  { name: "content_generation", label: "Content Generation", description: "Brief → research → draft → self-review → final output (sequential workflow)" },
-  { name: "due_diligence", label: "Due Diligence", description: "Company research → financial analysis → risk assessment → report (multi-step agent)" },
-  { name: "customer_support", label: "Customer Support", description: "Account lookup → issue diagnosis → resolution steps (function calling agent)" },
-];
-
 /**
- * @deprecated Use dynamic crew registry from DB instead. Kept for backward compatibility.
+ * @deprecated Use dynamic crew registry from DB instead. Crew templates are
+ * now loaded from server/crewTemplates/*.yaml via crewTemplateLoader.
+ * Kept as an empty array for backward compatibility with listAvailableCrews.
  */
-export const AVAILABLE_CREWS: CrewDefinition[] = DEFAULT_CREW_TEMPLATES;
+export const AVAILABLE_CREWS: CrewDefinition[] = [];

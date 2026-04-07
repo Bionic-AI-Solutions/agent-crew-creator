@@ -1,0 +1,153 @@
+metadata:
+  id: deep_research
+  label: Deep Research
+  description: Multi-source web research using the local Bionic Search MCP, synthesised by Qwen 3.5-27B into a structured report with citations.
+  mode: workflow
+  icon: "🔍"
+  configSchema: []
+  postInstall: none
+difyDsl: |
+  app:
+    description: "Deep research crew — local MCP search + Qwen synthesis"
+    icon: "\U0001F50D"
+    icon_background: "#FFEAD5"
+    mode: workflow
+    name: Deep Research
+    use_icon_as_answer_icon: false
+  kind: app
+  version: 0.1.5
+  workflow:
+    conversation_variables: []
+    environment_variables: []
+    features: {}
+    graph:
+      edges:
+      - {id: e1, source: start, sourceHandle: source, target: search, targetHandle: target, type: custom}
+      - {id: e2, source: search, sourceHandle: source, target: extract_results, targetHandle: target, type: custom}
+      - {id: e3, source: extract_results, sourceHandle: source, target: build_synth_payload, targetHandle: target, type: custom}
+      - {id: e4, source: build_synth_payload, sourceHandle: source, target: synthesize, targetHandle: target, type: custom}
+      - {id: e5, source: synthesize, sourceHandle: source, target: extract_report, targetHandle: target, type: custom}
+      - {id: e6, source: extract_report, sourceHandle: source, target: end, targetHandle: target, type: custom}
+      nodes:
+      - data:
+          title: Start
+          type: start
+          variables:
+          - {label: Query, max_length: 2000, required: true, type: text-input, variable: query}
+          - {label: Limit, max_length: 4, required: false, type: text-input, variable: limit}
+        id: start
+        position: {x: 0, "y": 200}
+        type: start
+      - data:
+          title: "Search MCP"
+          type: http-request
+          method: POST
+          url: "{{auto.mcp_search_url}}/search"
+          headers: |
+            Content-Type: application/json
+            X-API-Key: {{auto.mcp_search_api_key}}
+          params: ""
+          body:
+            type: raw-text
+            data: '{"query":"{{#start.query#}}","limit":10}'
+          authorization: {type: no-auth}
+          timeout: {connect: 10, read: 60, write: 30}
+        id: search
+        position: {x: 250, "y": 200}
+        type: http-request
+      - data:
+          title: "Extract Results"
+          type: code
+          code_language: python3
+          code: |
+            import json
+            def main(body: str) -> dict:
+                try:
+                    d = json.loads(body)
+                    results = d.get("results", [])
+                    formatted = "\n\n".join(
+                        f"[{i+1}] {r.get('title','')}\n{r.get('url','')}\n{r.get('snippet','')}"
+                        for i, r in enumerate(results)
+                    )
+                    return {"sources": formatted, "count": len(results)}
+                except Exception as e:
+                    return {"sources": f"Error: {e}", "count": 0}
+          variables:
+          - {variable: body, value_selector: ["search", "body"]}
+          outputs:
+            sources: {type: string}
+            count: {type: number}
+        id: extract_results
+        position: {x: 450, "y": 200}
+        type: code
+      - data:
+          title: "Build Synthesis Payload"
+          type: code
+          code_language: python3
+          code: |
+            import json
+            def main(query: str, sources: str) -> dict:
+                payload = {
+                    "model": "qwen3.5-27b-fp8",
+                    "messages": [
+                        {"role": "system", "content": "You are a research analyst. Synthesise the provided sources into a structured report with: 1) Executive Summary 2) Key Findings (with [n] citations) 3) Detailed Analysis 4) Conclusions. Cite sources by number."},
+                        {"role": "user", "content": f"Research query: {query}\n\nSources:\n{sources}\n\nProduce the report."}
+                    ],
+                    "temperature": 0.4,
+                    "max_tokens": 3000
+                }
+                return {"payload": json.dumps(payload)}
+          variables:
+          - {variable: query, value_selector: ["start", "query"]}
+          - {variable: sources, value_selector: ["extract_results", "sources"]}
+          outputs:
+            payload: {type: string}
+        id: build_synth_payload
+        position: {x: 600, "y": 200}
+        type: code
+      - data:
+          title: "Synthesize Report"
+          type: http-request
+          method: POST
+          url: "http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions"
+          headers: "Content-Type: application/json"
+          params: ""
+          body:
+            type: raw-text
+            data: "{{#build_synth_payload.payload#}}"
+          authorization: {type: no-auth}
+          timeout: {connect: 10, read: 180, write: 60}
+        id: synthesize
+        position: {x: 800, "y": 200}
+        type: http-request
+      - data:
+          title: "Extract Report"
+          type: code
+          code_language: python3
+          code: |
+            import json
+            def main(body: str) -> dict:
+                try:
+                    d = json.loads(body)
+                    text = d["choices"][0]["message"]["content"]
+                    if "<think>" in text:
+                        text = text.split("</think>")[-1].strip()
+                    return {"report": text}
+                except Exception as e:
+                    return {"report": f"Error: {e}"}
+          variables:
+          - {variable: body, value_selector: ["synthesize", "body"]}
+          outputs:
+            report: {type: string}
+        id: extract_report
+        position: {x: 1000, "y": 200}
+        type: code
+      - data:
+          title: End
+          type: end
+          outputs:
+          - {value_selector: ["extract_report", "report"], variable: result}
+          - {value_selector: ["extract_results", "sources"], variable: sources}
+        id: end
+        position: {x: 1200, "y": 200}
+        type: end

@@ -346,7 +346,7 @@ export function buildDifyK8sManifests(namespace: string, configMapName: string, 
         replicas: 1,
         selector: { matchLabels: { app: "dify-api" } },
         template: {
-          metadata: { labels: { app: "dify-api", ...labels } },
+          metadata: { labels: { ...labels, app: "dify-api" } },
           spec: {
             containers: [{
               name: "dify-api",
@@ -388,7 +388,7 @@ export function buildDifyK8sManifests(namespace: string, configMapName: string, 
         replicas: 1,
         selector: { matchLabels: { app: "dify-worker" } },
         template: {
-          metadata: { labels: { app: "dify-worker", ...labels } },
+          metadata: { labels: { ...labels, app: "dify-worker" } },
           spec: {
             containers: [{
               name: "dify-worker",
@@ -419,7 +419,7 @@ export function buildDifyK8sManifests(namespace: string, configMapName: string, 
         replicas: 1,
         selector: { matchLabels: { app: "dify-web" } },
         template: {
-          metadata: { labels: { app: "dify-web", ...labels } },
+          metadata: { labels: { ...labels, app: "dify-web" } },
           spec: {
             containers: [{
               name: "dify-web",
@@ -457,7 +457,7 @@ export function buildDifyK8sManifests(namespace: string, configMapName: string, 
         replicas: 1,
         selector: { matchLabels: { app: "dify-sandbox" } },
         template: {
-          metadata: { labels: { app: "dify-sandbox", ...labels } },
+          metadata: { labels: { ...labels, app: "dify-sandbox" } },
           spec: {
             containers: [{
               name: "dify-sandbox",

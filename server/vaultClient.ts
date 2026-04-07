@@ -86,6 +86,34 @@ export async function readAppSecret(
   }
 }
 
+/**
+ * Read a platform-wide secret (not tied to any tenant app).
+ * Path convention: secret/data/platform/<name>
+ * Used for shared service credentials like search MCP API keys, SMTP creds, etc.
+ */
+export async function readPlatformSecret(
+  name: string,
+): Promise<Record<string, string> | null> {
+  const path = `secret/data/platform/${name}`;
+  try {
+    const result = (await vaultRequest("GET", path)) as {
+      data?: { data?: Record<string, string> };
+    } | null;
+    return result?.data?.data || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function writePlatformSecret(
+  name: string,
+  data: Record<string, string>,
+): Promise<void> {
+  const path = `secret/data/platform/${name}`;
+  await vaultRequest("POST", path, { data });
+  log.info("Wrote platform secret to Vault", { path });
+}
+
 export async function createEsoPolicy(slug: string): Promise<void> {
   const policyName = `eso-${slug}`;
   const hcl = `path "secret/data/t6-apps/${slug}/*" {\n  capabilities = ["read"]\n}\npath "secret/data/shared/*" {\n  capabilities = ["read"]\n}`;
@@ -114,6 +142,8 @@ export const vault = {
   writeAppSecret,
   deleteAppSecret,
   readAppSecret,
+  readPlatformSecret,
+  writePlatformSecret,
   createEsoPolicy,
   deleteEsoPolicy,
   isConfigured,

@@ -1,0 +1,119 @@
+metadata:
+  id: vision_inspector
+  label: Vision Inspector
+  description: Take an image URL plus inspection criteria and return a structured inspection report (defects, observations, severity).
+  mode: workflow
+  icon: "👁️"
+  configSchema:
+    - key: inspection_criteria
+      label: Default Inspection Criteria
+      type: textarea
+      required: false
+      placeholder: "Check for: physical damage, color consistency, label alignment, missing components"
+      description: "Used when the runtime caller doesn't provide criteria"
+  postInstall: none
+difyDsl: |
+  app:
+    description: "Vision inspector — image in, structured report out"
+    icon: "\U0001F441"
+    icon_background: "#F3E8FF"
+    mode: workflow
+    name: Vision Inspector
+    use_icon_as_answer_icon: false
+  kind: app
+  version: 0.1.5
+  workflow:
+    conversation_variables: []
+    environment_variables: []
+    features: {}
+    graph:
+      edges:
+      - {id: e1, source: start, sourceHandle: source, target: build_payload, targetHandle: target, type: custom}
+      - {id: e2, source: build_payload, sourceHandle: source, target: vision, targetHandle: target, type: custom}
+      - {id: e3, source: vision, sourceHandle: source, target: extract_report, targetHandle: target, type: custom}
+      - {id: e4, source: extract_report, sourceHandle: source, target: end, targetHandle: target, type: custom}
+      nodes:
+      - data:
+          title: Start
+          type: start
+          variables:
+          - {label: Image URL, max_length: 1000, required: true, type: text-input, variable: image_url}
+          - {label: Criteria (optional), max_length: 2000, required: false, type: paragraph, variable: criteria}
+        id: start
+        position: {x: 0, "y": 200}
+        type: start
+      - data:
+          title: "Build Vision Payload"
+          type: code
+          code_language: python3
+          code: |
+            import json
+            def main(image_url: str, criteria: str) -> dict:
+                default = """{{config.inspection_criteria}}"""
+                effective = criteria.strip() if criteria.strip() else default
+                payload = {
+                    "model": "qwen2.5-vl-7b",
+                    "messages": [
+                        {"role": "system", "content": "You are a vision inspector. Examine the image and produce a JSON report with fields: overall_status (pass|warn|fail), observations (list), defects (list of {description,severity}), recommendations (list). Output ONLY valid JSON."},
+                        {"role": "user", "content": [
+                            {"type": "text", "text": f"Inspection criteria:\n{effective}"},
+                            {"type": "image_url", "image_url": {"url": image_url}}
+                        ]}
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 1500
+                }
+                return {"payload": json.dumps(payload)}
+          variables:
+          - {variable: image_url, value_selector: ["start", "image_url"]}
+          - {variable: criteria, value_selector: ["start", "criteria"]}
+          outputs:
+            payload: {type: string}
+        id: build_payload
+        position: {x: 250, "y": 200}
+        type: code
+      - data:
+          title: "Vision LLM"
+          type: http-request
+          method: POST
+          url: "http://llm-vision.mcp.svc.cluster.local:8006/v1/chat/completions"
+          headers: "Content-Type: application/json"
+          params: ""
+          body:
+            type: raw-text
+            data: "{{#build_payload.payload#}}"
+          authorization: {type: no-auth}
+          timeout: {connect: 10, read: 180, write: 60}
+        id: vision
+        position: {x: 500, "y": 200}
+        type: http-request
+      - data:
+          title: "Extract Report"
+          type: code
+          code_language: python3
+          code: |
+            import json
+            def main(body: str) -> dict:
+                try:
+                    d = json.loads(body)
+                    text = d["choices"][0]["message"]["content"]
+                    if "<think>" in text:
+                        text = text.split("</think>")[-1].strip()
+                    return {"report": text}
+                except Exception as e:
+                    return {"report": f"Error: {e}"}
+          variables:
+          - {variable: body, value_selector: ["vision", "body"]}
+          outputs:
+            report: {type: string}
+        id: extract_report
+        position: {x: 750, "y": 200}
+        type: code
+      - data:
+          title: End
+          type: end
+          outputs:
+          - {value_selector: ["extract_report", "report"], variable: result}
+        id: end
+        position: {x: 1000, "y": 200}
+        type: end
