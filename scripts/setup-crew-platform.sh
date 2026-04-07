@@ -53,14 +53,27 @@ curl -fsS \
   "$VAULT_ADDR/v1/secret/data/platform/search-mcp" > /dev/null
 echo "  ok: secret/data/platform/search-mcp"
 
-echo "→ [2/5] Generating NOTIFY_WEBHOOK_TOKEN and writing to Vault…"
+echo "→ [2/5] Generating NOTIFY_WEBHOOK_TOKEN and merging into bionic-platform Vault config…"
 NOTIFY_TOKEN="$(openssl rand -hex 32)"
+# Merge into the existing per-app KV that ESO already syncs to bionic-platform-secrets.
+# We read the current data first so we don't clobber other keys (database_url etc).
+EXISTING_JSON="$(curl -fsS --header "X-Vault-Token: $VAULT_TOKEN" \
+  "$VAULT_ADDR/v1/secret/data/t6-apps/bionic-platform/config" | jq -c '.data.data // {}')"
+MERGED_JSON="$(echo "$EXISTING_JSON" | jq -c --arg t "$NOTIFY_TOKEN" '. + {notify_webhook_token: $t}')"
+curl -fsS \
+  --header "X-Vault-Token: $VAULT_TOKEN" \
+  --request POST \
+  --data "{\"data\":$MERGED_JSON}" \
+  "$VAULT_ADDR/v1/secret/data/t6-apps/bionic-platform/config" > /dev/null
+echo "  ok: secret/data/t6-apps/bionic-platform/config[notify_webhook_token] (length: ${#NOTIFY_TOKEN})"
+# Also write to the platform/notify path so the runtime fallback in
+# notifyService.getNotifyToken() keeps working if the env var is missing.
 curl -fsS \
   --header "X-Vault-Token: $VAULT_TOKEN" \
   --request POST \
   --data "{\"data\":{\"webhook_token\":\"$NOTIFY_TOKEN\"}}" \
   "$VAULT_ADDR/v1/secret/data/platform/notify" > /dev/null
-echo "  ok: secret/data/platform/notify (token length: ${#NOTIFY_TOKEN})"
+echo "  ok: secret/data/platform/notify (fallback path)"
 
 echo "→ [3/5] Creating Keycloak realm roles Admin + Analyst…"
 KC_TOKEN="$(curl -fsS \
@@ -91,20 +104,35 @@ create_role "Analyst" "Analyst — can install and run crew templates"
 
 echo "→ [4/5] Patching bionic-platform ConfigMap…"
 if command -v kubectl >/dev/null; then
-  kubectl -n bionic-platform patch configmap bionic-platform-config --type merge -p "$(cat <<EOF
+  kubectl -n bionic-platform patch configmap bionic-platform-config --type merge -p "$(cat <<'EOF'
 {
   "data": {
     "MAIL_FROM": "info@bionicaisolutions.com",
     "MAIL_SMTP_HOST": "smtp-relay.gmail.com",
     "MAIL_SMTP_PORT": "587",
     "SEARCH_MCP_BASE_URL": "https://mcp.baisoln.com/search",
-    "BIONIC_INTERNAL_BASE_URL": "http://bionic-platform.bionic-platform.svc.cluster.local",
-    "NOTIFY_WEBHOOK_TOKEN": "$NOTIFY_TOKEN"
+    "BIONIC_INTERNAL_BASE_URL": "http://bionic-platform.bionic-platform.svc.cluster.local"
   }
 }
 EOF
 )"
+  # Strip NOTIFY_WEBHOOK_TOKEN if a previous run wrote it as plaintext
+  kubectl -n bionic-platform patch configmap bionic-platform-config --type=json \
+    -p='[{"op":"remove","path":"/data/NOTIFY_WEBHOOK_TOKEN"}]' 2>/dev/null || true
   echo "  ok: configmap patched"
+
+  # Force ESO to refresh the k8s secret immediately (rather than waiting up to 5m)
+  kubectl -n bionic-platform annotate externalsecret bionic-platform-secrets \
+    force-sync="$(date +%s)" --overwrite >/dev/null 2>&1 || true
+  # Wait briefly for the ESO controller to materialise the new key, then verify
+  for i in 1 2 3 4 5 6; do
+    if kubectl -n bionic-platform get secret bionic-platform-secrets \
+        -o jsonpath='{.data.notify_webhook_token}' 2>/dev/null | grep -q .; then
+      echo "  ok: notify_webhook_token synced into k8s secret"
+      break
+    fi
+    sleep 5
+  done
 
   echo "→ [5/5] Rolling restart of bionic-platform…"
   kubectl -n bionic-platform rollout restart deployment/bionic-platform
@@ -112,8 +140,11 @@ EOF
   echo "  ok: deployment restarted"
 else
   echo "  skipped (kubectl not available)"
-  echo "  Manual step: add MAIL_FROM, MAIL_SMTP_HOST, MAIL_SMTP_PORT, SEARCH_MCP_BASE_URL,"
-  echo "  BIONIC_INTERNAL_BASE_URL, NOTIFY_WEBHOOK_TOKEN=$NOTIFY_TOKEN to bionic-platform-config"
+  echo "  Manual steps:"
+  echo "    1. Apply k8s/configmap.yaml and k8s/deployment.yaml"
+  echo "    2. The notify webhook token is in vault t6-apps/bionic-platform/config[notify_webhook_token]"
+  echo "    3. ESO will sync it into bionic-platform-secrets within 5m, OR force with:"
+  echo "       kubectl -n bionic-platform annotate externalsecret bionic-platform-secrets force-sync=\$(date +%s) --overwrite"
 fi
 
 echo

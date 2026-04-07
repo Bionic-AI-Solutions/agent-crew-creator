@@ -64,3 +64,5 @@ data:
   MAIL_FROM: info@bionicaisolutions.com
   MAIL_SMTP_HOST: smtp-relay.gmail.com
   MAIL_SMTP_PORT: "587"
+  # NOTIFY_WEBHOOK_TOKEN is NOT here — it's a secret loaded from
+  # bionic-platform-secrets (Vault → ESO key: notify_webhook_token)

@@ -96,6 +96,11 @@ spec:
                 secretKeyRef:
                   name: bionic-platform-secrets
                   key: langfuse_db_host
+            - name: NOTIFY_WEBHOOK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bionic-platform-secrets
+                  key: notify_webhook_token
           resources:
             requests:
               cpu: 250m
