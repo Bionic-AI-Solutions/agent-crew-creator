@@ -40,6 +40,14 @@ from observability import flush_langfuse, init_langfuse
 
 logger = logging.getLogger("main-agent")
 
+# Bump livekit.agents logger to DEBUG so we can see speech-task scheduling,
+# turn-completion handlers, and LLM call entry points. This is verbose but
+# critical for diagnosing the "STT fires but LLM never runs" silent failure.
+# Override via LIVEKIT_AGENTS_LOG_LEVEL=INFO if it gets too noisy.
+_lk_log_level = os.environ.get("LIVEKIT_AGENTS_LOG_LEVEL", "DEBUG")
+logging.getLogger("livekit.agents").setLevel(_lk_log_level)
+logging.getLogger("livekit").setLevel(_lk_log_level)
+
 
 # ── Langfuse via OTEL (always on when keys present) ─────────────
 
@@ -658,12 +666,20 @@ async def entrypoint(ctx: JobContext):
     # turn_detection lives on the AgentSession (NOT on Agent.__init__).
     # Setting it on both creates a duplicate detector that gates
     # commit_user_turn and the LLM never fires.
+    #
+    # preemptive_generation=False — the framework's default speculative
+    # LLM call (started during STT, committed at EOU) was hanging
+    # silently against our gpu-ai LLM endpoint. The DEBUG logs showed
+    # 'using preemptive generation, preemptive_lead_time: 0.04s' followed
+    # by total silence — no LLM call ever completed. Disabling it forces
+    # the conventional path: STT → EOU → generate_reply → LLM.
     session = AgentSession(
         stt=create_stt_with_fallback(),
         llm=create_llm_with_fallback(),
         tts=create_tts_with_fallback(),
         vad=silero.VAD.load(),
         turn_detection=MultilingualModel(),
+        preemptive_generation=False,
     )
 
     # ── Metrics logging ──────────────────────────────────────
