@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { eq } from "drizzle-orm";
-import { router, adminProcedure, protectedProcedure } from "./_core/trpc.js";
+import { and, eq, inArray } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
+import { router, adminProcedure, protectedProcedure, appScopedProcedure, assertAppMembership } from "./_core/trpc.js";
 import { createLogger } from "./_core/logger.js";
-import { apps, provisioningJobs } from "../drizzle/platformSchema.js";
+import { apps, appMembers, provisioningJobs } from "../drizzle/platformSchema.js";
 import type { ServiceKey } from "../shared/provisioningTypes.js";
 
 const log = createLogger("AppRouter");
@@ -11,7 +12,22 @@ export const appRouter = router({
   // ── List all apps ─────────────────────────────────────────────
   list: protectedProcedure.query(async ({ ctx }) => {
     if (!ctx.db) return [];
-    const rows = await ctx.db.select().from(apps).orderBy(apps.createdAt);
+    let rows;
+    if (ctx.user!.role === "admin") {
+      rows = await ctx.db.select().from(apps).orderBy(apps.createdAt);
+    } else {
+      const memberships = await ctx.db
+        .select({ appId: appMembers.appId })
+        .from(appMembers)
+        .where(eq(appMembers.userId, ctx.user!.sub));
+      const appIds = memberships.map((m) => m.appId);
+      if (appIds.length === 0) return [];
+      rows = await ctx.db
+        .select()
+        .from(apps)
+        .where(inArray(apps.id, appIds))
+        .orderBy(apps.createdAt);
+    }
     return rows.map((a) => ({
       ...a,
       apiKeyPrefix: a.apiKey ? a.apiKey.slice(0, 8) + "..." : "",
@@ -28,6 +44,16 @@ export const appRouter = router({
       const rows = await ctx.db.select().from(apps).where(eq(apps.id, input.id)).limit(1);
       const app = rows[0];
       if (!app) return null;
+      if (ctx.user!.role !== "admin") {
+        const m = await ctx.db
+          .select({ id: appMembers.id })
+          .from(appMembers)
+          .where(and(eq(appMembers.appId, app.id), eq(appMembers.userId, ctx.user!.sub)))
+          .limit(1);
+        if (m.length === 0) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this app" });
+        }
+      }
       return {
         ...app,
         apiKeyPrefix: app.apiKey ? app.apiKey.slice(0, 8) + "..." : "",
@@ -44,6 +70,16 @@ export const appRouter = router({
       const rows = await ctx.db.select().from(apps).where(eq(apps.slug, input.slug)).limit(1);
       const app = rows[0];
       if (!app) return null;
+      if (ctx.user!.role !== "admin") {
+        const m = await ctx.db
+          .select({ id: appMembers.id })
+          .from(appMembers)
+          .where(and(eq(appMembers.appId, app.id), eq(appMembers.userId, ctx.user!.sub)))
+          .limit(1);
+        if (m.length === 0) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this app" });
+        }
+      }
       return {
         ...app,
         apiKeyPrefix: app.apiKey ? app.apiKey.slice(0, 8) + "..." : "",
@@ -80,6 +116,14 @@ export const appRouter = router({
           provisioningStatus: "pending",
         })
         .returning();
+
+      // Seed creator as owner member (admins still bypass via role check,
+      // but recording the row keeps audit + future "my apps" lists honest).
+      await ctx.db.insert(appMembers).values({
+        appId: app.id,
+        userId: ctx.user!.sub,
+        role: "owner",
+      });
 
       // Create provisioning job
       const { SERVICE_LABELS } = await import("../shared/provisioningTypes.js");
@@ -123,7 +167,7 @@ export const appRouter = router({
     }),
 
   // ── Update app ────────────────────────────────────────────────
-  update: adminProcedure
+  update: protectedProcedure
     .input(
       z.object({
         id: z.number(),
@@ -135,6 +179,7 @@ export const appRouter = router({
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
       const { id, ...updates } = input;
+      await assertAppMembership(ctx, id, { requireOwner: true });
       const [updated] = await ctx.db
         .update(apps)
         .set({ ...updates, updatedAt: new Date() })
@@ -162,7 +207,7 @@ export const appRouter = router({
     }),
 
   // ── Get provisioning job ──────────────────────────────────────
-  getProvisioningJob: protectedProcedure
+  getProvisioningJob: appScopedProcedure
     .input(z.object({ appId: z.number() }))
     .query(async ({ ctx, input }) => {
       if (!ctx.db) return null;
