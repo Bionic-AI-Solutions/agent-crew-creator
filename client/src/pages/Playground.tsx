@@ -9,7 +9,7 @@
  * 3. Render <LiveKitRoom> + <VideoConference> for full audio/video/chat parity.
  */
 import { useMemo, useState } from "react";
-import { LiveKitRoom, VideoConference, useTranscriptions, RoomAudioRenderer } from "@livekit/components-react";
+import { LiveKitRoom, VideoConference, useTranscriptions, useChat, RoomAudioRenderer } from "@livekit/components-react";
 import "@livekit/components-styles";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -39,26 +39,61 @@ interface Bundle {
  * its own renders chat messages but NOT transcription events.
  */
 function TranscriptionPanel() {
+  // Two independent streams need to be rendered side-by-side:
+  //  1. Voice transcriptions (lk.transcription topic) — streaming STT text
+  //     from both the user and the primary voice agent.
+  //  2. Chat messages (lk.chat topic) — discrete messages, including the
+  //     secondary Letta agent's structured output that the voice agent
+  //     publishes via send_text(..., topic='lk.chat') from inside its
+  //     delegate_to_letta tool.
   const transcriptions = useTranscriptions();
+  const { chatMessages } = useChat();
+
   return (
-    <aside className="w-72 border-l bg-card overflow-y-auto p-3 text-sm flex flex-col gap-2">
-      <div className="font-semibold text-xs uppercase text-muted-foreground tracking-wide">
-        Live Transcription
-      </div>
-      {transcriptions.length === 0 ? (
-        <p className="text-muted-foreground text-xs italic">
-          Speak to see transcriptions appear here.
-        </p>
-      ) : (
-        transcriptions.map((t, i) => (
-          <div key={i} className="border-b pb-2 last:border-b-0">
-            <div className="text-[10px] uppercase text-muted-foreground tracking-wide">
-              {t.participantInfo?.identity ?? "unknown"}
-            </div>
-            <div className="text-sm">{t.text}</div>
+    <aside className="w-80 border-l bg-card overflow-y-auto p-3 text-sm flex flex-col gap-4">
+      <section>
+        <div className="font-semibold text-xs uppercase text-muted-foreground tracking-wide mb-2">
+          Live Transcription
+        </div>
+        {transcriptions.length === 0 ? (
+          <p className="text-muted-foreground text-xs italic">
+            Speak to see transcriptions appear here.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {transcriptions.map((t, i) => (
+              <div key={i} className="border-b pb-2 last:border-b-0">
+                <div className="text-[10px] uppercase text-muted-foreground tracking-wide">
+                  {t.participantInfo?.identity ?? "unknown"}
+                </div>
+                <div className="text-sm whitespace-pre-wrap">{t.text}</div>
+              </div>
+            ))}
           </div>
-        ))
-      )}
+        )}
+      </section>
+
+      <section>
+        <div className="font-semibold text-xs uppercase text-muted-foreground tracking-wide mb-2">
+          Secondary Agent Output
+        </div>
+        {chatMessages.length === 0 ? (
+          <p className="text-muted-foreground text-xs italic">
+            Letta-delegated results will appear here.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {chatMessages.map((m, i) => (
+              <div key={i} className="border-b pb-2 last:border-b-0">
+                <div className="text-[10px] uppercase text-muted-foreground tracking-wide">
+                  {m.from?.identity ?? "agent"}
+                </div>
+                <div className="text-sm whitespace-pre-wrap">{m.message}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </aside>
   );
 }

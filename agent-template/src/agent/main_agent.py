@@ -276,7 +276,26 @@ When the result comes back, summarize it in spoken-friendly language.
                     headers=LETTA_HEADERS,
                 )
                 response.raise_for_status()
-                return _parse_letta_response(response.json())
+                result = _parse_letta_response(response.json())
+
+                # Publish the secondary agent's full structured output to the
+                # LiveKit chat data channel (topic 'lk.chat') so it appears in
+                # the Playground chat panel and any chat-listening UI. The
+                # voice agent also gets the result back as the tool return so
+                # it can summarize verbally — but the rich text shows up in
+                # the UI via this side channel.
+                try:
+                    room = context.session.room_io.room if context.session.room_io else None
+                    if room and result:
+                        await room.local_participant.send_text(
+                            result,
+                            topic="lk.chat",
+                        )
+                        logger.info("Published Letta result to lk.chat (%d chars)", len(result))
+                except Exception as e:
+                    logger.warning("Failed to publish Letta result to chat: %s", e)
+
+                return result
 
         except httpx.TimeoutException:
             logger.error("Letta delegation timed out")
