@@ -111,6 +111,128 @@ export async function createServiceAccount(namespace: string): Promise<void> {
 
 // ── LiveKit Key Management ──────────────────────────────────────
 
+const LIVEKIT_VAULT_PATH = "t6-apps/livekit/config";
+const LIVEKIT_ESO_NAME = "livekit-api-keys";
+
+/**
+ * Register a per-app LiveKit api_key/secret with the LiveKit server, the
+ * Vault-of-record way: write the fields to Vault under
+ * `secret/data/t6-apps/livekit/config` (keys: `${slug}_api_key`,
+ * `${slug}_api_secret`), patch the ExternalSecret in the livekit
+ * namespace to add data refs + a template line, force-sync ESO so the
+ * K8s secret is rebuilt, then restart livekit-server to pick up the
+ * new LIVEKIT_KEYS env.
+ *
+ * Replaces the older direct-K8s-write path which got reverted by ESO
+ * within 5 minutes (the source-of-truth drift bug).
+ *
+ * Idempotent: safe to call multiple times for the same slug.
+ */
+export async function registerAppLivekitKey(slug: string, apiKey: string, apiSecret: string): Promise<void> {
+  const safeSlug = slug.replace(/[^a-z0-9]/g, "_");
+  const keyField = `${safeSlug}_api_key`;
+  const secretField = `${safeSlug}_api_secret`;
+
+  // 1. Write to Vault, merging with existing fields.
+  const { readPlatformVaultPath, writePlatformVaultPath } = await import("./vaultClient.js");
+  const existing = (await readPlatformVaultPath(LIVEKIT_VAULT_PATH)) || {};
+  existing[keyField] = apiKey;
+  existing[secretField] = apiSecret;
+  await writePlatformVaultPath(LIVEKIT_VAULT_PATH, existing);
+  log.info("Wrote app LiveKit key to Vault", { slug, keyField });
+
+  // 2. Patch the ExternalSecret to add data refs + template line.
+  await ensureLivekitEsoFields(slug, keyField, secretField);
+
+  // 3. Force-sync ESO.
+  try {
+    const { customApi } = await getK8sApis();
+    await customApi.patchNamespacedCustomObject({
+      group: "external-secrets.io",
+      version: "v1beta1",
+      namespace: K8S_LIVEKIT_NAMESPACE,
+      plural: "externalsecrets",
+      name: LIVEKIT_ESO_NAME,
+      body: { metadata: { annotations: { "force-sync": String(Date.now()) } } },
+      headers: { "Content-Type": "application/merge-patch+json" } as any,
+    });
+  } catch (err) {
+    log.warn("Failed to force-sync ESO (will sync on next interval)", { error: String(err) });
+  }
+}
+
+/**
+ * Patch the livekit-api-keys ExternalSecret to add a (slug_api_key,
+ * slug_api_secret) pair to its data references and template lines.
+ * Idempotent: skips if the slug is already present.
+ */
+async function ensureLivekitEsoFields(slug: string, keyField: string, secretField: string): Promise<void> {
+  const { customApi } = await getK8sApis();
+  let es: any;
+  try {
+    const res = await customApi.getNamespacedCustomObject({
+      group: "external-secrets.io",
+      version: "v1beta1",
+      namespace: K8S_LIVEKIT_NAMESPACE,
+      plural: "externalsecrets",
+      name: LIVEKIT_ESO_NAME,
+    });
+    es = res?.body || res;
+  } catch (err) {
+    log.warn("LiveKit ExternalSecret not found — skipping template patch", { error: String(err) });
+    return;
+  }
+
+  const data: any[] = es.spec?.data || [];
+  const hasKey = data.some((d) => d.secretKey === keyField);
+  if (hasKey) {
+    log.info("ExternalSecret already has fields for app", { slug });
+    return;
+  }
+  data.push(
+    { remoteRef: { key: LIVEKIT_VAULT_PATH, property: keyField }, secretKey: keyField },
+    { remoteRef: { key: LIVEKIT_VAULT_PATH, property: secretField }, secretKey: secretField },
+  );
+
+  // Append a template line. Template format is multiline string under
+  // spec.target.template.data.LIVEKIT_KEYS.
+  const tpl = es.spec?.target?.template?.data?.LIVEKIT_KEYS as string | undefined;
+  if (typeof tpl !== "string") {
+    log.warn("LiveKit ExternalSecret template missing LIVEKIT_KEYS — skipping template append");
+    return;
+  }
+  const newLine = `{{ .${keyField} }}: {{ .${secretField} }}`;
+  if (tpl.includes(newLine)) {
+    log.info("Template already contains slug line", { slug });
+    return;
+  }
+  const newTpl = tpl.replace(/\s*$/, "\n") + newLine + "\n";
+
+  const patch = {
+    spec: {
+      data,
+      target: {
+        template: {
+          data: { LIVEKIT_KEYS: newTpl },
+          engineVersion: "v2",
+          mergePolicy: "Replace",
+        },
+      },
+    },
+  };
+  await customApi.patchNamespacedCustomObject({
+    group: "external-secrets.io",
+    version: "v1beta1",
+    namespace: K8S_LIVEKIT_NAMESPACE,
+    plural: "externalsecrets",
+    name: LIVEKIT_ESO_NAME,
+    body: patch,
+    headers: { "Content-Type": "application/merge-patch+json" } as any,
+  });
+  log.info("Patched livekit-api-keys ExternalSecret", { slug });
+}
+
+/** @deprecated Direct K8s secret write — gets reverted by ESO. Use registerAppLivekitKey. */
 export async function upsertLivekitKey(apiKey: string, apiSecret: string): Promise<void> {
   try {
     const { coreApi } = await getK8sApis();
@@ -446,6 +568,7 @@ export const k8s = {
   createServiceAccount,
   createExternalSecret,
   upsertLivekitKey,
+  registerAppLivekitKey,
   removeLivekitKey,
   restartLivekitServer,
   applyAgentDeployment,

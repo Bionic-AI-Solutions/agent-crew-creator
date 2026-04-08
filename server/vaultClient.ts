@@ -114,6 +114,32 @@ export async function writePlatformSecret(
   log.info("Wrote platform secret to Vault", { path });
 }
 
+/**
+ * Generic Vault KV v2 read at an arbitrary path under `secret/data/`.
+ * Used for shared/cross-app paths like `t6-apps/livekit/config` that
+ * don't fit the per-app `t6-apps/<slug>/config` convention.
+ */
+export async function readPlatformVaultPath(
+  path: string,
+): Promise<Record<string, string> | null> {
+  try {
+    const result = (await vaultRequest("GET", `secret/data/${path}`)) as {
+      data?: { data?: Record<string, string> };
+    } | null;
+    return result?.data?.data || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function writePlatformVaultPath(
+  path: string,
+  data: Record<string, string>,
+): Promise<void> {
+  await vaultRequest("POST", `secret/data/${path}`, { data });
+  log.info("Wrote platform Vault path", { path });
+}
+
 export async function createEsoPolicy(slug: string): Promise<void> {
   const policyName = `eso-${slug}`;
   const hcl = `path "secret/data/t6-apps/${slug}/*" {\n  capabilities = ["read"]\n}\npath "secret/data/shared/*" {\n  capabilities = ["read"]\n}`;

@@ -123,9 +123,13 @@ def _create_primary_stt():
     if provider in ("gpu-ai", "faster-whisper"):
         from livekit.plugins import openai as openai_plugin
         base_url = settings.gpu_ai_mcp_url.replace("/mcp", "")
+        # api_key="not-needed" is required because the openai SDK validates
+        # the api_key in its constructor (raises OpenAIError if unset).
+        # Internal cluster GPU has no auth — but the SDK doesn't know that.
         return openai_plugin.STT(
             model=settings.stt_model or "whisper-1",
             base_url=f"{base_url}/v1",
+            api_key="not-needed",
         )
 
     if provider == "deepgram":
@@ -192,10 +196,12 @@ def _create_primary_tts():
     if provider == "gpu-ai":
         from livekit.plugins import openai as openai_plugin
         base_url = settings.gpu_ai_mcp_url.replace("/mcp", "")
+        # See _create_primary_stt for why api_key="not-needed" is required.
         return openai_plugin.TTS(
             model="tts-1",
             voice=settings.tts_voice or "alloy",
             base_url=f"{base_url}/v1",
+            api_key="not-needed",
         )
 
     if provider == "cartesia":

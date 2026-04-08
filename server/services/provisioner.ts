@@ -56,7 +56,10 @@ const PROVISION_STEPS: Record<ServiceKey, StepHandler> = {
       await db.update(apps).set({ apiKey, apiSecret, updatedAt: new Date() }).where(eq(apps.id, ctx.appId));
     }
 
-    await k8s.upsertLivekitKey(apiKey, apiSecret);
+    // Vault-of-record path: writes to Vault, patches the LiveKit
+    // ExternalSecret, force-syncs ESO. Replaces the old direct K8s secret
+    // write which got reverted by ESO within 5 minutes.
+    await k8s.registerAppLivekitKey(ctx.slug, apiKey, apiSecret);
     await k8s.restartLivekitServer();
 
     const internalLivekitUrl = process.env.LIVEKIT_INTERNAL_URL || "ws://livekit-server.livekit.svc.cluster.local:7880";
