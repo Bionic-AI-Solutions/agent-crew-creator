@@ -397,6 +397,9 @@ export async function applyAgentDeployment(
   image: string,
   configMapName: string,
   secretName: string,
+  /** Extra plain env vars (no secret refs). Used for per-agent provider
+   *  API keys read from Vault at deploy time — see agentDeployer.ts. */
+  extraEnv: Array<{ name: string; value: string }> = [],
 ): Promise<void> {
   const { appsApi } = await getK8sApis();
   const deploymentName = `agent-${agentName}`;
@@ -457,6 +460,8 @@ export async function applyAgentDeployment(
               { name: "HF_HOME", value: "/models/hf" },
               { name: "TRANSFORMERS_CACHE", value: "/models/hf" },
               { name: "XDG_CACHE_HOME", value: "/models/cache" },
+              // Per-agent provider API keys passed in from agentDeployer.
+              ...extraEnv,
             ],
             volumeMounts: [
               { name: "model-cache", mountPath: "/models" },

@@ -23,6 +23,32 @@ import type { App, AgentConfig } from "../../drizzle/platformSchema.js";
 
 const log = createLogger("AgentDeployer");
 
+/**
+ * Map an llmProvider value (lowercase) to the conventional SDK env var.
+ * Used to inject the per-agent API key from Vault into the worker pod.
+ * gpu-ai is intentionally excluded — internal cluster GPU has no auth.
+ */
+function providerEnvName(provider: string): string | null {
+  switch (provider) {
+    case "openai":
+      return "OPENAI_API_KEY";
+    case "openrouter":
+      return "OPENROUTER_API_KEY";
+    case "anthropic":
+      return "ANTHROPIC_API_KEY";
+    case "deepgram":
+      return "DEEPGRAM_API_KEY";
+    case "cartesia":
+      return "CARTESIA_API_KEY";
+    case "elevenlabs":
+      return "ELEVENLABS_API_KEY";
+    case "groq":
+      return "GROQ_API_KEY";
+    default:
+      return null;
+  }
+}
+
 const AGENT_IMAGE = process.env.AGENT_TEMPLATE_IMAGE || "docker4zerocool/bionic-agent:latest";
 // All internal cluster URLs — agents run inside the cluster, no need for external hops
 const LETTA_MCP_URL = process.env.LETTA_INTERNAL_URL
@@ -146,8 +172,34 @@ export async function deployAgent(
   await k8s.ensureConfigMap(namespace, configMapName, configData);
   await k8s.createExternalSecret(namespace);
 
-  // 5. Apply Deployment — just agent-{name} since namespace provides isolation
-  await k8s.applyAgentDeployment(namespace, agentName, image, configMapName, secretName);
+  // 5. Resolve per-agent provider API key from Vault.
+  // setProviderKey writes keys to Vault as `agent_${id}_${provider}_api_key`,
+  // but the deployer's secretRef path only knows about the per-app
+  // openai_api_key. Look up the right one for this agent's llmProvider
+  // and inject it as the SDK-standard {PROVIDER}_API_KEY env var.
+  const extraEnv: Array<{ name: string; value: string }> = [];
+  try {
+    const { readAppSecret } = await import("../vaultClient.js");
+    const vault = (await readAppSecret(app.slug)) || {};
+    const provider = (agent.llmProvider || "").toLowerCase();
+    const perAgentKey = vault[`agent_${agent.id}_${provider}_api_key`];
+    const envName = providerEnvName(provider);
+    if (perAgentKey && envName) {
+      extraEnv.push({ name: envName, value: perAgentKey });
+      log.info("Injected per-agent provider key", { agent: agent.id, provider, envName });
+    } else if (provider && provider !== "gpu-ai" && !perAgentKey) {
+      log.warn("No per-agent provider key found in Vault", {
+        agent: agent.id,
+        provider,
+        expectedKey: `agent_${agent.id}_${provider}_api_key`,
+      });
+    }
+  } catch (err) {
+    log.warn("Failed to resolve per-agent provider key (non-fatal)", { error: String(err) });
+  }
+
+  // 6. Apply Deployment — just agent-{name} since namespace provides isolation
+  await k8s.applyAgentDeployment(namespace, agentName, image, configMapName, secretName, extraEnv);
 
   // 6. Update status to deploying
   await db

@@ -68,6 +68,35 @@ def _create_primary_llm():
             api_key=settings.openai_api_key,
         )
 
+    if provider == "openrouter":
+        # OpenRouter is OpenAI-compatible. Key is injected as
+        # OPENROUTER_API_KEY env var by agentDeployer.providerEnvName.
+        import os
+        api_key = os.environ.get("OPENROUTER_API_KEY", "")
+        if not api_key:
+            raise ValueError("OpenRouter API key not configured (expected OPENROUTER_API_KEY env)")
+        return openai_plugin.LLM(
+            model=settings.llm_model or "openai/gpt-4o-mini",
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+            timeout=httpx.Timeout(connect=15.0, read=60.0, write=15.0, pool=15.0),
+        )
+
+    if provider == "anthropic":
+        # Anthropic via the dedicated livekit plugin (not openai-compat).
+        try:
+            from livekit.plugins import anthropic as anthropic_plugin
+        except ImportError as e:
+            raise ValueError("livekit-plugins-anthropic not installed") from e
+        import os
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            raise ValueError("Anthropic API key not configured (expected ANTHROPIC_API_KEY env)")
+        return anthropic_plugin.LLM(
+            model=settings.llm_model or "claude-3-5-sonnet-20241022",
+            api_key=api_key,
+        )
+
     if provider == "custom":
         if not settings.custom_llm_base_url:
             raise ValueError("Custom LLM base URL not configured")
