@@ -198,12 +198,17 @@ def _create_primary_tts():
     if provider == "gpu-ai":
         from livekit.plugins import openai as openai_plugin
         base_url = settings.gpu_ai_llm_url.rstrip("/")
+        # mcp-api-server returns WAV (RIFF) regardless of model — the
+        # openai SDK defaults to MP3, which makes PyAV crash with
+        # "no audio frames were pushed". Force the response_format so
+        # the decoder pipeline interprets the bytes correctly.
         # See _create_primary_stt for why api_key="not-needed" is required.
         return openai_plugin.TTS(
             model="tts-1",
             voice=settings.tts_voice or "alloy",
             base_url=f"{base_url}/v1",
             api_key="not-needed",
+            response_format="wav",
         )
 
     if provider == "cartesia":

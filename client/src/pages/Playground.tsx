@@ -9,7 +9,7 @@
  * 3. Render <LiveKitRoom> + <VideoConference> for full audio/video/chat parity.
  */
 import { useMemo, useState } from "react";
-import { LiveKitRoom, VideoConference } from "@livekit/components-react";
+import { LiveKitRoom, VideoConference, useTranscriptions, RoomAudioRenderer } from "@livekit/components-react";
 import "@livekit/components-styles";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,6 +26,41 @@ interface Bundle {
   displayName: string;
   expiresAt: string;
   agent: { id: number; name: string; visionEnabled: boolean; avatarEnabled: boolean };
+}
+
+/**
+ * Live transcription side panel — uses the @livekit/components-react
+ * useTranscriptions() hook to surface STT events from the agent worker.
+ *
+ * Server-side STT runs on the agent worker and publishes transcription
+ * events as text streams over the room (one stream per utterance, with
+ * incremental updates). The user-side UI must subscribe to these via
+ * useTranscriptions() to display them — the VideoConference prefab on
+ * its own renders chat messages but NOT transcription events.
+ */
+function TranscriptionPanel() {
+  const transcriptions = useTranscriptions();
+  return (
+    <aside className="w-72 border-l bg-card overflow-y-auto p-3 text-sm flex flex-col gap-2">
+      <div className="font-semibold text-xs uppercase text-muted-foreground tracking-wide">
+        Live Transcription
+      </div>
+      {transcriptions.length === 0 ? (
+        <p className="text-muted-foreground text-xs italic">
+          Speak to see transcriptions appear here.
+        </p>
+      ) : (
+        transcriptions.map((t, i) => (
+          <div key={i} className="border-b pb-2 last:border-b-0">
+            <div className="text-[10px] uppercase text-muted-foreground tracking-wide">
+              {t.participantInfo?.identity ?? "unknown"}
+            </div>
+            <div className="text-sm">{t.text}</div>
+          </div>
+        ))
+      )}
+    </aside>
+  );
 }
 
 export default function Playground() {
@@ -97,7 +132,16 @@ export default function Playground() {
             style={{ height: "100%" }}
             onDisconnected={handleDisconnect}
           >
-            <VideoConference />
+            {/* RoomAudioRenderer is required to actually play remote audio
+                tracks (the agent's TTS output). VideoConference includes it
+                internally, but mounting it explicitly is defensive. */}
+            <RoomAudioRenderer />
+            <div className="flex h-full">
+              <div className="flex-1 min-w-0">
+                <VideoConference />
+              </div>
+              <TranscriptionPanel />
+            </div>
           </LiveKitRoom>
         </div>
       </div>
