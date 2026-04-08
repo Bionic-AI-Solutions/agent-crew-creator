@@ -50,7 +50,7 @@ def _create_primary_llm():
 
     if provider == "gpu-ai":
         # Internal cluster GPU — no auth required within cluster
-        base_url = settings.gpu_ai_mcp_url.replace("/mcp", "") + "/v1"
+        base_url = settings.gpu_ai_mcp_url.removesuffix("/mcp") + "/v1"
         return openai_plugin.LLM(
             model=settings.llm_model or "gemma-4-e4b",
             base_url=base_url,
@@ -122,7 +122,7 @@ def _create_primary_stt():
 
     if provider in ("gpu-ai", "faster-whisper"):
         from livekit.plugins import openai as openai_plugin
-        base_url = settings.gpu_ai_mcp_url.replace("/mcp", "")
+        base_url = settings.gpu_ai_mcp_url.removesuffix("/mcp")
         # api_key="not-needed" is required because the openai SDK validates
         # the api_key in its constructor (raises OpenAIError if unset).
         # Internal cluster GPU has no auth — but the SDK doesn't know that.
@@ -195,7 +195,7 @@ def _create_primary_tts():
 
     if provider == "gpu-ai":
         from livekit.plugins import openai as openai_plugin
-        base_url = settings.gpu_ai_mcp_url.replace("/mcp", "")
+        base_url = settings.gpu_ai_mcp_url.removesuffix("/mcp")
         # See _create_primary_stt for why api_key="not-needed" is required.
         return openai_plugin.TTS(
             model="tts-1",

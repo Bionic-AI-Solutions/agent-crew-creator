@@ -11,6 +11,18 @@ const log = createLogger("K8s");
 const K8S_LIVEKIT_NAMESPACE = process.env.K8S_LIVEKIT_NAMESPACE || "livekit";
 const LIVEKIT_KEYS_SECRET = process.env.LIVEKIT_KEYS_SECRET_NAME || "livekit-api-keys";
 
+// Cluster-wide shared model cache for every agent pod across every app
+// namespace. Mounted as an `nfs` volume directly in the Pod spec (not via
+// PVC) because PVCs are namespace-scoped and a single PV can only bind to
+// one PVC at a time — the only way to share one filesystem path across
+// every namespace is to mount NFS straight into the Pod.
+//
+// All agent pods in all apps point at the same NFS path, so HuggingFace
+// model downloads, livekit plugin assets, etc. are downloaded once and
+// reused everywhere. The Dockerfile still pre-bakes models for cold-start.
+const MODEL_CACHE_NFS_SERVER = process.env.MODEL_CACHE_NFS_SERVER || "192.168.0.109";
+const MODEL_CACHE_NFS_PATH = process.env.MODEL_CACHE_NFS_PATH || "/volume1/docker/bionic-shared/agent-models";
+
 /** Check if a K8s client error is a 404 Not Found */
 function is404(err: any): boolean {
   return err?.code === 404 || err?.statusCode === 404 || err?.body?.code === 404 ||
@@ -425,9 +437,26 @@ export async function applyAgentDeployment(
               // MinIO
               { name: "MINIO_ACCESS_KEY", valueFrom: { secretKeyRef: { name: secretName, key: "minio_access_key", optional: true } } },
               { name: "MINIO_SECRET_KEY", valueFrom: { secretKeyRef: { name: secretName, key: "minio_secret_key", optional: true } } },
+              // Point HuggingFace + livekit-agents caches at the shared PVC
+              { name: "HF_HOME", value: "/models/hf" },
+              { name: "TRANSFORMERS_CACHE", value: "/models/hf" },
+              { name: "XDG_CACHE_HOME", value: "/models/cache" },
+            ],
+            volumeMounts: [
+              { name: "model-cache", mountPath: "/models" },
             ],
             resources: { requests: { cpu: "250m", memory: "512Mi" }, limits: { cpu: "1000m", memory: "2Gi" } },
           }],
+          volumes: [
+            // Cluster-wide shared model cache via direct NFS mount.
+            // Same path on the NFS server is mounted into every agent pod
+            // in every app namespace, so HF models / livekit assets are
+            // downloaded once and shared across the entire platform.
+            {
+              name: "model-cache",
+              nfs: { server: MODEL_CACHE_NFS_SERVER, path: MODEL_CACHE_NFS_PATH },
+            },
+          ],
         },
       },
     },

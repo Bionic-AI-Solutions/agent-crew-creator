@@ -88,8 +88,11 @@ export const agentConfigs = pgTable(
     // LiveKit voice pipeline
     sttProvider: varchar("stt_provider", { length: 50 }).default("gpu-ai").notNull(),
     sttModel: varchar("stt_model", { length: 100 }),
-    llmProvider: varchar("llm_provider", { length: 50 }).default("letta").notNull(),
-    llmModel: varchar("llm_model", { length: 200 }).default("gpt-4o-mini"),
+    // PRIMARY voice LLM (fast, low-latency). The Letta brain is secondary
+    // and accessed via tools (run_crew, recall_memory) — its model lives
+    // in lettaLlmModel below. Default to gpu-ai gemma for sub-second turns.
+    llmProvider: varchar("llm_provider", { length: 50 }).default("gpu-ai").notNull(),
+    llmModel: varchar("llm_model", { length: 200 }).default("gemma-4-e4b"),
     ttsProvider: varchar("tts_provider", { length: 50 }).default("gpu-ai").notNull(),
     ttsVoice: varchar("tts_voice", { length: 200 }).default("Sudhir-IndexTTS2"),
     systemPrompt: text("system_prompt"),
