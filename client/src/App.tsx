@@ -7,6 +7,7 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Apps from "./pages/Apps";
 import AgentBuilder from "./pages/AgentBuilder";
+import Playground from "./pages/Playground";
 import Settings from "./pages/Settings";
 
 function AuthenticatedApp() {
@@ -18,6 +19,7 @@ function AuthenticatedApp() {
           <Route path="/apps" component={Apps} />
           <Route path="/apps/:slug" component={Apps} />
           <Route path="/agents" component={AgentBuilder} />
+          <Route path="/playground" component={Playground} />
           <Route path="/settings" component={Settings} />
           <Route>
             <Redirect to="/" />
