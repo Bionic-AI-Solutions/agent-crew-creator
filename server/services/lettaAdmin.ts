@@ -121,6 +121,22 @@ export async function deleteAgent(agentId: string): Promise<void> {
   log.info("Deleted Letta agent", { agentId });
 }
 
+/**
+ * Update an existing Letta agent's system prompt + (optionally) model.
+ * Used when the platform-side prompt is changed in agent_configs and the
+ * existing Letta agent needs to be re-aligned without recreating it.
+ *
+ * Letta exposes this as PATCH /v1/agents/{id}/ — fields not in the payload
+ * are left unchanged.
+ */
+export async function updateAgent(
+  agentId: string,
+  updates: { system?: string; model?: string; name?: string },
+): Promise<void> {
+  await lettaRequest("PATCH", `/v1/agents/${agentId}/`, updates);
+  log.info("Updated Letta agent", { agentId, fields: Object.keys(updates) });
+}
+
 // ── Memory / Passages ───────────────────────────────────────────
 
 export async function createPassage(agentId: string, text: string): Promise<string> {
@@ -453,6 +469,7 @@ export const lettaAdmin = {
   createTenant,
   deleteTenant,
   createAgent,
+  updateAgent,
   getAgent,
   getAgentByName,
   deleteAgent,

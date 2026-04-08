@@ -28,7 +28,7 @@ from livekit.agents import (
     Agent, AgentSession, AutoSubscribe, JobContext, WorkerOptions,
     cli, function_tool, metrics, room_io, RunContext,
 )
-from livekit.agents.voice import MetricsCollectedEvent
+from livekit.agents.voice import MetricsCollectedEvent, ConversationItemAddedEvent
 from livekit.plugins import silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
@@ -280,10 +280,11 @@ When the result comes back, summarize it in spoken-friendly language.
 
                 # Publish the secondary agent's full structured output to the
                 # LiveKit chat data channel (topic 'lk.chat') so it appears in
-                # the Playground chat panel and any chat-listening UI. The
-                # voice agent also gets the result back as the tool return so
-                # it can summarize verbally — but the rich text shows up in
-                # the UI via this side channel.
+                # the Playground chat panel as a "slide" / supporting material.
+                # The voice agent gets back ONLY a short acknowledgement so it
+                # gives a brief spoken intro ("Here's a summary on screen…")
+                # rather than reading the full result aloud over TTS.
+                published = False
                 try:
                     room = context.session.room_io.room if context.session.room_io else None
                     if room and result:
@@ -291,11 +292,20 @@ When the result comes back, summarize it in spoken-friendly language.
                             result,
                             topic="lk.chat",
                         )
+                        published = True
                         logger.info("Published Letta result to lk.chat (%d chars)", len(result))
                 except Exception as e:
                     logger.warning("Failed to publish Letta result to chat: %s", e)
 
-                return result
+                # IMPORTANT: do NOT return the full Letta text to the voice
+                # LLM. Returning long content makes the LLM read it back over
+                # TTS, duplicating what's already in chat and dragging the
+                # spoken latency. A short acknowledgement is enough — the
+                # primary prompt instructs the model to give a one-line
+                # verbal cue ("I've put a summary on screen for you").
+                if published:
+                    return "Posted to chat."
+                return result[:280] if result else "Done."
 
         except httpx.TimeoutException:
             logger.error("Letta delegation timed out")
@@ -306,6 +316,70 @@ When the result comes back, summarize it in spoken-friendly language.
         except Exception as e:
             logger.error("Letta delegation failed: %s", e)
             return "Failed to reach secondary agent. Please try again shortly."
+
+
+async def forward_to_assistant_async(
+    role: str,
+    text: str,
+    room,
+) -> None:
+    """Stream a turn from the live conversation to the secondary (Letta) agent
+    so it can proactively prepare supporting visual material — slides,
+    summaries, illustrations, crew results — and publish them straight to the
+    LiveKit chat data channel (`lk.chat`) for the user to see.
+
+    This is the "professor + assistant" wiring: the primary voice agent owns
+    the spoken channel, the secondary brain owns the visual channel. Both run
+    in parallel — the assistant doesn't wait for an explicit `delegate_to_letta`
+    tool call. Every user utterance and every primary-agent reply is forwarded
+    here, the assistant decides whether to react, and any substantive output
+    is pushed to chat as a "slide".
+
+    Notes for callers:
+    - Fire-and-forget — never block the primary voice loop on Letta latency.
+    - Only "assistant_message" content from Letta is treated as a slide;
+      reasoning / tool-call internals are filtered by `_parse_letta_response`.
+    - Empty / trivial Letta replies are dropped (no chat noise).
+    - The user-side appears under participant identity = the agent worker;
+      the chat panel groups them under "Secondary Agent Output".
+    """
+    if not LETTA_AGENT_ID or not text or not text.strip():
+        return
+    if not room:
+        return
+    try:
+        # Frame the inbound turn as system context so Letta knows who said
+        # what. Letta is configured (via DEFAULT_LETTA_PROMPT in
+        # server/agentRouter.ts) to react proactively to "the professor said"
+        # and "the user said" lines without waiting for an explicit ask.
+        speaker = "Professor" if role == "assistant" else "Student"
+        framed = f"[Live transcript — {speaker}]: {text.strip()}"
+
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
+        ) as client:
+            response = await client.post(
+                f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages/",
+                json={"messages": [{"role": "user", "content": framed}]},
+                headers=LETTA_HEADERS,
+            )
+            response.raise_for_status()
+            result = _parse_letta_response(response.json())
+
+        if not result or len(result.strip()) < 10:
+            # No substantive output — assistant chose not to react.
+            return
+
+        await room.local_participant.send_text(result, topic="lk.chat")
+        logger.info(
+            "Proactive Letta slide published (role=%s, in=%d, out=%d)",
+            role, len(text), len(result),
+        )
+    except httpx.TimeoutException:
+        logger.warning("Proactive Letta forward timed out (role=%s)", role)
+    except Exception as e:
+        # Never break the voice loop on a Letta error.
+        logger.warning("Proactive Letta forward failed: %s", e)
 
 
 def _parse_letta_response(data: dict | list) -> str:
@@ -567,6 +641,30 @@ async def entrypoint(ctx: JobContext):
     @session.on("metrics_collected")
     def _on_metrics(ev: MetricsCollectedEvent):
         metrics.log_metrics(ev.metrics)
+
+    # ── Proactive secondary-agent forwarding ─────────────────
+    # Every finalized conversation item (user STT + primary agent reply) is
+    # fire-and-forget streamed to Letta. Letta runs in parallel with the
+    # voice loop and decides whether to publish supporting visual material
+    # to the chat data channel. This is what makes the assistant proactive
+    # rather than only reacting to explicit `delegate_to_letta` tool calls.
+    @session.on("conversation_item_added")
+    def _on_conversation_item(ev: ConversationItemAddedEvent):
+        try:
+            msg = ev.item
+            role = getattr(msg, "role", None)
+            text = getattr(msg, "text_content", None)
+            if not role or not text:
+                return
+            if role not in ("user", "assistant"):
+                return
+            # Schedule the forward without blocking — voice loop continues.
+            asyncio.create_task(
+                forward_to_assistant_async(role, text, ctx.room),
+                name=f"letta-forward-{role}",
+            )
+        except Exception as e:
+            logger.warning("Failed to schedule proactive forward: %s", e)
 
     # ── Auto-subscribe mode ──────────────────────────────────
     need_video = (
