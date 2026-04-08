@@ -812,7 +812,16 @@ export const agentRouter = router({
       return (query as any).orderBy(desc(crewExecutions.startedAt)).limit(input.limit);
     }),
 
-  /** Get the Dify embed URL for a tenant's crew editor. */
+  /** Get the Dify embed URL for a tenant's crew editor.
+   *
+   *  SECURITY: Previously this also returned a Dify admin session token
+   *  obtained by logging in as the platform-wide Dify admin user. That
+   *  token grants full Dify console access across ALL tenants/apps —
+   *  any single-app member could pivot to Dify admin via the token.
+   *  The client never actually consumed it (it just opens /dify-login
+   *  in a new tab), so it has been removed entirely. If we ever need
+   *  per-app SSO into Dify it must be a per-user, per-app scoped token,
+   *  not the global admin credential. */
   getDifyEmbedUrl: appScopedProcedure
     .input(z.object({ appId: z.number() }))
     .query(async ({ ctx, input }) => {
@@ -821,32 +830,12 @@ export const agentRouter = router({
       if (!app) return null;
 
       const DIFY_NS = "bionic-platform";
-      const difyApiUrl = `http://dify-api.${DIFY_NS}.svc.cluster.local:5001`;
       const externalDifyUrl = process.env.DIFY_EXTERNAL_BASE_URL || "https://dify.baisoln.com";
-
-      // Get a Dify session token so the user doesn't have to login separately
-      let difyToken: string | null = null;
-      try {
-        const difyEmail = process.env.DIFY_ADMIN_EMAIL || "admin@bionic.local";
-        const difyPassword = process.env.DIFY_ADMIN_PASSWORD || "B10n1cD1fy!2026";
-        const loginRes = await fetch(`${difyApiUrl}/console/api/login`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: difyEmail, password: difyPassword }),
-        });
-        if (loginRes.ok) {
-          const loginData = await loginRes.json() as any;
-          difyToken = loginData?.data?.access_token || null;
-        }
-      } catch {
-        // Dify may not be available — token will be null, user logs in manually
-      }
 
       return {
         internalUrl: `http://dify-web.${DIFY_NS}.svc.cluster.local:3000`,
         externalUrl: externalDifyUrl,
         slug: app.slug,
-        difyToken,
       };
     }),
 
@@ -996,6 +985,18 @@ export const agentRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
+
+      // SECURITY: bind input.userId to the caller's Keycloak sub. Without
+      // this, any same-app member could pass another user's sub and create
+      // a Letta block under their identity (horizontal privilege escalation
+      // within the app). Admins bypass — they may legitimately need to
+      // pre-create blocks for other users.
+      if (ctx.user!.role !== "admin" && input.userId !== ctx.user!.sub) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "userId must match the caller's sub (or admin role required)",
+        });
+      }
 
       // Check if block already exists
       const [existing] = await ctx.db
