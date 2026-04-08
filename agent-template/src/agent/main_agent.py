@@ -264,15 +264,26 @@ When the result comes back, summarize it in spoken-friendly language.
         if not LETTA_AGENT_ID:
             return "Secondary agent not configured. Please set LETTA_AGENT_ID."
 
-        logger.info("Delegating to Letta: %s...", task[:100])
+        logger.info("[chain] professor → assistant (explicit assignment): %s",
+                    task[:200])
 
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=15.0, read=300.0, write=15.0, pool=15.0),
             ) as client:
+                # Frame as an explicit assignment so Letta understands this
+                # is "the professor has asked you to do X and post the
+                # result to the screen" — distinct from the passive
+                # [Live transcript ...] forwards that the assistant sees
+                # for every spoken turn.
+                framed_task = (
+                    "[Explicit assignment from the professor — "
+                    "do this and post the result to the screen]:\n"
+                    + task
+                )
                 response = await client.post(
                     f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages/",
-                    json={"messages": [{"role": "user", "content": task}]},
+                    json={"messages": [{"role": "user", "content": framed_task}]},
                     headers=LETTA_HEADERS,
                 )
                 response.raise_for_status()
@@ -293,7 +304,10 @@ When the result comes back, summarize it in spoken-friendly language.
                             topic="lk.chat",
                         )
                         published = True
-                        logger.info("Published Letta result to lk.chat (%d chars)", len(result))
+                        logger.info(
+                            "[chain] assistant → screen (explicit, %d chars)",
+                            len(result),
+                        )
                 except Exception as e:
                     logger.warning("Failed to publish Letta result to chat: %s", e)
 
@@ -368,12 +382,14 @@ async def forward_to_assistant_async(
 
         if not result or len(result.strip()) < 10:
             # No substantive output — assistant chose not to react.
+            logger.info("[chain] assistant chose silence (in=%d, out=%d)",
+                        len(text), len(result or ""))
             return
 
         await room.local_participant.send_text(result, topic="lk.chat")
         logger.info(
-            "Proactive Letta slide published (role=%s, in=%d, out=%d)",
-            role, len(text), len(result),
+            "[chain] assistant → screen (proactive, in=%d, out=%d)",
+            len(text), len(result),
         )
     except httpx.TimeoutException:
         logger.warning("Proactive Letta forward timed out (role=%s)", role)
@@ -642,26 +658,40 @@ async def entrypoint(ctx: JobContext):
     def _on_metrics(ev: MetricsCollectedEvent):
         metrics.log_metrics(ev.metrics)
 
-    # ── Proactive secondary-agent forwarding ─────────────────
-    # Every finalized conversation item (user STT + primary agent reply) is
-    # fire-and-forget streamed to Letta. Letta runs in parallel with the
-    # voice loop and decides whether to publish supporting visual material
-    # to the chat data channel. This is what makes the assistant proactive
-    # rather than only reacting to explicit `delegate_to_letta` tool calls.
+    # ── Strict chain-of-command: Professor → Assistant ───────
+    #
+    # The architecture is: the primary voice agent is a Professor whose
+    # ONLY job is to listen, decide, and speak. The Letta secondary agent
+    # is the Assistant — the only entity that does knowledge work and the
+    # only entity allowed to publish to the screen (chat data channel).
+    #
+    # We enforce this by forwarding ONLY the professor's spoken turn to
+    # Letta (not the raw user STT). That way:
+    #   - Letta reacts to what the professor decided to teach, not raw input
+    #   - The chain of command is unambiguous: user → professor → letta → chat
+    #   - Letta is never racing the professor on user turns
+    #
+    # Forwarded as a fire-and-forget background task so the voice loop
+    # never blocks on Letta latency.
     @session.on("conversation_item_added")
     def _on_conversation_item(ev: ConversationItemAddedEvent):
         try:
             msg = ev.item
             role = getattr(msg, "role", None)
             text = getattr(msg, "text_content", None)
-            if not role or not text:
+            if not text or not text.strip():
                 return
-            if role not in ("user", "assistant"):
+            if role != "assistant":
+                # Ignore user STT and tool messages — only the professor's
+                # spoken turn drives the assistant.
                 return
-            # Schedule the forward without blocking — voice loop continues.
+            logger.info(
+                "[chain] professor spoke → forwarding to assistant (chars=%d)",
+                len(text),
+            )
             asyncio.create_task(
-                forward_to_assistant_async(role, text, ctx.room),
-                name=f"letta-forward-{role}",
+                forward_to_assistant_async("assistant", text, ctx.room),
+                name="letta-forward-professor",
             )
         except Exception as e:
             logger.warning("Failed to schedule proactive forward: %s", e)
