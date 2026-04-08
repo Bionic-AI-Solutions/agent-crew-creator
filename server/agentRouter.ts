@@ -410,7 +410,7 @@ export const agentRouter = router({
       z.object({
         agentId: z.number(),
         provider: z.string(),
-        apiKey: z.string(),
+        apiKey: z.string().min(8),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -425,14 +425,67 @@ export const agentRouter = router({
       const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
       if (!app) throw new Error("App not found");
 
+      // Validate the key at save time by hitting the provider's /v1/models
+      // endpoint. This both confirms the key is correct AND returns the list
+      // of models the user can pick from. Throws TRPCError on auth failure
+      // so the UI shows a meaningful error before persisting to Vault.
+      const { listModelsForProvider } = await import("./services/llmProviders.js");
+      const models = await listModelsForProvider(input.provider, input.apiKey);
+
       const { writeAppSecret, readAppSecret } = await import("./vaultClient.js");
       const existing = (await readAppSecret(app.slug)) || {};
       const key = `agent_${agent.id}_${input.provider}_api_key`;
       existing[key] = input.apiKey;
       await writeAppSecret(app.slug, existing);
 
-      log.info("Provider key written to Vault", { slug: app.slug, provider: input.provider });
-      return { success: true };
+      log.info("Provider key validated and written to Vault", {
+        slug: app.slug,
+        provider: input.provider,
+        modelCount: models.length,
+      });
+      return { success: true, modelCount: models.length, models };
+    }),
+
+  /**
+   * List available models for a provider — pulls live from the provider's
+   * /v1/models endpoint using the saved key. Used by the Agent Builder
+   * model dropdown so users always see what's actually available.
+   *
+   * If apiKey is supplied directly, uses it (validation flow before save).
+   * Otherwise reads the saved per-agent key from Vault.
+   */
+  listProviderModels: protectedProcedure
+    .input(
+      z.object({
+        agentId: z.number(),
+        provider: z.string(),
+        apiKey: z.string().optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      if (!ctx.db) return { models: [] };
+      const [agent] = await ctx.db
+        .select()
+        .from(agentConfigs)
+        .where(eq(agentConfigs.id, input.agentId))
+        .limit(1);
+      if (!agent) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      await assertAppMembership(ctx, agent.appId);
+
+      let apiKey = input.apiKey;
+      if (!apiKey) {
+        const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
+        if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "App not found" });
+        const { readAppSecret } = await import("./vaultClient.js");
+        const vault = (await readAppSecret(app.slug)) || {};
+        apiKey = vault[`agent_${agent.id}_${input.provider}_api_key`];
+      }
+      if (!apiKey) {
+        return { models: [], hasKey: false as const };
+      }
+      const { listModelsForProvider } = await import("./services/llmProviders.js");
+      const models = await listModelsForProvider(input.provider, apiKey);
+      return { models, hasKey: true as const };
     }),
 
   // ── Tools ─────────────────────────────────────────────────────
