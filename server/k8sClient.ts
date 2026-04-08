@@ -429,6 +429,8 @@ export async function applyAgentDeployment(
               "cp -rn /root/.cache/huggingface/hub/. /models/hf/hub/ 2>/dev/null || true && " +
               "echo 'model cache seeded:' && ls /models/hf/hub/"],
             volumeMounts: [{ name: "model-cache", mountPath: "/models" }],
+            // Quotas in app namespaces require explicit resources on every container.
+            resources: { requests: { cpu: "50m", memory: "64Mi" }, limits: { cpu: "500m", memory: "512Mi" } },
           }],
           containers: [{
             name: "agent",
