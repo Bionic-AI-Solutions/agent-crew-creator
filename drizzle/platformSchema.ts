@@ -92,7 +92,7 @@ export const agentConfigs = pgTable(
     // and accessed via tools (run_crew, recall_memory) — its model lives
     // in lettaLlmModel below. Default to gpu-ai gemma for sub-second turns.
     llmProvider: varchar("llm_provider", { length: 50 }).default("gpu-ai").notNull(),
-    llmModel: varchar("llm_model", { length: 200 }).default("gemma-4-e4b"),
+    llmModel: varchar("llm_model", { length: 200 }).default("gemma-4-e4b-it"),
     ttsProvider: varchar("tts_provider", { length: 50 }).default("gpu-ai").notNull(),
     ttsVoice: varchar("tts_voice", { length: 200 }).default("Sudhir-IndexTTS2"),
     systemPrompt: text("system_prompt"),

@@ -49,10 +49,12 @@ def _create_primary_llm():
     provider = settings.llm_provider
 
     if provider == "gpu-ai":
-        # Internal cluster GPU — no auth required within cluster
-        base_url = settings.gpu_ai_mcp_url.removesuffix("/mcp") + "/v1"
+        # Internal cluster GPU — no auth required within cluster.
+        # gpu_ai_llm_url is the OpenAI-compatible endpoint (mcp-api-server),
+        # NOT the MCP protocol endpoint.
+        base_url = settings.gpu_ai_llm_url.rstrip("/") + "/v1"
         return openai_plugin.LLM(
-            model=settings.llm_model or "gemma-4-e4b",
+            model=settings.llm_model or "gemma-4-e4b-it",
             base_url=base_url,
             api_key="not-needed",
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
@@ -122,7 +124,7 @@ def _create_primary_stt():
 
     if provider in ("gpu-ai", "faster-whisper"):
         from livekit.plugins import openai as openai_plugin
-        base_url = settings.gpu_ai_mcp_url.removesuffix("/mcp")
+        base_url = settings.gpu_ai_llm_url.rstrip("/")
         # api_key="not-needed" is required because the openai SDK validates
         # the api_key in its constructor (raises OpenAIError if unset).
         # Internal cluster GPU has no auth — but the SDK doesn't know that.
@@ -195,7 +197,7 @@ def _create_primary_tts():
 
     if provider == "gpu-ai":
         from livekit.plugins import openai as openai_plugin
-        base_url = settings.gpu_ai_mcp_url.removesuffix("/mcp")
+        base_url = settings.gpu_ai_llm_url.rstrip("/")
         # See _create_primary_stt for why api_key="not-needed" is required.
         return openai_plugin.TTS(
             model="tts-1",

@@ -49,7 +49,12 @@ class Settings(BaseSettings):
     system_prompt: str = ""
 
     # GPU-AI services
+    # MCP endpoint — for tool calls via Model Context Protocol
     gpu_ai_mcp_url: str = "http://mcp-ai-mcp-server.mcp.svc.cluster.local:8009/mcp"
+    # OpenAI-compatible LLM/STT/TTS endpoint — different service from the MCP
+    # server. mcp-api-server routes by model suffix (gemma → llm-fast,
+    # qwen3.5-*-think → llm-deep, etc.). Used by plugins.py for STT/TTS/LLM.
+    gpu_ai_llm_url: str = "http://mcp-api-server.mcp.svc.cluster.local:8000"
 
     # Avatar
     avatar_enabled: bool = False

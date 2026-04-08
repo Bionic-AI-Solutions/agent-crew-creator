@@ -31,6 +31,8 @@ const LETTA_MCP_URL = process.env.LETTA_INTERNAL_URL
 const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || "minio-tenant-hl.minio.svc.cluster.local:9000";
 const LANGFUSE_HOST = process.env.LANGFUSE_INTERNAL_URL || "http://langfuse-web.langfuse.svc.cluster.local:3000";
 const GPU_AI_MCP_URL = process.env.GPU_AI_MCP_INTERNAL_URL || "http://mcp-ai-mcp-server.mcp.svc.cluster.local:8009/mcp";
+// OpenAI-compatible LLM/STT/TTS endpoint — different from the MCP server above.
+const GPU_AI_LLM_URL = process.env.GPU_AI_LLM_INTERNAL_URL || "http://mcp-api-server.mcp.svc.cluster.local:8000";
 const LIVEKIT_INTERNAL_URL = process.env.LIVEKIT_INTERNAL_URL || "ws://livekit-server.livekit.svc.cluster.local:7880";
 
 export async function deployAgent(
@@ -90,6 +92,7 @@ export async function deployAgent(
     LETTA_MCP_URL: LETTA_MCP_URL,
     LETTA_BASE_URL: LETTA_MCP_URL.replace("/mcp", ""),
     GPU_AI_MCP_URL: GPU_AI_MCP_URL,
+    GPU_AI_LLM_URL: GPU_AI_LLM_URL,
     MINIO_ENDPOINT: MINIO_ENDPOINT,
     MINIO_USE_SSL: "false",
     MINIO_BUCKET: app.slug,
