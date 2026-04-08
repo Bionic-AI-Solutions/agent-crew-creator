@@ -29,6 +29,28 @@ export const apps = pgTable("apps", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// ── App Members (per-app RBAC) ──────────────────────────────────
+
+export const appMembers = pgTable(
+  "app_members",
+  {
+    id: serial("id").primaryKey(),
+    appId: integer("app_id")
+      .notNull()
+      .references(() => apps.id, { onDelete: "cascade" }),
+    // Keycloak `sub` claim — matches SessionUser.sub
+    userId: varchar("user_id", { length: 255 }).notNull(),
+    role: varchar("role", { length: 20 }).default("member").notNull(), // owner | member
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_app_members_unique").on(table.appId, table.userId),
+    index("idx_app_members_user").on(table.userId),
+  ],
+);
+
+export type AppMember = typeof appMembers.$inferSelect;
+
 // ── Provisioning Jobs ───────────────────────────────────────────
 
 export const provisioningJobs = pgTable(

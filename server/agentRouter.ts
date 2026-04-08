@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { eq } from "drizzle-orm";
-import { router, adminProcedure, protectedProcedure, analystOrAdminProcedure } from "./_core/trpc.js";
+import { router, adminProcedure, protectedProcedure, analystOrAdminProcedure, appScopedProcedure, assertAppMembership } from "./_core/trpc.js";
+import { TRPCError } from "@trpc/server";
+import { appMembers } from "../drizzle/platformSchema.js";
 import { createLogger } from "./_core/logger.js";
 import {
   agentConfigs,
@@ -81,7 +83,7 @@ const log = createLogger("AgentRouter");
 
 export const agentRouter = router({
   // ── List agents for an app ────────────────────────────────────
-  list: protectedProcedure
+  list: appScopedProcedure
     .input(z.object({ appId: z.number() }))
     .query(async ({ ctx, input }) => {
       if (!ctx.db) return [];
@@ -103,6 +105,16 @@ export const agentRouter = router({
         .where(eq(agentConfigs.id, input.id))
         .limit(1);
       if (!agent) return null;
+      if (ctx.user!.role !== "admin") {
+        const m = await ctx.db
+          .select({ id: appMembers.id })
+          .from(appMembers)
+          .where(and(eq(appMembers.appId, agent.appId), eq(appMembers.userId, ctx.user!.sub)))
+          .limit(1);
+        if (m.length === 0) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this app" });
+        }
+      }
 
       const [tools, mcpLinks, crews, docs] = await Promise.all([
         ctx.db.select().from(agentTools).where(eq(agentTools.agentConfigId, input.id)),
@@ -130,7 +142,7 @@ export const agentRouter = router({
     }),
 
   // ── Create agent ──────────────────────────────────────────────
-  create: adminProcedure
+  create: appScopedProcedure
     .input(
       z.object({
         appId: z.number(),
@@ -173,7 +185,7 @@ export const agentRouter = router({
     }),
 
   // ── Update agent config ───────────────────────────────────────
-  update: adminProcedure
+  update: protectedProcedure
     .input(
       z.object({
         id: z.number(),
@@ -200,6 +212,9 @@ export const agentRouter = router({
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
       const { id, ...updates } = input;
+      const [existing] = await ctx.db.select({ appId: agentConfigs.appId }).from(agentConfigs).where(eq(agentConfigs.id, id)).limit(1);
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      await assertAppMembership(ctx, existing.appId);
       const [updated] = await ctx.db
         .update(agentConfigs)
         .set({ ...updates, updatedAt: new Date() })
@@ -209,7 +224,7 @@ export const agentRouter = router({
     }),
 
   // ── Delete agent ──────────────────────────────────────────────
-  delete: adminProcedure
+  delete: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
@@ -220,6 +235,8 @@ export const agentRouter = router({
         .from(agentConfigs)
         .where(eq(agentConfigs.id, input.id))
         .limit(1);
+      if (!agent) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      await assertAppMembership(ctx, agent.appId);
       if (agent?.deployed) {
         try {
           const { undeployAgent } = await import("./services/agentDeployer.js");
@@ -236,7 +253,7 @@ export const agentRouter = router({
     }),
 
   // ── Set provider API key (writes to Vault) ────────────────────
-  setProviderKey: adminProcedure
+  setProviderKey: protectedProcedure
     .input(
       z.object({
         agentId: z.number(),
@@ -252,6 +269,7 @@ export const agentRouter = router({
         .where(eq(agentConfigs.id, input.agentId))
         .limit(1);
       if (!agent) throw new Error("Agent not found");
+      await assertAppMembership(ctx, agent.appId);
       const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
       if (!app) throw new Error("App not found");
 
@@ -282,7 +300,7 @@ export const agentRouter = router({
       ];
     }),
 
-  setAgentTools: adminProcedure
+  setAgentTools: protectedProcedure
     .input(
       z.object({
         agentConfigId: z.number(),
@@ -291,6 +309,9 @@ export const agentRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
+      const [a] = await ctx.db.select({ appId: agentConfigs.appId }).from(agentConfigs).where(eq(agentConfigs.id, input.agentConfigId)).limit(1);
+      if (!a) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      await assertAppMembership(ctx, a.appId);
       // Delete existing, insert new
       await ctx.db.delete(agentTools).where(eq(agentTools.agentConfigId, input.agentConfigId));
       if (input.toolIds.length > 0) {
@@ -304,7 +325,7 @@ export const agentRouter = router({
       return { success: true };
     }),
 
-  createCustomTool: adminProcedure
+  createCustomTool: appScopedProcedure
     .input(
       z.object({
         appId: z.number(),
@@ -329,10 +350,13 @@ export const agentRouter = router({
       return tool;
     }),
 
-  deleteCustomTool: adminProcedure
+  deleteCustomTool: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
+      const [t] = await ctx.db.select({ appId: customTools.appId }).from(customTools).where(eq(customTools.id, input.id)).limit(1);
+      if (!t) throw new TRPCError({ code: "NOT_FOUND", message: "Tool not found" });
+      await assertAppMembership(ctx, t.appId);
       await ctx.db.delete(customTools).where(eq(customTools.id, input.id));
       return { success: true };
     }),
@@ -345,7 +369,7 @@ export const agentRouter = router({
       return ctx.db.select().from(mcpServers).where(eq(mcpServers.appId, input.appId));
     }),
 
-  setAgentMcpServers: adminProcedure
+  setAgentMcpServers: protectedProcedure
     .input(
       z.object({
         agentConfigId: z.number(),
@@ -354,6 +378,9 @@ export const agentRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
+      const [a] = await ctx.db.select({ appId: agentConfigs.appId }).from(agentConfigs).where(eq(agentConfigs.id, input.agentConfigId)).limit(1);
+      if (!a) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      await assertAppMembership(ctx, a.appId);
       await ctx.db
         .delete(agentMcpServers)
         .where(eq(agentMcpServers.agentConfigId, input.agentConfigId));
@@ -368,7 +395,7 @@ export const agentRouter = router({
       return { success: true };
     }),
 
-  createMcpServer: adminProcedure
+  createMcpServer: appScopedProcedure
     .input(
       z.object({
         appId: z.number(),
@@ -406,10 +433,13 @@ export const agentRouter = router({
       return server;
     }),
 
-  deleteMcpServer: adminProcedure
+  deleteMcpServer: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
+      const [s] = await ctx.db.select({ appId: mcpServers.appId }).from(mcpServers).where(eq(mcpServers.id, input.id)).limit(1);
+      if (!s) throw new TRPCError({ code: "NOT_FOUND", message: "MCP server not found" });
+      await assertAppMembership(ctx, s.appId);
       await ctx.db.delete(mcpServers).where(eq(mcpServers.id, input.id));
       return { success: true };
     }),
@@ -623,7 +653,7 @@ export const agentRouter = router({
     }),
 
   /** Create a new crew (registers a Dify workflow). */
-  createCrew: adminProcedure
+  createCrew: appScopedProcedure
     .input(
       z.object({
         appId: z.number(),
@@ -670,7 +700,7 @@ export const agentRouter = router({
     }),
 
   /** Update a crew. */
-  updateCrew: adminProcedure
+  updateCrew: protectedProcedure
     .input(
       z.object({
         id: z.number(),
@@ -686,6 +716,9 @@ export const agentRouter = router({
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
       const { id, ...updates } = input;
+      const [c] = await ctx.db.select({ appId: crews.appId }).from(crews).where(eq(crews.id, id)).limit(1);
+      if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Crew not found" });
+      await assertAppMembership(ctx, c.appId);
       const [updated] = await ctx.db
         .update(crews)
         .set({ ...updates, updatedAt: new Date() })
@@ -695,12 +728,14 @@ export const agentRouter = router({
     }),
 
   /** Delete a crew. */
-  deleteCrew: adminProcedure
+  deleteCrew: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
       // Look up crew name before deleting so we can clean up junction table
       const [crew] = await ctx.db.select().from(crews).where(eq(crews.id, input.id)).limit(1);
+      if (!crew) throw new TRPCError({ code: "NOT_FOUND", message: "Crew not found" });
+      await assertAppMembership(ctx, crew.appId);
       await ctx.db.delete(crews).where(eq(crews.id, input.id));
       // Clean up agent_crews junction entries (name-based, no FK cascade)
       if (crew) {
@@ -711,7 +746,7 @@ export const agentRouter = router({
     }),
 
   /** Assign crews to an agent. */
-  setAgentCrews: adminProcedure
+  setAgentCrews: protectedProcedure
     .input(
       z.object({
         agentConfigId: z.number(),
@@ -720,6 +755,9 @@ export const agentRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
+      const [a] = await ctx.db.select({ appId: agentConfigs.appId }).from(agentConfigs).where(eq(agentConfigs.id, input.agentConfigId)).limit(1);
+      if (!a) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      await assertAppMembership(ctx, a.appId);
       await ctx.db.delete(agentCrews).where(eq(agentCrews.agentConfigId, input.agentConfigId));
       if (input.crewNames.length > 0) {
         await ctx.db.insert(agentCrews).values(
@@ -799,17 +837,25 @@ export const agentRouter = router({
         .where(eq(agentDocuments.agentConfigId, input.agentConfigId));
     }),
 
-  deleteDocument: adminProcedure
+  deleteDocument: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
+      const [d] = await ctx.db
+        .select({ appId: agentConfigs.appId })
+        .from(agentDocuments)
+        .innerJoin(agentConfigs, eq(agentDocuments.agentConfigId, agentConfigs.id))
+        .where(eq(agentDocuments.id, input.id))
+        .limit(1);
+      if (!d) throw new TRPCError({ code: "NOT_FOUND", message: "Document not found" });
+      await assertAppMembership(ctx, d.appId);
       // TODO: Delete from MinIO + Letta passages
       await ctx.db.delete(agentDocuments).where(eq(agentDocuments.id, input.id));
       return { success: true };
     }),
 
   // ── Deployment ────────────────────────────────────────────────
-  deploy: adminProcedure
+  deploy: protectedProcedure
     .input(z.object({ id: z.number(), imageTag: z.string().optional() }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
@@ -819,6 +865,7 @@ export const agentRouter = router({
         .where(eq(agentConfigs.id, input.id))
         .limit(1);
       if (!agent) throw new Error("Agent not found");
+      await assertAppMembership(ctx, agent.appId);
       const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
       if (!app) throw new Error("App not found");
 
@@ -848,7 +895,7 @@ export const agentRouter = router({
       return { success: true };
     }),
 
-  undeploy: adminProcedure
+  undeploy: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
@@ -858,6 +905,7 @@ export const agentRouter = router({
         .where(eq(agentConfigs.id, input.id))
         .limit(1);
       if (!agent) throw new Error("Agent not found");
+      await assertAppMembership(ctx, agent.appId);
       const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
       if (!app) throw new Error("App not found");
 
@@ -908,7 +956,7 @@ export const agentRouter = router({
     }),
 
   /** Get or create a user memory block. Called by the agent on session start. */
-  ensureUserBlock: adminProcedure
+  ensureUserBlock: appScopedProcedure
     .input(z.object({
       agentConfigId: z.number(),
       appId: z.number(),
@@ -966,7 +1014,7 @@ export const agentRouter = router({
     }),
 
   /** Delete a user's memory block (admin cleanup). */
-  deleteUserBlock: adminProcedure
+  deleteUserBlock: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
@@ -977,6 +1025,7 @@ export const agentRouter = router({
         .where(eq(userMemoryBlocks.id, input.id))
         .limit(1);
       if (!record) throw new Error("Block not found");
+      await assertAppMembership(ctx, record.appId);
 
       // Delete from Letta
       try {
