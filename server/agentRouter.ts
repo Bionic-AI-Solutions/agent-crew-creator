@@ -364,9 +364,82 @@ export const agentRouter = router({
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
       const { id, ...updates } = input;
-      const [existing] = await ctx.db.select({ appId: agentConfigs.appId }).from(agentConfigs).where(eq(agentConfigs.id, id)).limit(1);
+      const [existing] = await ctx.db.select().from(agentConfigs).where(eq(agentConfigs.id, id)).limit(1);
       if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
       await assertAppMembership(ctx, existing.appId);
+
+      // Validate llm_model against the live provider /v1/models list when
+      // either llmModel OR llmProvider is being changed. Stops the
+      // recurring "user types a model id that doesn't exist on the
+      // provider, voice loop hangs forever, no clear error" failure mode.
+      // Skipped for gpu-ai (internal cluster — no /v1/models we want to
+      // round-trip per save) and skipped if the new value is null/empty.
+      const newProvider = (updates.llmProvider ?? existing.llmProvider ?? "").toLowerCase();
+      const newModel = updates.llmModel === undefined ? existing.llmModel : updates.llmModel;
+      const providerOrModelChanged =
+        updates.llmProvider !== undefined || updates.llmModel !== undefined;
+      if (
+        providerOrModelChanged &&
+        newModel &&
+        newProvider &&
+        newProvider !== "gpu-ai" &&
+        newProvider !== "custom"
+      ) {
+        try {
+          const { isSupportedProvider, listModelsForProvider } = await import(
+            "./services/llmProviders.js"
+          );
+          if (isSupportedProvider(newProvider)) {
+            // Reuse the per-agent key already in Vault if there is one.
+            const [app] = await ctx.db.select().from(apps).where(eq(apps.id, existing.appId)).limit(1);
+            if (app) {
+              const { readAppSecret } = await import("./vaultClient.js");
+              const vault = (await readAppSecret(app.slug)) || {};
+              const apiKey = vault[`agent_${existing.id}_${newProvider}_api_key`];
+              if (apiKey) {
+                const models = await listModelsForProvider(newProvider, apiKey);
+                const ids = new Set(models.map((m) => m.id));
+                if (!ids.has(newModel)) {
+                  // Build a short suggestion list — closest matches by
+                  // substring of the typed name. Helps the user pick the
+                  // right slug without us pulling in a fuzzy-match dep.
+                  const needle = newModel.toLowerCase();
+                  const hints = models
+                    .map((m) => m.id)
+                    .filter((mid) => {
+                      const lower = mid.toLowerCase();
+                      const tokens = needle
+                        .split(/[\s\-_/.]+/)
+                        .filter((t) => t.length >= 3);
+                      return tokens.some((t) => lower.includes(t));
+                    })
+                    .slice(0, 8);
+                  throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message:
+                      `Model '${newModel}' is not available on ${newProvider}.` +
+                      (hints.length > 0
+                        ? ` Did you mean one of: ${hints.join(", ")}?`
+                        : ` Run agentsCrud.listProviderModels to see what is available.`),
+                  });
+                }
+                log.info("Validated llm_model against provider", {
+                  provider: newProvider,
+                  model: newModel,
+                });
+              } else {
+                log.warn("Skipping model validation — no provider key in Vault", {
+                  provider: newProvider,
+                });
+              }
+            }
+          }
+        } catch (err) {
+          if (err instanceof TRPCError) throw err;
+          log.warn("Model validation failed (non-fatal)", { error: String(err) });
+        }
+      }
+
       const [updated] = await ctx.db
         .update(agentConfigs)
         .set({ ...updates, updatedAt: new Date() })
