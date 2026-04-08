@@ -15,30 +15,88 @@ difyDsl: |
     name: Deep Research
     use_icon_as_answer_icon: false
   kind: app
-  version: 0.1.5
+  version: 0.3.0
   workflow:
     conversation_variables: []
     environment_variables: []
     features: {}
     graph:
       edges:
-      - {id: e1, source: start, sourceHandle: source, target: search, targetHandle: target, type: custom}
-      - {id: e2, source: search, sourceHandle: source, target: extract_results, targetHandle: target, type: custom}
-      - {id: e3, source: extract_results, sourceHandle: source, target: build_synth_payload, targetHandle: target, type: custom}
-      - {id: e4, source: build_synth_payload, sourceHandle: source, target: synthesize, targetHandle: target, type: custom}
-      - {id: e5, source: synthesize, sourceHandle: source, target: extract_report, targetHandle: target, type: custom}
-      - {id: e6, source: extract_report, sourceHandle: source, target: end, targetHandle: target, type: custom}
+      - data: {isInIteration: false, sourceType: start, targetType: http-request}
+        id: e1
+        selected: false
+        source: start
+        sourceHandle: source
+        target: search
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInIteration: false, sourceType: http-request, targetType: code}
+        id: e2
+        selected: false
+        source: search
+        sourceHandle: source
+        target: extract_results
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInIteration: false, sourceType: code, targetType: code}
+        id: e3
+        selected: false
+        source: extract_results
+        sourceHandle: source
+        target: build_synth_payload
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInIteration: false, sourceType: code, targetType: http-request}
+        id: e4
+        selected: false
+        source: build_synth_payload
+        sourceHandle: source
+        target: synthesize
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInIteration: false, sourceType: http-request, targetType: code}
+        id: e5
+        selected: false
+        source: synthesize
+        sourceHandle: source
+        target: extract_report
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data: {isInIteration: false, sourceType: code, targetType: end}
+        id: e6
+        selected: false
+        source: extract_report
+        sourceHandle: source
+        target: end
+        targetHandle: target
+        type: custom
+        zIndex: 0
       nodes:
       - data:
+          desc: ''
+          selected: false
           title: Start
           type: start
           variables:
           - {label: Query, max_length: 2000, required: true, type: text-input, variable: query}
           - {label: Limit, max_length: 4, required: false, type: text-input, variable: limit}
+        height: 116
         id: start
-        position: {x: 0, "y": 200}
-        type: start
+        position: {x: 0, y: 200}
+        positionAbsolute: {x: 0, y: 200}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
       - data:
+          desc: ''
+          selected: false
           title: "Search MCP"
           type: http-request
           method: POST
@@ -52,10 +110,18 @@ difyDsl: |
             data: '{"query":"{{#start.query#}}","limit":10}'
           authorization: {type: no-auth}
           timeout: {connect: 10, read: 60, write: 30}
+        height: 88
         id: search
-        position: {x: 250, "y": 200}
-        type: http-request
+        position: {x: 304, y: 200}
+        positionAbsolute: {x: 304, y: 200}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
       - data:
+          desc: ''
+          selected: false
           title: "Extract Results"
           type: code
           code_language: python3
@@ -77,10 +143,18 @@ difyDsl: |
           outputs:
             sources: {type: string}
             count: {type: number}
+        height: 88
         id: extract_results
-        position: {x: 450, "y": 200}
-        type: code
+        position: {x: 608, y: 200}
+        positionAbsolute: {x: 608, y: 200}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
       - data:
+          desc: ''
+          selected: false
           title: "Build Synthesis Payload"
           type: code
           code_language: python3
@@ -102,10 +176,18 @@ difyDsl: |
           - {variable: sources, value_selector: ["extract_results", "sources"]}
           outputs:
             payload: {type: string}
+        height: 88
         id: build_synth_payload
-        position: {x: 600, "y": 200}
-        type: code
+        position: {x: 912, y: 200}
+        positionAbsolute: {x: 912, y: 200}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
       - data:
+          desc: ''
+          selected: false
           title: "Synthesize Report"
           type: http-request
           method: POST
@@ -117,10 +199,18 @@ difyDsl: |
             data: "{{#build_synth_payload.payload#}}"
           authorization: {type: no-auth}
           timeout: {connect: 10, read: 180, write: 60}
+        height: 88
         id: synthesize
-        position: {x: 800, "y": 200}
-        type: http-request
+        position: {x: 1216, y: 200}
+        positionAbsolute: {x: 1216, y: 200}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
       - data:
+          desc: ''
+          selected: false
           title: "Extract Report"
           type: code
           code_language: python3
@@ -139,15 +229,33 @@ difyDsl: |
           - {variable: body, value_selector: ["synthesize", "body"]}
           outputs:
             report: {type: string}
+        height: 88
         id: extract_report
-        position: {x: 1000, "y": 200}
-        type: code
+        position: {x: 1520, y: 200}
+        positionAbsolute: {x: 1520, y: 200}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
       - data:
+          desc: ''
+          selected: false
           title: End
           type: end
           outputs:
           - {value_selector: ["extract_report", "report"], variable: result}
           - {value_selector: ["extract_results", "sources"], variable: sources}
+        height: 116
         id: end
-        position: {x: 1200, "y": 200}
-        type: end
+        position: {x: 1824, y: 200}
+        positionAbsolute: {x: 1824, y: 200}
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      viewport:
+        x: 0
+        y: 0
+        zoom: 0.7

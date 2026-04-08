@@ -1,593 +1,1135 @@
 metadata:
   id: vc_due_diligence
   label: VC Due Diligence
-  description: |
-    Seven-stage VC investment analysis pipeline modelled on the Bionic ADK
+  description: 'Seven-stage VC investment analysis pipeline modelled on the Bionic ADK
+
     reference crew. Stages: Company Research → Market Analysis → Financial
+
     Modeling → Risk Assessment → Investor Memo → Report → Notify. Two
+
     Search MCP passes (company + market), five LLM calls. Slower than
+
     "Due Diligence Bot" but produces a full investment-grade dossier with
+
     Bear/Base/Bull projections, competitor map, risk score, and recommendation.
+
     Final dossier is rendered as a McKinsey-style PDF and dispatched via
+
     Gmail SMTP relay + webhook.
+
+    '
   mode: workflow
-  icon: "💼"
+  icon: 💼
   configSchema:
-    - key: notify_email
-      label: Analyst Email
-      type: email
-      required: false
-      placeholder: "analyst@bionicaisolutions.com"
-      description: "Recipient for the completed dossier (PDF attached)"
-    - key: notify_webhook
-      label: Notification Webhook (optional)
-      type: url
-      required: false
-      placeholder: "https://hooks.slack.com/services/..."
-      description: "Slack/Teams/etc. webhook for the dossier summary"
+  - key: notify_email
+    label: Analyst Email
+    type: email
+    required: false
+    placeholder: analyst@bionicaisolutions.com
+    description: Recipient for the completed dossier (PDF attached)
+  - key: notify_webhook
+    label: Notification Webhook (optional)
+    type: url
+    required: false
+    placeholder: https://hooks.slack.com/services/...
+    description: Slack/Teams/etc. webhook for the dossier summary
   postInstall: none
 difyDsl: |
   app:
-    description: "VC due diligence — 7-stage investment analysis pipeline"
+    description: "VC due diligence \u2014 7-stage investment analysis pipeline"
     icon: "\U0001F4BC"
-    icon_background: "#FEE2E2"
+    icon_background: '#FEE2E2'
     mode: workflow
     name: VC Due Diligence
     use_icon_as_answer_icon: false
   kind: app
-  version: 0.1.5
+  version: 0.3.0
   workflow:
     conversation_variables: []
     environment_variables: []
     features: {}
     graph:
       edges:
-      - {id: e01, source: start, sourceHandle: source, target: search_company, targetHandle: target, type: custom}
-      - {id: e02, source: search_company, sourceHandle: source, target: extract_company_search, targetHandle: target, type: custom}
-      - {id: e03, source: extract_company_search, sourceHandle: source, target: build_company_payload, targetHandle: target, type: custom}
-      - {id: e04, source: build_company_payload, sourceHandle: source, target: company_llm, targetHandle: target, type: custom}
-      - {id: e05, source: company_llm, sourceHandle: source, target: extract_company, targetHandle: target, type: custom}
-      - {id: e06, source: extract_company, sourceHandle: source, target: search_market, targetHandle: target, type: custom}
-      - {id: e07, source: search_market, sourceHandle: source, target: extract_market_search, targetHandle: target, type: custom}
-      - {id: e08, source: extract_market_search, sourceHandle: source, target: build_market_payload, targetHandle: target, type: custom}
-      - {id: e09, source: build_market_payload, sourceHandle: source, target: market_llm, targetHandle: target, type: custom}
-      - {id: e10, source: market_llm, sourceHandle: source, target: extract_market, targetHandle: target, type: custom}
-      - {id: e11, source: extract_market, sourceHandle: source, target: build_financial_payload, targetHandle: target, type: custom}
-      - {id: e12, source: build_financial_payload, sourceHandle: source, target: financial_llm, targetHandle: target, type: custom}
-      - {id: e13, source: financial_llm, sourceHandle: source, target: extract_financial, targetHandle: target, type: custom}
-      - {id: e14, source: extract_financial, sourceHandle: source, target: build_risk_payload, targetHandle: target, type: custom}
-      - {id: e15, source: build_risk_payload, sourceHandle: source, target: risk_llm, targetHandle: target, type: custom}
-      - {id: e16, source: risk_llm, sourceHandle: source, target: extract_risk, targetHandle: target, type: custom}
-      - {id: e17, source: extract_risk, sourceHandle: source, target: build_memo_payload, targetHandle: target, type: custom}
-      - {id: e18, source: build_memo_payload, sourceHandle: source, target: memo_llm, targetHandle: target, type: custom}
-      - {id: e19, source: memo_llm, sourceHandle: source, target: extract_memo, targetHandle: target, type: custom}
-      - {id: e20, source: extract_memo, sourceHandle: source, target: build_report_payload, targetHandle: target, type: custom}
-      - {id: e21, source: build_report_payload, sourceHandle: source, target: report_llm, targetHandle: target, type: custom}
-      - {id: e22, source: report_llm, sourceHandle: source, target: extract_report, targetHandle: target, type: custom}
-      - {id: e23, source: extract_report, sourceHandle: source, target: notify, targetHandle: target, type: custom}
-      - {id: e24, source: notify, sourceHandle: source, target: end, targetHandle: target, type: custom}
+      - id: e01
+        source: start
+        sourceHandle: source
+        target: search_company
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: start
+          targetType: http-request
+        selected: false
+        zIndex: 0
+      - id: e02
+        source: search_company
+        sourceHandle: source
+        target: extract_company_search
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: http-request
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e03
+        source: extract_company_search
+        sourceHandle: source
+        target: build_company_payload
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e04
+        source: build_company_payload
+        sourceHandle: source
+        target: company_llm
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: http-request
+        selected: false
+        zIndex: 0
+      - id: e05
+        source: company_llm
+        sourceHandle: source
+        target: extract_company
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: http-request
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e06
+        source: extract_company
+        sourceHandle: source
+        target: search_market
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: http-request
+        selected: false
+        zIndex: 0
+      - id: e07
+        source: search_market
+        sourceHandle: source
+        target: extract_market_search
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: http-request
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e08
+        source: extract_market_search
+        sourceHandle: source
+        target: build_market_payload
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e09
+        source: build_market_payload
+        sourceHandle: source
+        target: market_llm
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: http-request
+        selected: false
+        zIndex: 0
+      - id: e10
+        source: market_llm
+        sourceHandle: source
+        target: extract_market
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: http-request
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e11
+        source: extract_market
+        sourceHandle: source
+        target: build_financial_payload
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e12
+        source: build_financial_payload
+        sourceHandle: source
+        target: financial_llm
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: http-request
+        selected: false
+        zIndex: 0
+      - id: e13
+        source: financial_llm
+        sourceHandle: source
+        target: extract_financial
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: http-request
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e14
+        source: extract_financial
+        sourceHandle: source
+        target: build_risk_payload
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e15
+        source: build_risk_payload
+        sourceHandle: source
+        target: risk_llm
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: http-request
+        selected: false
+        zIndex: 0
+      - id: e16
+        source: risk_llm
+        sourceHandle: source
+        target: extract_risk
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: http-request
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e17
+        source: extract_risk
+        sourceHandle: source
+        target: build_memo_payload
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e18
+        source: build_memo_payload
+        sourceHandle: source
+        target: memo_llm
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: http-request
+        selected: false
+        zIndex: 0
+      - id: e19
+        source: memo_llm
+        sourceHandle: source
+        target: extract_memo
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: http-request
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e20
+        source: extract_memo
+        sourceHandle: source
+        target: build_report_payload
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e21
+        source: build_report_payload
+        sourceHandle: source
+        target: report_llm
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: http-request
+        selected: false
+        zIndex: 0
+      - id: e22
+        source: report_llm
+        sourceHandle: source
+        target: extract_report
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: http-request
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e23
+        source: extract_report
+        sourceHandle: source
+        target: notify
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: http-request
+        selected: false
+        zIndex: 0
+      - id: e24
+        source: notify
+        sourceHandle: source
+        target: end
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: http-request
+          targetType: end
+        selected: false
+        zIndex: 0
       nodes:
-      # ── 0. Start ────────────────────────────────────────────
       - data:
           title: Start
           type: start
           variables:
-          - {label: Company Name, max_length: 200, required: true, type: text-input, variable: company_name}
-          - {label: Website (optional), max_length: 500, required: false, type: text-input, variable: website_url}
-          - {label: Notes (optional), max_length: 2000, required: false, type: paragraph, variable: notes}
+          - label: Company Name
+            max_length: 200
+            required: true
+            type: text-input
+            variable: company_name
+          - label: Website (optional)
+            max_length: 500
+            required: false
+            type: text-input
+            variable: website_url
+          - label: Notes (optional)
+            max_length: 2000
+            required: false
+            type: paragraph
+            variable: notes
+          desc: ''
+          selected: false
         id: start
-        position: {x: 0, "y": 200}
-        type: start
-
-      # ── 1a. Company Research — Search MCP ───────────────────
+        position:
+          x: 0
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 0
+          y: 200
+        height: 116
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Search: Company"
+          title: 'Search: Company'
           type: http-request
           method: POST
-          url: "{{auto.mcp_search_url}}/search"
-          headers: |
-            Content-Type: application/json
+          url: '{{auto.mcp_search_url}}/search'
+          headers: 'Content-Type: application/json
+
             X-API-Key: {{auto.mcp_search_api_key}}
-          params: ""
+
+            '
+          params: ''
           body:
             type: raw-text
             data: '{"query":"{{#start.company_name#}} startup funding founders product","limit":15}'
-          authorization: {type: no-auth}
-          timeout: {connect: 10, read: 60, write: 30}
+          authorization:
+            type: no-auth
+          timeout:
+            connect: 10
+            read: 60
+            write: 30
+          desc: ''
+          selected: false
         id: search_company
-        position: {x: 200, "y": 200}
-        type: http-request
+        position:
+          x: 200
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 200
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Extract Company Search"
+          title: Extract Company Search
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(body: str) -> dict:
-                try:
-                    d = json.loads(body)
-                    results = d.get("results", [])
-                    formatted = "\n\n".join(
-                        f"[{i+1}] {r.get('title','')} — {r.get('url','')}\n{r.get('snippet','')}"
-                        for i, r in enumerate(results)
-                    )
-                    return {"sources": formatted or "(no results)", "count": len(results)}
-                except Exception as e:
-                    return {"sources": f"Error: {e}", "count": 0}
+          code: "import json\ndef main(body: str) -> dict:\n    try:\n        d = json.loads(body)\n        results = d.get(\"results\", [])\n        formatted = \"\\n\\n\".join(\n            f\"[{i+1}] {r.get('title','')} \u2014 {r.get('url','')}\\n{r.get('snippet','')}\"\n            for i, r in enumerate(results)\n        )\n        return {\"sources\": formatted or \"(no results)\", \"count\": len(results)}\n    except Exception as e:\n        return {\"sources\": f\"Error: {e}\", \"count\": 0}\n"
           variables:
-          - {variable: body, value_selector: ["search_company", "body"]}
+          - variable: body
+            value_selector:
+            - search_company
+            - body
           outputs:
-            sources: {type: string}
-            count: {type: number}
+            sources:
+              type: string
+            count:
+              type: number
+          desc: ''
+          selected: false
         id: extract_company_search
-        position: {x: 400, "y": 200}
-        type: code
-
-      # ── 1b. Company Research — LLM ──────────────────────────
+        position:
+          x: 400
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 400
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Build Company Payload"
+          title: Build Company Payload
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(company: str, website: str, notes: str, sources: str) -> dict:
-                payload = {
-                    "model": "qwen3.5-27b-fp8",
-                    "messages": [
-                        {"role": "system", "content": "You are a senior VC investment analyst conducting company research. Extract: 1) Company basics (what they do, founded when, HQ, team size) 2) Founders & key people with backgrounds 3) Product/Technology core offering 4) Funding history (rounds, investors, amounts) 5) Traction (customers, partnerships, growth signals) 6) Recent news. Be thorough but realistic about what's publicly available. For early-stage companies, note information gaps explicitly. Output structured prose."},
-                        {"role": "user", "content": f"Company: {company}\nWebsite: {website}\nUser notes: {notes}\n\nSources:\n{sources}\n\nProduce the company research."}
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 3000
-                }
-                return {"payload": json.dumps(payload)}
+          code: "import json\ndef main(company: str, website: str, notes: str, sources: str) -> dict:\n    payload = {\n        \"model\": \"qwen3.5-27b-fp8\",\n        \"messages\": [\n            {\"role\": \"system\", \"content\": \"You are a senior VC investment analyst conducting company research. Extract: 1) Company basics (what they do, founded when, HQ, team size) 2) Founders & key people with backgrounds 3) Product/Technology core offering 4) Funding history (rounds, investors, amounts) 5) Traction (customers, partnerships, growth signals) 6) Recent news. Be thorough but realistic about what's publicly available. For early-stage companies, note information gaps explicitly. Output structured prose.\"},\n            {\"role\": \"user\", \"content\": f\"Company: {company}\\nWebsite: {website}\\nUser notes: {notes}\\n\\nSources:\\n{sources}\\n\\nProduce the company research.\"}\n        ],\n        \"temperature\": 0.3,\n        \"max_tokens\": 3000\n    }\n    return {\"payload\": json.dumps(payload)}\n"
           variables:
-          - {variable: company, value_selector: ["start", "company_name"]}
-          - {variable: website, value_selector: ["start", "website_url"]}
-          - {variable: notes, value_selector: ["start", "notes"]}
-          - {variable: sources, value_selector: ["extract_company_search", "sources"]}
+          - variable: company
+            value_selector:
+            - start
+            - company_name
+          - variable: website
+            value_selector:
+            - start
+            - website_url
+          - variable: notes
+            value_selector:
+            - start
+            - notes
+          - variable: sources
+            value_selector:
+            - extract_company_search
+            - sources
           outputs:
-            payload: {type: string}
+            payload:
+              type: string
+          desc: ''
+          selected: false
         id: build_company_payload
-        position: {x: 600, "y": 200}
-        type: code
+        position:
+          x: 600
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 600
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Company Research LLM"
+          title: Company Research LLM
           type: http-request
           method: POST
-          url: "http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions"
-          headers: "Content-Type: application/json"
-          params: ""
+          url: http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions
+          headers: 'Content-Type: application/json'
+          params: ''
           body:
             type: raw-text
-            data: "{{#build_company_payload.payload#}}"
-          authorization: {type: no-auth}
-          timeout: {connect: 10, read: 240, write: 60}
+            data: '{{#build_company_payload.payload#}}'
+          authorization:
+            type: no-auth
+          timeout:
+            connect: 10
+            read: 240
+            write: 60
+          desc: ''
+          selected: false
         id: company_llm
-        position: {x: 800, "y": 200}
-        type: http-request
+        position:
+          x: 800
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 800
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Extract Company Info"
+          title: Extract Company Info
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(body: str) -> dict:
-                try:
-                    d = json.loads(body)
-                    text = d["choices"][0]["message"]["content"]
-                    if "<think>" in text:
-                        text = text.split("</think>")[-1].strip()
-                    return {"company_info": text}
-                except Exception as e:
-                    return {"company_info": f"Error: {e}"}
+          code: "import json\ndef main(body: str) -> dict:\n    try:\n        d = json.loads(body)\n        text = d[\"choices\"][0][\"message\"][\"content\"]\n        if \"<think>\" in text:\n            text = text.split(\"</think>\")[-1].strip()\n        return {\"company_info\": text}\n    except Exception as e:\n        return {\"company_info\": f\"Error: {e}\"}\n"
           variables:
-          - {variable: body, value_selector: ["company_llm", "body"]}
+          - variable: body
+            value_selector:
+            - company_llm
+            - body
           outputs:
-            company_info: {type: string}
+            company_info:
+              type: string
+          desc: ''
+          selected: false
         id: extract_company
-        position: {x: 1000, "y": 200}
-        type: code
-
-      # ── 2a. Market Analysis — Search MCP ────────────────────
+        position:
+          x: 1000
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 1000
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Search: Market"
+          title: 'Search: Market'
           type: http-request
           method: POST
-          url: "{{auto.mcp_search_url}}/search"
-          headers: |
-            Content-Type: application/json
+          url: '{{auto.mcp_search_url}}/search'
+          headers: 'Content-Type: application/json
+
             X-API-Key: {{auto.mcp_search_api_key}}
-          params: ""
+
+            '
+          params: ''
           body:
             type: raw-text
             data: '{"query":"{{#start.company_name#}} market size competitors TAM industry growth","limit":12}'
-          authorization: {type: no-auth}
-          timeout: {connect: 10, read: 60, write: 30}
+          authorization:
+            type: no-auth
+          timeout:
+            connect: 10
+            read: 60
+            write: 30
+          desc: ''
+          selected: false
         id: search_market
-        position: {x: 1200, "y": 200}
-        type: http-request
+        position:
+          x: 1200
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 1200
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Extract Market Search"
+          title: Extract Market Search
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(body: str) -> dict:
-                try:
-                    d = json.loads(body)
-                    results = d.get("results", [])
-                    formatted = "\n\n".join(
-                        f"[{i+1}] {r.get('title','')} — {r.get('url','')}\n{r.get('snippet','')}"
-                        for i, r in enumerate(results)
-                    )
-                    return {"sources": formatted or "(no results)"}
-                except Exception as e:
-                    return {"sources": f"Error: {e}"}
+          code: "import json\ndef main(body: str) -> dict:\n    try:\n        d = json.loads(body)\n        results = d.get(\"results\", [])\n        formatted = \"\\n\\n\".join(\n            f\"[{i+1}] {r.get('title','')} \u2014 {r.get('url','')}\\n{r.get('snippet','')}\"\n            for i, r in enumerate(results)\n        )\n        return {\"sources\": formatted or \"(no results)\"}\n    except Exception as e:\n        return {\"sources\": f\"Error: {e}\"}\n"
           variables:
-          - {variable: body, value_selector: ["search_market", "body"]}
+          - variable: body
+            value_selector:
+            - search_market
+            - body
           outputs:
-            sources: {type: string}
+            sources:
+              type: string
+          desc: ''
+          selected: false
         id: extract_market_search
-        position: {x: 1400, "y": 200}
-        type: code
-
-      # ── 2b. Market Analysis — LLM ───────────────────────────
+        position:
+          x: 1400
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 1400
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Build Market Payload"
+          title: Build Market Payload
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(company_info: str, sources: str) -> dict:
-                payload = {
-                    "model": "qwen3.5-27b-fp8",
-                    "messages": [
-                        {"role": "system", "content": "You are a market research analyst. Given company research and market sources, produce: 1) Market size (TAM, SAM, growth rate — use industry reports) 2) Competitive landscape (named competitors, their funding/traction) 3) Differentiation (how this company positions vs incumbents) 4) Market trends (drivers, emerging tech, regulatory changes). Be specific with numbers where available; for early-stage, estimate based on comparables and label estimates clearly."},
-                        {"role": "user", "content": f"Company research:\n{company_info}\n\nMarket sources:\n{sources}\n\nProduce the market analysis."}
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 3000
-                }
-                return {"payload": json.dumps(payload)}
+          code: "import json\ndef main(company_info: str, sources: str) -> dict:\n    payload = {\n        \"model\": \"qwen3.5-27b-fp8\",\n        \"messages\": [\n            {\"role\": \"system\", \"content\": \"You are a market research analyst. Given company research and market sources, produce: 1) Market size (TAM, SAM, growth rate \u2014 use industry reports) 2) Competitive landscape (named competitors, their funding/traction) 3) Differentiation (how this company positions vs incumbents) 4) Market trends (drivers, emerging tech, regulatory changes). Be specific with numbers where available; for early-stage, estimate based on comparables and label estimates clearly.\"},\n            {\"role\": \"user\", \"content\": f\"Company research:\\n{company_info}\\n\\nMarket sources:\\n{sources}\\n\\nProduce the market analysis.\"}\n        ],\n        \"temperature\": 0.3,\n        \"max_tokens\": 3000\n    }\n    return {\"payload\": json.dumps(payload)}\n"
           variables:
-          - {variable: company_info, value_selector: ["extract_company", "company_info"]}
-          - {variable: sources, value_selector: ["extract_market_search", "sources"]}
+          - variable: company_info
+            value_selector:
+            - extract_company
+            - company_info
+          - variable: sources
+            value_selector:
+            - extract_market_search
+            - sources
           outputs:
-            payload: {type: string}
+            payload:
+              type: string
+          desc: ''
+          selected: false
         id: build_market_payload
-        position: {x: 1600, "y": 200}
-        type: code
+        position:
+          x: 1600
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 1600
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Market Analysis LLM"
+          title: Market Analysis LLM
           type: http-request
           method: POST
-          url: "http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions"
-          headers: "Content-Type: application/json"
-          params: ""
+          url: http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions
+          headers: 'Content-Type: application/json'
+          params: ''
           body:
             type: raw-text
-            data: "{{#build_market_payload.payload#}}"
-          authorization: {type: no-auth}
-          timeout: {connect: 10, read: 240, write: 60}
+            data: '{{#build_market_payload.payload#}}'
+          authorization:
+            type: no-auth
+          timeout:
+            connect: 10
+            read: 240
+            write: 60
+          desc: ''
+          selected: false
         id: market_llm
-        position: {x: 1800, "y": 200}
-        type: http-request
+        position:
+          x: 1800
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 1800
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Extract Market Analysis"
+          title: Extract Market Analysis
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(body: str) -> dict:
-                try:
-                    d = json.loads(body)
-                    text = d["choices"][0]["message"]["content"]
-                    if "<think>" in text:
-                        text = text.split("</think>")[-1].strip()
-                    return {"market_analysis": text}
-                except Exception as e:
-                    return {"market_analysis": f"Error: {e}"}
+          code: "import json\ndef main(body: str) -> dict:\n    try:\n        d = json.loads(body)\n        text = d[\"choices\"][0][\"message\"][\"content\"]\n        if \"<think>\" in text:\n            text = text.split(\"</think>\")[-1].strip()\n        return {\"market_analysis\": text}\n    except Exception as e:\n        return {\"market_analysis\": f\"Error: {e}\"}\n"
           variables:
-          - {variable: body, value_selector: ["market_llm", "body"]}
+          - variable: body
+            value_selector:
+            - market_llm
+            - body
           outputs:
-            market_analysis: {type: string}
+            market_analysis:
+              type: string
+          desc: ''
+          selected: false
         id: extract_market
-        position: {x: 2000, "y": 200}
-        type: code
-
-      # ── 3. Financial Modeling — LLM only ────────────────────
+        position:
+          x: 2000
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 2000
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Build Financial Payload"
+          title: Build Financial Payload
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(company_info: str, market_analysis: str) -> dict:
-                payload = {
-                    "model": "qwen3.5-27b-fp8",
-                    "messages": [
-                        {"role": "system", "content": "You are a financial analyst building VC investment models. Produce: 1) Estimated current ARR / stage (Seed: $0.1-0.5M with 3-5x growth, Series A: $1-3M with 2-3x, Series B: $5-15M with 1.5-2x) 2) Bear/Base/Bull 5-year YoY multipliers 3) Year-by-year ARR projection table for each scenario 4) Exit valuation scenarios at 10x/15x/25x ARR multiples 5) Key model assumptions. Be transparent about what's estimated. Output in markdown with tables. Do not write Python code."},
-                        {"role": "user", "content": f"Company:\n{company_info}\n\nMarket:\n{market_analysis}\n\nBuild the financial model."}
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": 3000
-                }
-                return {"payload": json.dumps(payload)}
+          code: "import json\ndef main(company_info: str, market_analysis: str) -> dict:\n    payload = {\n        \"model\": \"qwen3.5-27b-fp8\",\n        \"messages\": [\n            {\"role\": \"system\", \"content\": \"You are a financial analyst building VC investment models. Produce: 1) Estimated current ARR / stage (Seed: $0.1-0.5M with 3-5x growth, Series A: $1-3M with 2-3x, Series B: $5-15M with 1.5-2x) 2) Bear/Base/Bull 5-year YoY multipliers 3) Year-by-year ARR projection table for each scenario 4) Exit valuation scenarios at 10x/15x/25x ARR multiples 5) Key model assumptions. Be transparent about what's estimated. Output in markdown with tables. Do not write Python code.\"},\n            {\"role\": \"user\", \"content\": f\"Company:\\n{company_info}\\n\\nMarket:\\n{market_analysis}\\n\\nBuild the financial model.\"}\n        ],\n        \"temperature\": 0.2,\n        \"max_tokens\": 3000\n    }\n    return {\"payload\": json.dumps(payload)}\n"
           variables:
-          - {variable: company_info, value_selector: ["extract_company", "company_info"]}
-          - {variable: market_analysis, value_selector: ["extract_market", "market_analysis"]}
+          - variable: company_info
+            value_selector:
+            - extract_company
+            - company_info
+          - variable: market_analysis
+            value_selector:
+            - extract_market
+            - market_analysis
           outputs:
-            payload: {type: string}
+            payload:
+              type: string
+          desc: ''
+          selected: false
         id: build_financial_payload
-        position: {x: 2200, "y": 200}
-        type: code
+        position:
+          x: 2200
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 2200
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Financial Modeling LLM"
+          title: Financial Modeling LLM
           type: http-request
           method: POST
-          url: "http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions"
-          headers: "Content-Type: application/json"
-          params: ""
+          url: http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions
+          headers: 'Content-Type: application/json'
+          params: ''
           body:
             type: raw-text
-            data: "{{#build_financial_payload.payload#}}"
-          authorization: {type: no-auth}
-          timeout: {connect: 10, read: 240, write: 60}
+            data: '{{#build_financial_payload.payload#}}'
+          authorization:
+            type: no-auth
+          timeout:
+            connect: 10
+            read: 240
+            write: 60
+          desc: ''
+          selected: false
         id: financial_llm
-        position: {x: 2400, "y": 200}
-        type: http-request
+        position:
+          x: 2400
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 2400
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Extract Financial Model"
+          title: Extract Financial Model
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(body: str) -> dict:
-                try:
-                    d = json.loads(body)
-                    text = d["choices"][0]["message"]["content"]
-                    if "<think>" in text:
-                        text = text.split("</think>")[-1].strip()
-                    return {"financial_model": text}
-                except Exception as e:
-                    return {"financial_model": f"Error: {e}"}
+          code: "import json\ndef main(body: str) -> dict:\n    try:\n        d = json.loads(body)\n        text = d[\"choices\"][0][\"message\"][\"content\"]\n        if \"<think>\" in text:\n            text = text.split(\"</think>\")[-1].strip()\n        return {\"financial_model\": text}\n    except Exception as e:\n        return {\"financial_model\": f\"Error: {e}\"}\n"
           variables:
-          - {variable: body, value_selector: ["financial_llm", "body"]}
+          - variable: body
+            value_selector:
+            - financial_llm
+            - body
           outputs:
-            financial_model: {type: string}
+            financial_model:
+              type: string
+          desc: ''
+          selected: false
         id: extract_financial
-        position: {x: 2600, "y": 200}
-        type: code
-
-      # ── 4. Risk Assessment — LLM only ───────────────────────
+        position:
+          x: 2600
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 2600
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Build Risk Payload"
+          title: Build Risk Payload
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(company_info: str, market_analysis: str, financial_model: str) -> dict:
-                payload = {
-                    "model": "qwen3.5-27b-fp8",
-                    "messages": [
-                        {"role": "system", "content": "You are a senior risk analyst at a top-tier VC firm. Analyse risks across 5 categories: 1) Market risk (competition, timing, adoption barriers) 2) Execution risk (team gaps, technology, scaling) 3) Financial risk (burn, fundraising, unit economics) 4) Regulatory risk (compliance, legal, geo) 5) Exit risk (acquirer landscape, IPO viability). For each risk: severity (Low/Medium/High/Critical), description with evidence, mitigation. End with: Overall risk score 1-10 (10=highest), Top 3 deal-killer risks, Recommended protective terms. Output markdown."},
-                        {"role": "user", "content": f"Company:\n{company_info}\n\nMarket:\n{market_analysis}\n\nFinancials:\n{financial_model}\n\nProduce the risk assessment."}
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 3000
-                }
-                return {"payload": json.dumps(payload)}
+          code: "import json\ndef main(company_info: str, market_analysis: str, financial_model: str) -> dict:\n    payload = {\n        \"model\": \"qwen3.5-27b-fp8\",\n        \"messages\": [\n            {\"role\": \"system\", \"content\": \"You are a senior risk analyst at a top-tier VC firm. Analyse risks across 5 categories: 1) Market risk (competition, timing, adoption barriers) 2) Execution risk (team gaps, technology, scaling) 3) Financial risk (burn, fundraising, unit economics) 4) Regulatory risk (compliance, legal, geo) 5) Exit risk (acquirer landscape, IPO viability). For each risk: severity (Low/Medium/High/Critical), description with evidence, mitigation. End with: Overall risk score 1-10 (10=highest), Top 3 deal-killer risks, Recommended protective terms. Output markdown.\"},\n            {\"role\": \"user\", \"content\": f\"Company:\\n{company_info}\\n\\nMarket:\\n{market_analysis}\\n\\nFinancials:\\n{financial_model}\\n\\nProduce the risk assessment.\"}\n        ],\n        \"temperature\": 0.3,\n        \"max_tokens\": 3000\n    }\n    return {\"payload\": json.dumps(payload)}\n"
           variables:
-          - {variable: company_info, value_selector: ["extract_company", "company_info"]}
-          - {variable: market_analysis, value_selector: ["extract_market", "market_analysis"]}
-          - {variable: financial_model, value_selector: ["extract_financial", "financial_model"]}
+          - variable: company_info
+            value_selector:
+            - extract_company
+            - company_info
+          - variable: market_analysis
+            value_selector:
+            - extract_market
+            - market_analysis
+          - variable: financial_model
+            value_selector:
+            - extract_financial
+            - financial_model
           outputs:
-            payload: {type: string}
+            payload:
+              type: string
+          desc: ''
+          selected: false
         id: build_risk_payload
-        position: {x: 2800, "y": 200}
-        type: code
+        position:
+          x: 2800
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 2800
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Risk Assessment LLM"
+          title: Risk Assessment LLM
           type: http-request
           method: POST
-          url: "http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions"
-          headers: "Content-Type: application/json"
-          params: ""
+          url: http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions
+          headers: 'Content-Type: application/json'
+          params: ''
           body:
             type: raw-text
-            data: "{{#build_risk_payload.payload#}}"
-          authorization: {type: no-auth}
-          timeout: {connect: 10, read: 240, write: 60}
+            data: '{{#build_risk_payload.payload#}}'
+          authorization:
+            type: no-auth
+          timeout:
+            connect: 10
+            read: 240
+            write: 60
+          desc: ''
+          selected: false
         id: risk_llm
-        position: {x: 3000, "y": 200}
-        type: http-request
+        position:
+          x: 3000
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 3000
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Extract Risk"
+          title: Extract Risk
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(body: str) -> dict:
-                try:
-                    d = json.loads(body)
-                    text = d["choices"][0]["message"]["content"]
-                    if "<think>" in text:
-                        text = text.split("</think>")[-1].strip()
-                    return {"risk_assessment": text}
-                except Exception as e:
-                    return {"risk_assessment": f"Error: {e}"}
+          code: "import json\ndef main(body: str) -> dict:\n    try:\n        d = json.loads(body)\n        text = d[\"choices\"][0][\"message\"][\"content\"]\n        if \"<think>\" in text:\n            text = text.split(\"</think>\")[-1].strip()\n        return {\"risk_assessment\": text}\n    except Exception as e:\n        return {\"risk_assessment\": f\"Error: {e}\"}\n"
           variables:
-          - {variable: body, value_selector: ["risk_llm", "body"]}
+          - variable: body
+            value_selector:
+            - risk_llm
+            - body
           outputs:
-            risk_assessment: {type: string}
+            risk_assessment:
+              type: string
+          desc: ''
+          selected: false
         id: extract_risk
-        position: {x: 3200, "y": 200}
-        type: code
-
-      # ── 5. Investor Memo — LLM only ─────────────────────────
+        position:
+          x: 3200
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 3200
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Build Memo Payload"
+          title: Build Memo Payload
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(company_info: str, market_analysis: str, financial_model: str, risk_assessment: str) -> dict:
-                payload = {
-                    "model": "qwen3.5-27b-fp8",
-                    "messages": [
-                        {"role": "system", "content": "You are a senior investment partner writing the investment memo. Synthesise prior analyses into a structured memo with these sections (markdown headers): ## Executive Summary, ## Company Overview, ## Funding & Valuation, ## Market Opportunity, ## Financial Analysis, ## Risk Analysis, ## Investment Thesis, ## Recommendation. Recommendation must be one of: Strong Buy / Buy / Hold / Pass. Include key highlights and return scenarios. For early-stage clearly note estimated vs confirmed."},
-                        {"role": "user", "content": f"COMPANY:\n{company_info}\n\nMARKET:\n{market_analysis}\n\nFINANCIALS:\n{financial_model}\n\nRISKS:\n{risk_assessment}\n\nWrite the investor memo."}
-                    ],
-                    "temperature": 0.4,
-                    "max_tokens": 4000
-                }
-                return {"payload": json.dumps(payload)}
+          code: "import json\ndef main(company_info: str, market_analysis: str, financial_model: str, risk_assessment: str) -> dict:\n    payload = {\n        \"model\": \"qwen3.5-27b-fp8\",\n        \"messages\": [\n            {\"role\": \"system\", \"content\": \"You are a senior investment partner writing the investment memo. Synthesise prior analyses into a structured memo with these sections (markdown headers): ## Executive Summary, ## Company Overview, ## Funding & Valuation, ## Market Opportunity, ## Financial Analysis, ## Risk Analysis, ## Investment Thesis, ## Recommendation. Recommendation must be one of: Strong Buy / Buy / Hold / Pass. Include key highlights and return scenarios. For early-stage clearly note estimated vs confirmed.\"},\n            {\"role\": \"user\", \"content\": f\"COMPANY:\\n{company_info}\\n\\nMARKET:\\n{market_analysis}\\n\\nFINANCIALS:\\n{financial_model}\\n\\nRISKS:\\n{risk_assessment}\\n\\nWrite the investor memo.\"}\n        ],\n        \"temperature\": 0.4,\n        \"max_tokens\": 4000\n    }\n    return {\"payload\": json.dumps(payload)}\n"
           variables:
-          - {variable: company_info, value_selector: ["extract_company", "company_info"]}
-          - {variable: market_analysis, value_selector: ["extract_market", "market_analysis"]}
-          - {variable: financial_model, value_selector: ["extract_financial", "financial_model"]}
-          - {variable: risk_assessment, value_selector: ["extract_risk", "risk_assessment"]}
+          - variable: company_info
+            value_selector:
+            - extract_company
+            - company_info
+          - variable: market_analysis
+            value_selector:
+            - extract_market
+            - market_analysis
+          - variable: financial_model
+            value_selector:
+            - extract_financial
+            - financial_model
+          - variable: risk_assessment
+            value_selector:
+            - extract_risk
+            - risk_assessment
           outputs:
-            payload: {type: string}
+            payload:
+              type: string
+          desc: ''
+          selected: false
         id: build_memo_payload
-        position: {x: 3400, "y": 200}
-        type: code
+        position:
+          x: 3400
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 3400
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Investor Memo LLM"
+          title: Investor Memo LLM
           type: http-request
           method: POST
-          url: "http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions"
-          headers: "Content-Type: application/json"
-          params: ""
+          url: http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions
+          headers: 'Content-Type: application/json'
+          params: ''
           body:
             type: raw-text
-            data: "{{#build_memo_payload.payload#}}"
-          authorization: {type: no-auth}
-          timeout: {connect: 10, read: 240, write: 60}
+            data: '{{#build_memo_payload.payload#}}'
+          authorization:
+            type: no-auth
+          timeout:
+            connect: 10
+            read: 240
+            write: 60
+          desc: ''
+          selected: false
         id: memo_llm
-        position: {x: 3600, "y": 200}
-        type: http-request
+        position:
+          x: 3600
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 3600
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Extract Memo"
+          title: Extract Memo
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(body: str) -> dict:
-                try:
-                    d = json.loads(body)
-                    text = d["choices"][0]["message"]["content"]
-                    if "<think>" in text:
-                        text = text.split("</think>")[-1].strip()
-                    return {"investor_memo": text}
-                except Exception as e:
-                    return {"investor_memo": f"Error: {e}"}
+          code: "import json\ndef main(body: str) -> dict:\n    try:\n        d = json.loads(body)\n        text = d[\"choices\"][0][\"message\"][\"content\"]\n        if \"<think>\" in text:\n            text = text.split(\"</think>\")[-1].strip()\n        return {\"investor_memo\": text}\n    except Exception as e:\n        return {\"investor_memo\": f\"Error: {e}\"}\n"
           variables:
-          - {variable: body, value_selector: ["memo_llm", "body"]}
+          - variable: body
+            value_selector:
+            - memo_llm
+            - body
           outputs:
-            investor_memo: {type: string}
+            investor_memo:
+              type: string
+          desc: ''
+          selected: false
         id: extract_memo
-        position: {x: 3800, "y": 200}
-        type: code
-
-      # ── 6. Final Report — LLM expands memo into full dossier ─
+        position:
+          x: 3800
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 3800
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Build Report Payload"
+          title: Build Report Payload
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(company: str, investor_memo: str) -> dict:
-                payload = {
-                    "model": "qwen3.5-27b-fp8",
-                    "messages": [
-                        {"role": "system", "content": "You generate a polished investment due-diligence report in MARKDOWN format suitable for PDF rendering. Use these conventions: # for the report title, ## for major sections, ### for subsections, - for bullets, | tables | for tabular data (financials, risks). Include all sections from the memo plus: opening Date line, an Investment Highlights bullet list, a Returns Scenarios table (Bear/Base/Bull), and a Risk Matrix table. Include 1-2 Mermaid diagrams in fenced ```mermaid blocks if useful (flowchart or pie). Be concise but thorough. The report will be rendered as a McKinsey-style PDF with navy and gold styling."},
-                        {"role": "user", "content": f"Company: {company}\n\nInvestor Memo to expand:\n{investor_memo}\n\nWrite the full markdown report."}
-                    ],
-                    "temperature": 0.4,
-                    "max_tokens": 5000
-                }
-                return {"payload": json.dumps(payload)}
+          code: "import json\ndef main(company: str, investor_memo: str) -> dict:\n    payload = {\n        \"model\": \"qwen3.5-27b-fp8\",\n        \"messages\": [\n            {\"role\": \"system\", \"content\": \"You generate a polished investment due-diligence report in MARKDOWN format suitable for PDF rendering. Use these conventions: # for the report title, ## for major sections, ### for subsections, - for bullets, | tables | for tabular data (financials, risks). Include all sections from the memo plus: opening Date line, an Investment Highlights bullet list, a Returns Scenarios table (Bear/Base/Bull), and a Risk Matrix table. Include 1-2 Mermaid diagrams in fenced ```mermaid blocks if useful (flowchart or pie). Be concise but thorough. The report will be rendered as a McKinsey-style PDF with navy and gold styling.\"},\n            {\"role\": \"user\", \"content\": f\"Company: {company}\\n\\nInvestor Memo to expand:\\n{investor_memo}\\n\\nWrite the full markdown report.\"}\n        ],\n        \"temperature\": 0.4,\n        \"max_tokens\": 5000\n    }\n    return {\"payload\": json.dumps(payload)}\n"
           variables:
-          - {variable: company, value_selector: ["start", "company_name"]}
-          - {variable: investor_memo, value_selector: ["extract_memo", "investor_memo"]}
+          - variable: company
+            value_selector:
+            - start
+            - company_name
+          - variable: investor_memo
+            value_selector:
+            - extract_memo
+            - investor_memo
           outputs:
-            payload: {type: string}
+            payload:
+              type: string
+          desc: ''
+          selected: false
         id: build_report_payload
-        position: {x: 4000, "y": 200}
-        type: code
+        position:
+          x: 4000
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 4000
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Report Generator LLM"
+          title: Report Generator LLM
           type: http-request
           method: POST
-          url: "http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions"
-          headers: "Content-Type: application/json"
-          params: ""
+          url: http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions
+          headers: 'Content-Type: application/json'
+          params: ''
           body:
             type: raw-text
-            data: "{{#build_report_payload.payload#}}"
-          authorization: {type: no-auth}
-          timeout: {connect: 10, read: 300, write: 60}
+            data: '{{#build_report_payload.payload#}}'
+          authorization:
+            type: no-auth
+          timeout:
+            connect: 10
+            read: 300
+            write: 60
+          desc: ''
+          selected: false
         id: report_llm
-        position: {x: 4200, "y": 200}
-        type: http-request
+        position:
+          x: 4200
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 4200
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Extract Final Report"
+          title: Extract Final Report
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(body: str) -> dict:
-                try:
-                    d = json.loads(body)
-                    text = d["choices"][0]["message"]["content"]
-                    if "<think>" in text:
-                        text = text.split("</think>")[-1].strip()
-                    return {"dossier": text}
-                except Exception as e:
-                    return {"dossier": f"Error: {e}"}
+          code: "import json\ndef main(body: str) -> dict:\n    try:\n        d = json.loads(body)\n        text = d[\"choices\"][0][\"message\"][\"content\"]\n        if \"<think>\" in text:\n            text = text.split(\"</think>\")[-1].strip()\n        return {\"dossier\": text}\n    except Exception as e:\n        return {\"dossier\": f\"Error: {e}\"}\n"
           variables:
-          - {variable: body, value_selector: ["report_llm", "body"]}
+          - variable: body
+            value_selector:
+            - report_llm
+            - body
           outputs:
-            dossier: {type: string}
+            dossier:
+              type: string
+          desc: ''
+          selected: false
         id: extract_report
-        position: {x: 4400, "y": 200}
-        type: code
-
-      # ── 7. Notify — POST to Bionic platform webhook ────────
+        position:
+          x: 4400
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 4400
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Notify"
+          title: Notify
           type: http-request
           method: POST
-          url: "{{auto.notify_webhook_url}}"
-          headers: |
-            Content-Type: application/json
+          url: '{{auto.notify_webhook_url}}'
+          headers: 'Content-Type: application/json
+
             X-Bionic-Token: {{auto.notify_token}}
-          params: ""
+
+            '
+          params: ''
           body:
             type: raw-text
-            data: |
-              {
-                "subject": "VC Due Diligence: {{#start.company_name#}}",
-                "to_email": "{{config.notify_email}}",
-                "to_webhook": "{{config.notify_webhook}}",
-                "render_pdf": true,
-                "dossier_markdown": {{#extract_report.dossier# | tojson}}
-              }
-          authorization: {type: no-auth}
-          timeout: {connect: 10, read: 90, write: 60}
+            data: "{\n  \"subject\": \"VC Due Diligence: {{#start.company_name#}}\",\n  \"to_email\": \"{{config.notify_email}}\",\n  \"to_webhook\": \"{{config.notify_webhook}}\",\n  \"render_pdf\": true,\n  \"dossier_markdown\": {{#extract_report.dossier# | tojson}}\n}\n"
+          authorization:
+            type: no-auth
+          timeout:
+            connect: 10
+            read: 90
+            write: 60
+          desc: ''
+          selected: false
         id: notify
-        position: {x: 4600, "y": 200}
-        type: http-request
-
-      # ── End ─────────────────────────────────────────────────
+        position:
+          x: 4600
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 4600
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
           title: End
           type: end
           outputs:
-          - {value_selector: ["extract_report", "dossier"], variable: result}
-          - {value_selector: ["extract_memo", "investor_memo"], variable: memo}
+          - value_selector:
+            - extract_report
+            - dossier
+            variable: result
+          - value_selector:
+            - extract_memo
+            - investor_memo
+            variable: memo
+          desc: ''
+          selected: false
         id: end
-        position: {x: 4800, "y": 200}
-        type: end
+        position:
+          x: 4800
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 4800
+          y: 200
+        height: 116
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+      viewport:
+        x: 0
+        y: 0
+        zoom: 0.7

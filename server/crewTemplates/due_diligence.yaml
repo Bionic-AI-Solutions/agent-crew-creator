@@ -1,265 +1,511 @@
 metadata:
   id: due_diligence
   label: Due Diligence Bot
-  description: |
-    Generic single-pass due-diligence for any target (company, product, person, market).
+  description: 'Generic single-pass due-diligence for any target (company, product, person, market).
+
     One Search MCP query → research synth → analysis → markdown dossier → PDF + webhook + email.
+
     Choose this for fast, lightweight research. For full 7-stage VC investment analysis with
+
     competitor mapping, financial modeling, and risk scoring, use VC Due Diligence instead.
+
+    '
   mode: workflow
-  icon: "📑"
+  icon: 📑
   configSchema:
-    - key: notify_email
-      label: Notification Email
-      type: email
-      required: false
-      placeholder: "analyst@example.com"
-      description: "Recipient for the completed dossier (Gmail SMTP relay)"
-    - key: notify_webhook
-      label: Notification Webhook (optional)
-      type: url
-      required: false
-      placeholder: "https://hooks.slack.com/services/..."
-      description: "POST destination for the completed dossier summary"
-    - key: report_focus
-      label: Report Focus
-      type: textarea
-      required: false
-      placeholder: "Financials, leadership, market position, legal/regulatory risks, recent news"
-      description: "Sections to emphasise in the report"
+  - key: notify_email
+    label: Notification Email
+    type: email
+    required: false
+    placeholder: analyst@example.com
+    description: Recipient for the completed dossier (Gmail SMTP relay)
+  - key: notify_webhook
+    label: Notification Webhook (optional)
+    type: url
+    required: false
+    placeholder: https://hooks.slack.com/services/...
+    description: POST destination for the completed dossier summary
+  - key: report_focus
+    label: Report Focus
+    type: textarea
+    required: false
+    placeholder: Financials, leadership, market position, legal/regulatory risks, recent news
+    description: Sections to emphasise in the report
   postInstall: none
 difyDsl: |
   app:
-    description: "Due diligence bot — multi-stage research with PDF + notify"
+    description: "Due diligence bot \u2014 multi-stage research with PDF + notify"
     icon: "\U0001F4D1"
-    icon_background: "#FEE2E2"
+    icon_background: '#FEE2E2'
     mode: workflow
     name: Due Diligence
     use_icon_as_answer_icon: false
   kind: app
-  version: 0.1.5
+  version: 0.3.0
   workflow:
     conversation_variables: []
     environment_variables: []
     features: {}
     graph:
       edges:
-      - {id: e1, source: start, sourceHandle: source, target: search, targetHandle: target, type: custom}
-      - {id: e2, source: search, sourceHandle: source, target: extract_results, targetHandle: target, type: custom}
-      - {id: e3, source: extract_results, sourceHandle: source, target: build_research_payload, targetHandle: target, type: custom}
-      - {id: e4, source: build_research_payload, sourceHandle: source, target: research, targetHandle: target, type: custom}
-      - {id: e5, source: research, sourceHandle: source, target: extract_research, targetHandle: target, type: custom}
-      - {id: e6, source: extract_research, sourceHandle: source, target: build_report_payload, targetHandle: target, type: custom}
-      - {id: e7, source: build_report_payload, sourceHandle: source, target: report, targetHandle: target, type: custom}
-      - {id: e8, source: report, sourceHandle: source, target: extract_report, targetHandle: target, type: custom}
-      - {id: e9, source: extract_report, sourceHandle: source, target: notify, targetHandle: target, type: custom}
-      - {id: e10, source: notify, sourceHandle: source, target: end, targetHandle: target, type: custom}
+      - id: e1
+        source: start
+        sourceHandle: source
+        target: search
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: start
+          targetType: http-request
+        selected: false
+        zIndex: 0
+      - id: e2
+        source: search
+        sourceHandle: source
+        target: extract_results
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: http-request
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e3
+        source: extract_results
+        sourceHandle: source
+        target: build_research_payload
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e4
+        source: build_research_payload
+        sourceHandle: source
+        target: research
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: http-request
+        selected: false
+        zIndex: 0
+      - id: e5
+        source: research
+        sourceHandle: source
+        target: extract_research
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: http-request
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e6
+        source: extract_research
+        sourceHandle: source
+        target: build_report_payload
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e7
+        source: build_report_payload
+        sourceHandle: source
+        target: report
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: http-request
+        selected: false
+        zIndex: 0
+      - id: e8
+        source: report
+        sourceHandle: source
+        target: extract_report
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: http-request
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e9
+        source: extract_report
+        sourceHandle: source
+        target: notify
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: http-request
+        selected: false
+        zIndex: 0
+      - id: e10
+        source: notify
+        sourceHandle: source
+        target: end
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: http-request
+          targetType: end
+        selected: false
+        zIndex: 0
       nodes:
       - data:
           title: Start
           type: start
           variables:
-          - {label: Subject, max_length: 500, required: true, type: text-input, variable: subject}
-          - {label: Notes, max_length: 2000, required: false, type: paragraph, variable: notes}
+          - label: Subject
+            max_length: 500
+            required: true
+            type: text-input
+            variable: subject
+          - label: Notes
+            max_length: 2000
+            required: false
+            type: paragraph
+            variable: notes
+          desc: ''
+          selected: false
         id: start
-        position: {x: 0, "y": 200}
-        type: start
+        position:
+          x: 0
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 0
+          y: 200
+        height: 116
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Search MCP"
+          title: Search MCP
           type: http-request
           method: POST
-          url: "{{auto.mcp_search_url}}/search"
-          headers: |
-            Content-Type: application/json
+          url: '{{auto.mcp_search_url}}/search'
+          headers: 'Content-Type: application/json
+
             X-API-Key: {{auto.mcp_search_api_key}}
-          params: ""
+
+            '
+          params: ''
           body:
             type: raw-text
             data: '{"query":"{{#start.subject#}} due diligence","limit":15}'
-          authorization: {type: no-auth}
-          timeout: {connect: 10, read: 60, write: 30}
+          authorization:
+            type: no-auth
+          timeout:
+            connect: 10
+            read: 60
+            write: 30
+          desc: ''
+          selected: false
         id: search
-        position: {x: 200, "y": 200}
-        type: http-request
+        position:
+          x: 200
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 200
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Extract Results"
+          title: Extract Results
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(body: str) -> dict:
-                try:
-                    d = json.loads(body)
-                    results = d.get("results", [])
-                    formatted = "\n\n".join(
-                        f"[{i+1}] {r.get('title','')} — {r.get('url','')}\n{r.get('snippet','')}"
-                        for i, r in enumerate(results)
-                    )
-                    return {"sources": formatted}
-                except Exception as e:
-                    return {"sources": f"Error: {e}"}
+          code: "import json\ndef main(body: str) -> dict:\n    try:\n        d = json.loads(body)\n        results = d.get(\"results\", [])\n        formatted = \"\\n\\n\".join(\n            f\"[{i+1}] {r.get('title','')} \u2014 {r.get('url','')}\\n{r.get('snippet','')}\"\n            for i, r in enumerate(results)\n        )\n        return {\"sources\": formatted}\n    except Exception as e:\n        return {\"sources\": f\"Error: {e}\"}\n"
           variables:
-          - {variable: body, value_selector: ["search", "body"]}
+          - variable: body
+            value_selector:
+            - search
+            - body
           outputs:
-            sources: {type: string}
+            sources:
+              type: string
+          desc: ''
+          selected: false
         id: extract_results
-        position: {x: 400, "y": 200}
-        type: code
+        position:
+          x: 400
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 400
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Build Research Payload"
+          title: Build Research Payload
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(subject: str, notes: str, sources: str) -> dict:
-                focus = """{{config.report_focus}}"""
-                payload = {
-                    "model": "qwen3.5-27b-fp8",
-                    "messages": [
-                        {"role": "system", "content": f"You are a due-diligence researcher. Focus areas: {focus}. Extract structured findings from the provided sources."},
-                        {"role": "user", "content": f"Subject: {subject}\nNotes: {notes}\n\nSources:\n{sources}"}
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 3000
-                }
-                return {"payload": json.dumps(payload)}
+          code: "import json\ndef main(subject: str, notes: str, sources: str) -> dict:\n    focus = \"\"\"{{config.report_focus}}\"\"\"\n    payload = {\n        \"model\": \"qwen3.5-27b-fp8\",\n        \"messages\": [\n            {\"role\": \"system\", \"content\": f\"You are a due-diligence researcher. Focus areas: {focus}. Extract structured findings from the provided sources.\"},\n            {\"role\": \"user\", \"content\": f\"Subject: {subject}\\nNotes: {notes}\\n\\nSources:\\n{sources}\"}\n        ],\n        \"temperature\": 0.3,\n        \"max_tokens\": 3000\n    }\n    return {\"payload\": json.dumps(payload)}\n"
           variables:
-          - {variable: subject, value_selector: ["start", "subject"]}
-          - {variable: notes, value_selector: ["start", "notes"]}
-          - {variable: sources, value_selector: ["extract_results", "sources"]}
+          - variable: subject
+            value_selector:
+            - start
+            - subject
+          - variable: notes
+            value_selector:
+            - start
+            - notes
+          - variable: sources
+            value_selector:
+            - extract_results
+            - sources
           outputs:
-            payload: {type: string}
+            payload:
+              type: string
+          desc: ''
+          selected: false
         id: build_research_payload
-        position: {x: 600, "y": 200}
-        type: code
+        position:
+          x: 600
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 600
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Research LLM"
+          title: Research LLM
           type: http-request
           method: POST
-          url: "http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions"
-          headers: "Content-Type: application/json"
-          params: ""
+          url: http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions
+          headers: 'Content-Type: application/json'
+          params: ''
           body:
             type: raw-text
-            data: "{{#build_research_payload.payload#}}"
-          authorization: {type: no-auth}
-          timeout: {connect: 10, read: 240, write: 60}
+            data: '{{#build_research_payload.payload#}}'
+          authorization:
+            type: no-auth
+          timeout:
+            connect: 10
+            read: 240
+            write: 60
+          desc: ''
+          selected: false
         id: research
-        position: {x: 800, "y": 200}
-        type: http-request
+        position:
+          x: 800
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 800
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Extract Research"
+          title: Extract Research
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(body: str) -> dict:
-                try:
-                    d = json.loads(body)
-                    text = d["choices"][0]["message"]["content"]
-                    if "<think>" in text:
-                        text = text.split("</think>")[-1].strip()
-                    return {"findings": text}
-                except Exception as e:
-                    return {"findings": f"Error: {e}"}
+          code: "import json\ndef main(body: str) -> dict:\n    try:\n        d = json.loads(body)\n        text = d[\"choices\"][0][\"message\"][\"content\"]\n        if \"<think>\" in text:\n            text = text.split(\"</think>\")[-1].strip()\n        return {\"findings\": text}\n    except Exception as e:\n        return {\"findings\": f\"Error: {e}\"}\n"
           variables:
-          - {variable: body, value_selector: ["research", "body"]}
+          - variable: body
+            value_selector:
+            - research
+            - body
           outputs:
-            findings: {type: string}
+            findings:
+              type: string
+          desc: ''
+          selected: false
         id: extract_research
-        position: {x: 1000, "y": 200}
-        type: code
+        position:
+          x: 1000
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 1000
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Build Report Payload"
+          title: Build Report Payload
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(subject: str, findings: str) -> dict:
-                payload = {
-                    "model": "qwen3.5-27b-fp8",
-                    "messages": [
-                        {"role": "system", "content": "You are a due-diligence report writer. Produce a Markdown dossier with: Executive Summary, Subject Profile, Key Findings, Risk Assessment (low/medium/high), Recommended Actions. Include 1-2 Mermaid diagrams (flowchart or pie) where useful."},
-                        {"role": "user", "content": f"Subject: {subject}\n\nResearch findings:\n{findings}"}
-                    ],
-                    "temperature": 0.4,
-                    "max_tokens": 4000
-                }
-                return {"payload": json.dumps(payload)}
+          code: "import json\ndef main(subject: str, findings: str) -> dict:\n    payload = {\n        \"model\": \"qwen3.5-27b-fp8\",\n        \"messages\": [\n            {\"role\": \"system\", \"content\": \"You are a due-diligence report writer. Produce a Markdown dossier with: Executive Summary, Subject Profile, Key Findings, Risk Assessment (low/medium/high), Recommended Actions. Include 1-2 Mermaid diagrams (flowchart or pie) where useful.\"},\n            {\"role\": \"user\", \"content\": f\"Subject: {subject}\\n\\nResearch findings:\\n{findings}\"}\n        ],\n        \"temperature\": 0.4,\n        \"max_tokens\": 4000\n    }\n    return {\"payload\": json.dumps(payload)}\n"
           variables:
-          - {variable: subject, value_selector: ["start", "subject"]}
-          - {variable: findings, value_selector: ["extract_research", "findings"]}
+          - variable: subject
+            value_selector:
+            - start
+            - subject
+          - variable: findings
+            value_selector:
+            - extract_research
+            - findings
           outputs:
-            payload: {type: string}
+            payload:
+              type: string
+          desc: ''
+          selected: false
         id: build_report_payload
-        position: {x: 1200, "y": 200}
-        type: code
+        position:
+          x: 1200
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 1200
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Report LLM"
+          title: Report LLM
           type: http-request
           method: POST
-          url: "http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions"
-          headers: "Content-Type: application/json"
-          params: ""
+          url: http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions
+          headers: 'Content-Type: application/json'
+          params: ''
           body:
             type: raw-text
-            data: "{{#build_report_payload.payload#}}"
-          authorization: {type: no-auth}
-          timeout: {connect: 10, read: 240, write: 60}
+            data: '{{#build_report_payload.payload#}}'
+          authorization:
+            type: no-auth
+          timeout:
+            connect: 10
+            read: 240
+            write: 60
+          desc: ''
+          selected: false
         id: report
-        position: {x: 1400, "y": 200}
-        type: http-request
+        position:
+          x: 1400
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 1400
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Extract Report"
+          title: Extract Report
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(body: str) -> dict:
-                try:
-                    d = json.loads(body)
-                    text = d["choices"][0]["message"]["content"]
-                    if "<think>" in text:
-                        text = text.split("</think>")[-1].strip()
-                    return {"dossier": text}
-                except Exception as e:
-                    return {"dossier": f"Error: {e}"}
+          code: "import json\ndef main(body: str) -> dict:\n    try:\n        d = json.loads(body)\n        text = d[\"choices\"][0][\"message\"][\"content\"]\n        if \"<think>\" in text:\n            text = text.split(\"</think>\")[-1].strip()\n        return {\"dossier\": text}\n    except Exception as e:\n        return {\"dossier\": f\"Error: {e}\"}\n"
           variables:
-          - {variable: body, value_selector: ["report", "body"]}
+          - variable: body
+            value_selector:
+            - report
+            - body
           outputs:
-            dossier: {type: string}
+            dossier:
+              type: string
+          desc: ''
+          selected: false
         id: extract_report
-        position: {x: 1600, "y": 200}
-        type: code
+        position:
+          x: 1600
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 1600
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Notify"
+          title: Notify
           type: http-request
           method: POST
-          url: "{{auto.notify_webhook_url}}"
-          headers: |
-            Content-Type: application/json
+          url: '{{auto.notify_webhook_url}}'
+          headers: 'Content-Type: application/json
+
             X-Bionic-Token: {{auto.notify_token}}
-          params: ""
+
+            '
+          params: ''
           body:
             type: raw-text
-            data: |
-              {
-                "subject": "Due diligence dossier: {{#start.subject#}}",
-                "to_email": "{{config.notify_email}}",
-                "to_webhook": "{{config.notify_webhook}}",
-                "render_pdf": true,
-                "dossier_markdown": {{#extract_report.dossier# | tojson}}
-              }
-          authorization: {type: no-auth}
-          timeout: {connect: 10, read: 60, write: 30}
+            data: "{\n  \"subject\": \"Due diligence dossier: {{#start.subject#}}\",\n  \"to_email\": \"{{config.notify_email}}\",\n  \"to_webhook\": \"{{config.notify_webhook}}\",\n  \"render_pdf\": true,\n  \"dossier_markdown\": {{#extract_report.dossier# | tojson}}\n}\n"
+          authorization:
+            type: no-auth
+          timeout:
+            connect: 10
+            read: 60
+            write: 30
+          desc: ''
+          selected: false
         id: notify
-        position: {x: 1800, "y": 200}
-        type: http-request
+        position:
+          x: 1800
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 1800
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
           title: End
           type: end
           outputs:
-          - {value_selector: ["extract_report", "dossier"], variable: result}
+          - value_selector:
+            - extract_report
+            - dossier
+            variable: result
+          desc: ''
+          selected: false
         id: end
-        position: {x: 2000, "y": 200}
-        type: end
+        position:
+          x: 2000
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 2000
+          y: 200
+        height: 116
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+      viewport:
+        x: 0
+        y: 0
+        zoom: 0.7

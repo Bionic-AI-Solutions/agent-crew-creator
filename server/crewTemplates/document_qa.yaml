@@ -3,145 +3,301 @@ metadata:
   label: Document Q&A
   description: RAG over uploaded PDFs and documents stored in the agent's Letta archival memory. Returns grounded answers with passage citations.
   mode: workflow
-  icon: "📄"
+  icon: 📄
   configSchema: []
   postInstall: none
 difyDsl: |
   app:
-    description: "Document Q&A — RAG over Letta archival passages"
+    description: "Document Q&A \u2014 RAG over Letta archival passages"
     icon: "\U0001F4C4"
-    icon_background: "#E0F2FE"
+    icon_background: '#E0F2FE'
     mode: workflow
     name: Document Q&A
     use_icon_as_answer_icon: false
   kind: app
-  version: 0.1.5
+  version: 0.3.0
   workflow:
     conversation_variables: []
     environment_variables: []
     features: {}
     graph:
       edges:
-      - {id: e1, source: start, sourceHandle: source, target: retrieve, targetHandle: target, type: custom}
-      - {id: e2, source: retrieve, sourceHandle: source, target: extract_passages, targetHandle: target, type: custom}
-      - {id: e3, source: extract_passages, sourceHandle: source, target: build_payload, targetHandle: target, type: custom}
-      - {id: e4, source: build_payload, sourceHandle: source, target: answer, targetHandle: target, type: custom}
-      - {id: e5, source: answer, sourceHandle: source, target: extract_answer, targetHandle: target, type: custom}
-      - {id: e6, source: extract_answer, sourceHandle: source, target: end, targetHandle: target, type: custom}
+      - id: e1
+        source: start
+        sourceHandle: source
+        target: retrieve
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: start
+          targetType: http-request
+        selected: false
+        zIndex: 0
+      - id: e2
+        source: retrieve
+        sourceHandle: source
+        target: extract_passages
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: http-request
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e3
+        source: extract_passages
+        sourceHandle: source
+        target: build_payload
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e4
+        source: build_payload
+        sourceHandle: source
+        target: answer
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: http-request
+        selected: false
+        zIndex: 0
+      - id: e5
+        source: answer
+        sourceHandle: source
+        target: extract_answer
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: http-request
+          targetType: code
+        selected: false
+        zIndex: 0
+      - id: e6
+        source: extract_answer
+        sourceHandle: source
+        target: end
+        targetHandle: target
+        type: custom
+        data:
+          isInIteration: false
+          sourceType: code
+          targetType: end
+        selected: false
+        zIndex: 0
       nodes:
       - data:
           title: Start
           type: start
           variables:
-          - {label: Question, max_length: 2000, required: true, type: paragraph, variable: question}
+          - label: Question
+            max_length: 2000
+            required: true
+            type: paragraph
+            variable: question
+          desc: ''
+          selected: false
         id: start
-        position: {x: 0, "y": 200}
-        type: start
+        position:
+          x: 0
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 0
+          y: 200
+        height: 116
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Retrieve Passages"
+          title: Retrieve Passages
           type: http-request
           method: GET
-          url: "{{auto.letta_base_url}}/v1/agents/{{auto.letta_agent_id}}/archival?search={{#start.question#}}&limit=8"
-          headers: |
-            Authorization: Bearer {{auto.letta_api_key}}
-          params: ""
-          body: {type: none}
-          authorization: {type: no-auth}
-          timeout: {connect: 10, read: 30, write: 10}
+          url: '{{auto.letta_base_url}}/v1/agents/{{auto.letta_agent_id}}/archival?search={{#start.question#}}&limit=8'
+          headers: 'Authorization: Bearer {{auto.letta_api_key}}
+
+            '
+          params: ''
+          body:
+            type: none
+          authorization:
+            type: no-auth
+          timeout:
+            connect: 10
+            read: 30
+            write: 10
+          desc: ''
+          selected: false
         id: retrieve
-        position: {x: 250, "y": 200}
-        type: http-request
+        position:
+          x: 250
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 250
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Extract Passages"
+          title: Extract Passages
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(body: str) -> dict:
-                try:
-                    d = json.loads(body)
-                    items = d if isinstance(d, list) else d.get("data", [])
-                    formatted = "\n\n".join(
-                        f"[{i+1}] {p.get('text','')}" for i, p in enumerate(items)
-                    )
-                    return {"passages": formatted or "(no relevant passages found)"}
-                except Exception as e:
-                    return {"passages": f"Error: {e}"}
+          code: "import json\ndef main(body: str) -> dict:\n    try:\n        d = json.loads(body)\n        items = d if isinstance(d, list) else d.get(\"data\", [])\n        formatted = \"\\n\\n\".join(\n            f\"[{i+1}] {p.get('text','')}\" for i, p in enumerate(items)\n        )\n        return {\"passages\": formatted or \"(no relevant passages found)\"}\n    except Exception as e:\n        return {\"passages\": f\"Error: {e}\"}\n"
           variables:
-          - {variable: body, value_selector: ["retrieve", "body"]}
+          - variable: body
+            value_selector:
+            - retrieve
+            - body
           outputs:
-            passages: {type: string}
+            passages:
+              type: string
+          desc: ''
+          selected: false
         id: extract_passages
-        position: {x: 450, "y": 200}
-        type: code
+        position:
+          x: 450
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 450
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Build Answer Payload"
+          title: Build Answer Payload
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(question: str, passages: str) -> dict:
-                payload = {
-                    "model": "qwen3.5-27b-fp8",
-                    "messages": [
-                        {"role": "system", "content": "You answer questions using only the provided passages. Cite passages by number [n]. If the answer is not present, say so."},
-                        {"role": "user", "content": f"Question: {question}\n\nPassages:\n{passages}"}
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": 1500
-                }
-                return {"payload": json.dumps(payload)}
+          code: "import json\ndef main(question: str, passages: str) -> dict:\n    payload = {\n        \"model\": \"qwen3.5-27b-fp8\",\n        \"messages\": [\n            {\"role\": \"system\", \"content\": \"You answer questions using only the provided passages. Cite passages by number [n]. If the answer is not present, say so.\"},\n            {\"role\": \"user\", \"content\": f\"Question: {question}\\n\\nPassages:\\n{passages}\"}\n        ],\n        \"temperature\": 0.2,\n        \"max_tokens\": 1500\n    }\n    return {\"payload\": json.dumps(payload)}\n"
           variables:
-          - {variable: question, value_selector: ["start", "question"]}
-          - {variable: passages, value_selector: ["extract_passages", "passages"]}
+          - variable: question
+            value_selector:
+            - start
+            - question
+          - variable: passages
+            value_selector:
+            - extract_passages
+            - passages
           outputs:
-            payload: {type: string}
+            payload:
+              type: string
+          desc: ''
+          selected: false
         id: build_payload
-        position: {x: 600, "y": 200}
-        type: code
+        position:
+          x: 600
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 600
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Generate Answer"
+          title: Generate Answer
           type: http-request
           method: POST
-          url: "http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions"
-          headers: "Content-Type: application/json"
-          params: ""
+          url: http://llm-deep.mcp.svc.cluster.local:8005/v1/chat/completions
+          headers: 'Content-Type: application/json'
+          params: ''
           body:
             type: raw-text
-            data: "{{#build_payload.payload#}}"
-          authorization: {type: no-auth}
-          timeout: {connect: 10, read: 120, write: 30}
+            data: '{{#build_payload.payload#}}'
+          authorization:
+            type: no-auth
+          timeout:
+            connect: 10
+            read: 120
+            write: 30
+          desc: ''
+          selected: false
         id: answer
-        position: {x: 800, "y": 200}
-        type: http-request
+        position:
+          x: 800
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 800
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
-          title: "Extract Answer"
+          title: Extract Answer
           type: code
           code_language: python3
-          code: |
-            import json
-            def main(body: str) -> dict:
-                try:
-                    d = json.loads(body)
-                    text = d["choices"][0]["message"]["content"]
-                    if "<think>" in text:
-                        text = text.split("</think>")[-1].strip()
-                    return {"answer": text}
-                except Exception as e:
-                    return {"answer": f"Error: {e}"}
+          code: "import json\ndef main(body: str) -> dict:\n    try:\n        d = json.loads(body)\n        text = d[\"choices\"][0][\"message\"][\"content\"]\n        if \"<think>\" in text:\n            text = text.split(\"</think>\")[-1].strip()\n        return {\"answer\": text}\n    except Exception as e:\n        return {\"answer\": f\"Error: {e}\"}\n"
           variables:
-          - {variable: body, value_selector: ["answer", "body"]}
+          - variable: body
+            value_selector:
+            - answer
+            - body
           outputs:
-            answer: {type: string}
+            answer:
+              type: string
+          desc: ''
+          selected: false
         id: extract_answer
-        position: {x: 1000, "y": 200}
-        type: code
+        position:
+          x: 1000
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 1000
+          y: 200
+        height: 88
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
       - data:
           title: End
           type: end
           outputs:
-          - {value_selector: ["extract_answer", "answer"], variable: result}
-          - {value_selector: ["extract_passages", "passages"], variable: passages}
+          - value_selector:
+            - extract_answer
+            - answer
+            variable: result
+          - value_selector:
+            - extract_passages
+            - passages
+            variable: passages
+          desc: ''
+          selected: false
         id: end
-        position: {x: 1200, "y": 200}
-        type: end
+        position:
+          x: 1200
+          y: 200
+        type: custom
+        positionAbsolute:
+          x: 1200
+          y: 200
+        height: 116
+        width: 244
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+      viewport:
+        x: 0
+        y: 0
+        zoom: 0.7
