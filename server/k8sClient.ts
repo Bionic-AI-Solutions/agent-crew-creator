@@ -416,6 +416,20 @@ export async function applyAgentDeployment(
           annotations: { "bionic/deployed-at": new Date().toISOString() },
         },
         spec: {
+          // Seed the shared NFS model cache with whatever the agent image
+          // baked in (turn-detector ONNX, languages.json, silero VAD, etc.)
+          // — `cp -rn` is no-clobber so concurrent pods don't fight, and
+          // the destination is shared across all apps so this is a one-time
+          // copy per cluster, not per pod.
+          initContainers: [{
+            name: "seed-model-cache",
+            image,
+            command: ["sh", "-c",
+              "mkdir -p /models/hf/hub /models/cache && " +
+              "cp -rn /root/.cache/huggingface/hub/. /models/hf/hub/ 2>/dev/null || true && " +
+              "echo 'model cache seeded:' && ls /models/hf/hub/"],
+            volumeMounts: [{ name: "model-cache", mountPath: "/models" }],
+          }],
           containers: [{
             name: "agent",
             image,
