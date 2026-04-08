@@ -185,7 +185,10 @@ export async function deployAgent(
     const perAgentKey = vault[`agent_${agent.id}_${provider}_api_key`];
     const envName = providerEnvName(provider);
     if (perAgentKey && envName) {
-      extraEnv.push({ name: envName, value: perAgentKey });
+      // Trim any stray whitespace — Vault saves can pick up leading/trailing
+      // spaces from copy-paste, and OpenRouter / OpenAI reject keys with
+      // even a single leading space (they don't strip).
+      extraEnv.push({ name: envName, value: perAgentKey.trim() });
       log.info("Injected per-agent provider key", { agent: agent.id, provider, envName });
     } else if (provider && provider !== "gpu-ai" && !perAgentKey) {
       log.warn("No per-agent provider key found in Vault", {

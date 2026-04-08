@@ -425,17 +425,21 @@ export const agentRouter = router({
       const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
       if (!app) throw new Error("App not found");
 
+      // Trim whitespace defensively — copy-paste from a UI often picks up
+      // leading/trailing spaces and OpenRouter/OpenAI reject those keys.
+      const trimmedKey = input.apiKey.trim();
+
       // Validate the key at save time by hitting the provider's /v1/models
       // endpoint. This both confirms the key is correct AND returns the list
       // of models the user can pick from. Throws TRPCError on auth failure
       // so the UI shows a meaningful error before persisting to Vault.
       const { listModelsForProvider } = await import("./services/llmProviders.js");
-      const models = await listModelsForProvider(input.provider, input.apiKey);
+      const models = await listModelsForProvider(input.provider, trimmedKey);
 
       const { writeAppSecret, readAppSecret } = await import("./vaultClient.js");
       const existing = (await readAppSecret(app.slug)) || {};
       const key = `agent_${agent.id}_${input.provider}_api_key`;
-      existing[key] = input.apiKey;
+      existing[key] = trimmedKey;
       await writeAppSecret(app.slug, existing);
 
       log.info("Provider key validated and written to Vault", {
