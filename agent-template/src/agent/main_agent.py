@@ -134,11 +134,13 @@ async def swap_user_memory_block(user_id: str) -> None:
         except (FileNotFoundError, json.JSONDecodeError):
             registry = {}
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # Letta returns 307 redirects on trailing-slash URLs in some
+        # versions. follow_redirects=True handles both forms.
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             # Get agent's current blocks
             try:
                 resp = await client.get(
-                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/",
+                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}",
                     headers=LETTA_HEADERS,
                 )
                 resp.raise_for_status()
@@ -216,13 +218,20 @@ class MainAgent(Agent):
     """Voice agent with two-brain architecture."""
 
     def __init__(self) -> None:
+        # NOTE: turn_detection is set on the AgentSession, not on the Agent.
+        # Setting it here too created a duplicate detector that gated the
+        # user-turn-commit path, so STT events fired but no LLM call ever
+        # followed (the symptom: STT metrics line, EOU metrics line, then
+        # silence — no llm metrics, no tts, no chain logging).
         super().__init__(
             instructions=settings.system_prompt or self._default_prompt(),
-            turn_detection=MultilingualModel(),
         )
 
     async def on_enter(self):
-        self.session.generate_reply()
+        # generate_reply returns a SpeechHandle; it does not need to be
+        # awaited but should be invoked. The greeting then drives a normal
+        # turn through the pipeline.
+        self.session.generate_reply(instructions="Greet the student warmly in one short sentence.")
 
     @staticmethod
     def _default_prompt() -> str:
@@ -646,17 +655,35 @@ async def entrypoint(ctx: JobContext):
     trace_provider = setup_langfuse_otel(session_id=room_name)
 
     # ── Build session with FallbackAdapters ──────────────────
+    # turn_detection lives on the AgentSession (NOT on Agent.__init__).
+    # Setting it on both creates a duplicate detector that gates
+    # commit_user_turn and the LLM never fires.
     session = AgentSession(
         stt=create_stt_with_fallback(),
         llm=create_llm_with_fallback(),
         tts=create_tts_with_fallback(),
         vad=silero.VAD.load(),
+        turn_detection=MultilingualModel(),
     )
 
     # ── Metrics logging ──────────────────────────────────────
     @session.on("metrics_collected")
     def _on_metrics(ev: MetricsCollectedEvent):
         metrics.log_metrics(ev.metrics)
+
+    # ── Pipeline visibility ──────────────────────────────────
+    # Log committed user turns so we can tell from logs whether STT events
+    # are actually reaching the LLM. If you see "[chain] user committed"
+    # but no "LLM metrics" line shortly after, the LLM call is the problem;
+    # if you don't see it at all, the turn-commit path is broken.
+    @session.on("user_input_transcribed")
+    def _on_user_transcribed(ev):
+        try:
+            if getattr(ev, "is_final", False):
+                logger.info("[chain] user committed: %s",
+                            (getattr(ev, "transcript", "") or "")[:200])
+        except Exception:
+            pass
 
     # ── Strict chain-of-command: Professor → Assistant ───────
     #
