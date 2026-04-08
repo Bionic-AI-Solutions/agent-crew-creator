@@ -236,10 +236,21 @@ class MainAgent(Agent):
         )
 
     async def on_enter(self):
-        # generate_reply returns a SpeechHandle; it does not need to be
-        # awaited but should be invoked. The greeting then drives a normal
-        # turn through the pipeline.
-        self.session.generate_reply(instructions="Greet the student warmly in one short sentence.")
+        # IMPORTANT: do NOT call generate_reply() here. _create_speech_task
+        # treats on_enter as a foreground speech task; if its LLM call
+        # hangs (and ours has been hanging silently against the gpu-ai
+        # endpoint in the streaming preemptive path), every subsequent
+        # user_turn_completed task awaits the stuck on_enter via
+        #   if old_task is not None: await old_task
+        # in agent_activity.py, deadlocking the entire pipeline. Symptom:
+        # STT fires, EOU fires, [chain] user committed fires, then
+        # complete silence — no LLM, no TTS, no conversation_item_added.
+        #
+        # Letting the user speak first is fine. Once we have a known-good
+        # session say(...) call we can re-add a static greeting via
+        # session.say("Hello!") which uses the TTS pipeline directly
+        # without requiring an LLM completion.
+        logger.info("[chain] MainAgent.on_enter — waiting for user to speak first")
 
     @staticmethod
     def _default_prompt() -> str:
