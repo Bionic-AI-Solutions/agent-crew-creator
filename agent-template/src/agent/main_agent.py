@@ -92,6 +92,12 @@ def setup_langfuse_otel(session_id: str):
         except ImportError:
             pass  # Optional — traces still capture LiveKit pipeline
 
+        # Also initialize the langfuse SDK singleton so any @observe-decorated
+        # functions in the codebase find a client. The SDK client is separate
+        # from the OTEL pipeline — without this we get warnings like "No
+        # Langfuse client with public key … has been initialized" on every
+        # decorated call.
+        init_langfuse()
         logger.info("Langfuse OTEL tracing enabled (session=%s)", session_id)
         return trace_provider
     except Exception as e:
