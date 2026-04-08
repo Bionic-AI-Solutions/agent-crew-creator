@@ -45,7 +45,12 @@ export async function deployAgent(
   const secretName = `${namespace}-secrets`; // ExternalSecret created during app provisioning
   const image = `${AGENT_IMAGE.split(":")[0]}:${agent.imageTag || "latest"}`;
 
-  log.info("Deploying agent", { namespace, agentName, image });
+  // LiveKit dispatch key — must be unique across the shared LiveKit instance.
+  // We share one LiveKit (wss://livekit.bionicaisolutions.com) across all
+  // apps, so two apps with agents named the same would collide if we
+  // registered with the bare agent.name. Prefix with the app slug.
+  const dispatchName = `${app.slug}-${agentName}`;
+  log.info("Deploying agent", { namespace, agentName, dispatchName, image });
 
   // 1. Gather relations from DB
   const [tools, mcpLinks, agentCrewLinks, appCrews] = await Promise.all([
@@ -63,7 +68,7 @@ export async function deployAgent(
   const configData: Record<string, string> = {
     APP_SLUG: app.slug,
     APP_ENV: "production",
-    AGENT_NAME: agentName,
+    AGENT_NAME: dispatchName,
 
     // ── Primary brain (fast, user-facing voice LLM) ─────────────
     LLM_PROVIDER: agent.llmProvider,

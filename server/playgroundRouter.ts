@@ -148,11 +148,13 @@ export const playgroundRouter = router({
         // Auto-create the room on join so callers don't need RoomService.
         roomCreate: true,
       });
-      // Dispatch the named worker into this fresh room. agent.name mirrors
-      // the AGENT_NAME env injected into the worker pod, which is what the
-      // worker registers with via WorkerOptions(agent_name=...).
+      // Dispatch the named worker into this fresh room. The worker's
+      // AGENT_NAME env is set by agentDeployer to `${slug}-${agent.name}`
+      // (slug-prefixed to avoid cross-app collisions on the shared LiveKit
+      // instance). We must mirror that exact string here.
+      const dispatchName = `${app.slug}-${agent.name}`;
       at.roomConfig = new RoomConfiguration({
-        agents: [new RoomAgentDispatch({ agentName: agent.name })],
+        agents: [new RoomAgentDispatch({ agentName: dispatchName })],
       });
 
       const token = await at.toJwt();

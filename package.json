@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch server/index.ts",
-    "build": "vite build && tsc -p tsconfig.server.json && node -e \"require('fs').cpSync('server/crewTemplates','dist/server/crewTemplates',{recursive:true})\"",
+    "build": "bash scripts/guard-client-imports.sh && vite build && tsc -p tsconfig.server.json && node -e \"require('fs').cpSync('server/crewTemplates','dist/server/crewTemplates',{recursive:true})\"",
     "start": "node dist/server/index.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
