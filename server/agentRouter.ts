@@ -284,7 +284,7 @@ export const agentRouter = router({
     }),
 
   // ── Tools ─────────────────────────────────────────────────────
-  listAvailableTools: protectedProcedure
+  listAvailableTools: appScopedProcedure
     .input(z.object({ appId: z.number() }))
     .query(async ({ ctx, input }) => {
       if (!ctx.db) return [];
@@ -362,7 +362,7 @@ export const agentRouter = router({
     }),
 
   // ── MCP Servers ───────────────────────────────────────────────
-  listMcpServers: protectedProcedure
+  listMcpServers: appScopedProcedure
     .input(z.object({ appId: z.number() }))
     .query(async ({ ctx, input }) => {
       if (!ctx.db) return [];
@@ -447,7 +447,7 @@ export const agentRouter = router({
   // ── Crews (Dify-powered) ──────────────────────────────────────
 
   /** List all crews for an app (from DB, not hardcoded). */
-  listCrews: protectedProcedure
+  listCrews: appScopedProcedure
     .input(z.object({ appId: z.number() }))
     .query(async ({ ctx, input }) => {
       if (!ctx.db) return [];
@@ -560,6 +560,10 @@ export const agentRouter = router({
         .where(eq(agentConfigs.id, input.agentConfigId))
         .limit(1);
       if (!agent) throw new Error("Agent not found");
+      // Cross-app write gate: analystOrAdminProcedure only checks the realm
+      // role, not membership. Without this, any Analyst could install a crew
+      // template into any app's agent if they know the agentConfigId.
+      await assertAppMembership(ctx, agent.appId);
       const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
       if (!app) throw new Error("App not found");
 
@@ -636,6 +640,10 @@ export const agentRouter = router({
     .input(z.object({ appId: z.number() }).optional())
     .query(async ({ ctx, input }) => {
       if (!ctx.db || !input?.appId) return AVAILABLE_CREWS;
+      // Membership check: optional input means callers can pass nothing to get
+      // the global default list, but the moment they pass an appId we treat
+      // it as app-scoped and require membership.
+      await assertAppMembership(ctx, input.appId);
       const appCrews = await ctx.db
         .select()
         .from(crews)
@@ -779,6 +787,22 @@ export const agentRouter = router({
     }))
     .query(async ({ ctx, input }) => {
       if (!ctx.db) return [];
+      // Resolve appId from whichever id was passed and gate on membership.
+      // Without this, knowing/guessing a crewId or agentConfigId from another
+      // app exposes its execution history (IDOR).
+      let appId: number | null = null;
+      if (input.crewId) {
+        const [c] = await ctx.db.select({ appId: crews.appId }).from(crews).where(eq(crews.id, input.crewId)).limit(1);
+        if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Crew not found" });
+        appId = c.appId;
+      } else if (input.agentConfigId) {
+        const [a] = await ctx.db.select({ appId: agentConfigs.appId }).from(agentConfigs).where(eq(agentConfigs.id, input.agentConfigId)).limit(1);
+        if (!a) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+        appId = a.appId;
+      } else {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "crewId or agentConfigId required" });
+      }
+      await assertAppMembership(ctx, appId);
       let query = ctx.db.select().from(crewExecutions);
       if (input.crewId) {
         query = query.where(eq(crewExecutions.crewId, input.crewId)) as any;
@@ -789,7 +813,7 @@ export const agentRouter = router({
     }),
 
   /** Get the Dify embed URL for a tenant's crew editor. */
-  getDifyEmbedUrl: protectedProcedure
+  getDifyEmbedUrl: appScopedProcedure
     .input(z.object({ appId: z.number() }))
     .query(async ({ ctx, input }) => {
       if (!ctx.db) return null;
@@ -831,6 +855,9 @@ export const agentRouter = router({
     .input(z.object({ agentConfigId: z.number() }))
     .query(async ({ ctx, input }) => {
       if (!ctx.db) return [];
+      const [a] = await ctx.db.select({ appId: agentConfigs.appId }).from(agentConfigs).where(eq(agentConfigs.id, input.agentConfigId)).limit(1);
+      if (!a) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      await assertAppMembership(ctx, a.appId);
       return ctx.db
         .select()
         .from(agentDocuments)
@@ -930,6 +957,7 @@ export const agentRouter = router({
         .where(eq(agentConfigs.id, input.id))
         .limit(1);
       if (!agent) return null;
+      await assertAppMembership(ctx, agent.appId);
       const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
       if (!app) return { status: agent.deploymentStatus, replicas: 0, message: "App not found" };
 
@@ -948,6 +976,9 @@ export const agentRouter = router({
     .input(z.object({ agentConfigId: z.number() }))
     .query(async ({ ctx, input }) => {
       if (!ctx.db) return [];
+      const [a] = await ctx.db.select({ appId: agentConfigs.appId }).from(agentConfigs).where(eq(agentConfigs.id, input.agentConfigId)).limit(1);
+      if (!a) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      await assertAppMembership(ctx, a.appId);
       return ctx.db
         .select()
         .from(userMemoryBlocks)
