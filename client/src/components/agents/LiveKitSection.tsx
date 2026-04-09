@@ -189,15 +189,18 @@ function LiveModelPicker({
   provider,
   value,
   onChange,
+  toolUseOnly,
 }: {
   agentId: number;
   provider: string;
   value: string;
   onChange: (v: string) => void;
+  /** When true, only show models that support tool/function calling. */
+  toolUseOnly?: boolean;
 }) {
   const [filter, setFilter] = useState("");
   const { data, isLoading, isError, error, refetch } = trpc.agentsCrud.listProviderModels.useQuery(
-    { agentId, provider },
+    { agentId, provider, toolUseOnly },
     { enabled: !!provider && provider !== "custom", retry: false },
   );
 
@@ -229,7 +232,7 @@ function LiveModelPicker({
     );
   }
 
-  const models: Array<{ id: string; description?: string; contextLength?: number }> =
+  const models: Array<{ id: string; description?: string; contextLength?: number; supportsTools?: boolean }> =
     data?.models ?? [];
   const filtered = filter
     ? models.filter((m) => m.id.toLowerCase().includes(filter.toLowerCase()))
@@ -256,12 +259,19 @@ function LiveModelPicker({
         </SelectTrigger>
         <SelectContent className="max-h-72">
           {options.length === 0 ? (
-            <div className="px-2 py-1 text-xs text-muted-foreground">No matches</div>
+            <div className="px-2 py-1 text-xs text-muted-foreground">
+              {toolUseOnly ? "No models with tool support found" : "No matches"}
+            </div>
           ) : (
             options.map((m) => (
               <SelectItem key={m.id} value={m.id}>
                 <div className="flex flex-col">
-                  <span className="text-sm">{m.id}</span>
+                  <span className="text-sm flex items-center gap-1">
+                    {m.id}
+                    {m.supportsTools === true && (
+                      <span className="text-[9px] px-1 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">tools</span>
+                    )}
+                  </span>
                   {m.contextLength && (
                     <span className="text-[10px] text-muted-foreground">
                       {Math.round(m.contextLength / 1000)}k context
@@ -274,7 +284,7 @@ function LiveModelPicker({
         </SelectContent>
       </Select>
       <p className="text-[10px] text-muted-foreground">
-        {models.length} models available • live from {provider}
+        {models.length} models available{toolUseOnly ? " (tool-use only)" : ""} • live from {provider}
       </p>
     </div>
   );
@@ -385,6 +395,7 @@ export default function LiveKitSection(props: Props) {
                 provider={props.llmProvider}
                 value={props.llmModel}
                 onChange={props.setLlmModel}
+                toolUseOnly
               />
             </div>
           </div>

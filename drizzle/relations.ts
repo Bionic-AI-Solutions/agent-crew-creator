@@ -11,6 +11,7 @@ import {
   agentDocuments,
   crews,
   crewExecutions,
+  embedTokens,
 } from "./platformSchema";
 
 export const appsRelations = relations(apps, ({ many }) => ({
@@ -31,6 +32,7 @@ export const agentConfigsRelations = relations(agentConfigs, ({ one, many }) => 
   mcpServers: many(agentMcpServers),
   crews: many(agentCrews),
   documents: many(agentDocuments),
+  embedTokens: many(embedTokens),
 }));
 
 export const agentToolsRelations = relations(agentTools, ({ one }) => ({
@@ -67,4 +69,9 @@ export const crewsRelations = relations(crews, ({ one, many }) => ({
 export const crewExecutionsRelations = relations(crewExecutions, ({ one }) => ({
   crew: one(crews, { fields: [crewExecutions.crewId], references: [crews.id] }),
   agentConfig: one(agentConfigs, { fields: [crewExecutions.agentConfigId], references: [agentConfigs.id] }),
+}));
+
+export const embedTokensRelations = relations(embedTokens, ({ one }) => ({
+  agentConfig: one(agentConfigs, { fields: [embedTokens.agentConfigId], references: [agentConfigs.id] }),
+  app: one(apps, { fields: [embedTokens.appId], references: [apps.id] }),
 }));

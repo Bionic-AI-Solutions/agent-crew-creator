@@ -340,9 +340,21 @@ export const agentRouter = router({
                         : ` Run agentsCrud.listProviderModels to see what is available.`),
                   });
                 }
+                // Also verify the model supports tool calling — agents
+                // require it for delegate_to_letta and other tools.
+                const selectedModel = models.find((m) => m.id === newModel);
+                if (selectedModel && selectedModel.supportsTools === false) {
+                  throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message:
+                      `Model '${newModel}' does not support tool/function calling on ${newProvider}. ` +
+                      `Agents require tool support for delegate_to_letta. Choose a model that supports tools.`,
+                  });
+                }
                 log.info("Validated llm_model against provider", {
                   provider: newProvider,
                   model: newModel,
+                  supportsTools: selectedModel?.supportsTools,
                 });
               } else {
                 log.warn("Skipping model validation — no provider key in Vault", {
@@ -586,6 +598,8 @@ export const agentRouter = router({
         agentId: z.number(),
         provider: z.string(),
         apiKey: z.string().optional(),
+        /** When true, only return models that support tool/function calling. */
+        toolUseOnly: z.boolean().optional(),
       }),
     )
     .query(async ({ ctx, input }) => {
@@ -614,7 +628,11 @@ export const agentRouter = router({
       if (!apiKey && providerNeedsApiKey(input.provider)) {
         return { models: [], hasKey: false as const };
       }
-      const models = await listModelsForProvider(input.provider, apiKey || "");
+      let models = await listModelsForProvider(input.provider, apiKey || "");
+      // Filter to tool-capable models when requested
+      if (input.toolUseOnly) {
+        models = models.filter((m) => m.supportsTools !== false);
+      }
       return { models, hasKey: true as const };
     }),
 

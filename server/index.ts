@@ -16,6 +16,11 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 
 const app = express();
 
+// ── Embed public routes (MUST be before global CORS — embed has its own CORS) ─
+import { registerEmbedRoutes } from "./embedPublicRoutes.js";
+app.use(express.json({ limit: "50mb" })); // needed by embed POST handler
+registerEmbedRoutes(app);
+
 // ── Middleware ───────────────────────────────────────────────────
 app.use(cors({
   origin: process.env.NODE_ENV === "production"
@@ -24,7 +29,6 @@ app.use(cors({
   credentials: true,
 }));
 app.use(cookieParser());
-app.use(express.json({ limit: "50mb" }));
 
 // ── Health check ────────────────────────────────────────────────
 app.get("/healthz", (_req, res) => res.json({ status: "ok" }));

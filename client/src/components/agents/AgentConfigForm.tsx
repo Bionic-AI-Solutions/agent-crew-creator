@@ -9,6 +9,7 @@ import LiveKitSection from "./LiveKitSection";
 import LettaSection from "./LettaSection";
 import CrewBuilder from "./CrewBuilder";
 import DeploymentStatus from "./DeploymentStatus";
+import EmbedSection from "./EmbedSection";
 
 interface Props {
   agentId: number;
@@ -111,6 +112,7 @@ export default function AgentConfigForm({ agentId }: Props) {
           <TabsTrigger value="letta">Letta</TabsTrigger>
           <TabsTrigger value="crews">Crews</TabsTrigger>
           <TabsTrigger value="deployment">Deployment</TabsTrigger>
+          <TabsTrigger value="embed">Embed</TabsTrigger>
         </TabsList>
 
         <TabsContent value="livekit">
@@ -152,6 +154,15 @@ export default function AgentConfigForm({ agentId }: Props) {
 
         <TabsContent value="deployment">
           <DeploymentStatus agentId={agentId} agent={agent} />
+        </TabsContent>
+
+        <TabsContent value="embed">
+          <EmbedSection
+            agentId={agentId}
+            appId={agent.appId}
+            deployed={agent.deployed}
+            avatarEnabled={agent.avatarEnabled}
+          />
         </TabsContent>
       </Tabs>
 

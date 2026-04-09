@@ -300,6 +300,42 @@ export const agentDocuments = pgTable(
   ],
 );
 
+// ── Embed Tokens (per-agent embeddable widget keys) ────────────
+
+export const embedTokens = pgTable(
+  "embed_tokens",
+  {
+    id: serial("id").primaryKey(),
+    agentConfigId: integer("agent_config_id")
+      .notNull()
+      .references(() => agentConfigs.id, { onDelete: "cascade" }),
+    appId: integer("app_id")
+      .notNull()
+      .references(() => apps.id, { onDelete: "cascade" }),
+    token: varchar("token", { length: 64 }).notNull().unique(),
+    label: varchar("label", { length: 100 }).default("default").notNull(),
+    // Feature toggles
+    allowVoice: boolean("allow_voice").default(true).notNull(),
+    allowChat: boolean("allow_chat").default(true).notNull(),
+    allowVideo: boolean("allow_video").default(false).notNull(),
+    allowScreenShare: boolean("allow_screen_share").default(false).notNull(),
+    allowAvatar: boolean("allow_avatar").default(false).notNull(),
+    showTranscription: boolean("show_transcription").default(true).notNull(),
+    // Appearance
+    theme: varchar("theme", { length: 20 }).default("light").notNull(),
+    mode: varchar("mode", { length: 20 }).default("popup").notNull(), // popup | iframe
+    // Security
+    allowedOrigins: json("allowed_origins").$type<string[]>().default([]),
+    isActive: boolean("is_active").default(true).notNull(),
+    lastUsedAt: timestamp("last_used_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_embed_tokens_agent").on(table.agentConfigId),
+    index("idx_embed_tokens_token").on(table.token),
+  ],
+);
+
 // ── Type helpers ────────────────────────────────────────────────
 
 // ── User Memory Blocks (per-user Letta memory isolation) ────────
@@ -348,3 +384,5 @@ export type Crew = typeof crews.$inferSelect;
 export type InsertCrew = typeof crews.$inferInsert;
 export type CrewExecution = typeof crewExecutions.$inferSelect;
 export type UserMemoryBlock = typeof userMemoryBlocks.$inferSelect;
+export type EmbedToken = typeof embedTokens.$inferSelect;
+export type InsertEmbedToken = typeof embedTokens.$inferInsert;

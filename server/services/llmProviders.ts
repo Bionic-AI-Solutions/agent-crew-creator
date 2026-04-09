@@ -25,6 +25,10 @@ export interface ProviderModel {
   /** Optional capabilities surfaced by some providers (openrouter). */
   contextLength?: number;
   pricing?: { prompt?: string; completion?: string };
+  /** True if the model supports tool/function calling. Derived from the
+   *  provider's `supported_parameters` array (OpenRouter) or assumed true
+   *  for internal chat models (gpu-ai). */
+  supportsTools?: boolean;
 }
 
 interface ProviderConfig {
@@ -166,6 +170,21 @@ export async function listModelsForProvider(
     if (cfg.filter && !cfg.filter(id)) continue;
     if (seen.has(id)) continue;
     seen.add(id);
+    // Determine tool support:
+    // - OpenRouter: check if "tools" is in supported_parameters array
+    // - gpu-ai: assume all chat LLMs support tools (they pass the filter above)
+    // - OpenAI: all GPT/o-series models support tools
+    const supportedParams = Array.isArray(m.supported_parameters) ? m.supported_parameters : null;
+    let supportsTools: boolean | undefined;
+    if (supportedParams) {
+      supportsTools = supportedParams.includes("tools") || supportedParams.includes("tool_choice");
+    } else if (provider.toLowerCase() === "gpu-ai") {
+      // Internal chat LLMs (already filtered out embedding/tts) all support tools
+      supportsTools = true;
+    } else if (provider.toLowerCase() === "openai") {
+      supportsTools = true; // All OpenAI chat models support tools
+    }
+
     models.push({
       id,
       name: typeof m.name === "string" ? m.name : undefined,
@@ -177,6 +196,7 @@ export async function listModelsForProvider(
             completion: typeof m.pricing.completion === "string" ? m.pricing.completion : undefined,
           }
         : undefined,
+      supportsTools,
     });
   }
   models.sort((a, b) => a.id.localeCompare(b.id));

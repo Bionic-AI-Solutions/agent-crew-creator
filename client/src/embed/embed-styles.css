@@ -1,0 +1,552 @@
+/* ── Bionic Embed Widget Styles ──────────────────────────────────
+ * Self-contained CSS for the embed widget. Injected into Shadow DOM
+ * (popup mode) or document head (iframe mode).
+ * Uses CSS custom properties for light/dark theming.
+ */
+
+/* ── Theme variables ────────────────────────────────────────── */
+:host, .bionic-theme-light {
+  --bionic-bg: #ffffff;
+  --bionic-bg2: #f8f9fa;
+  --bionic-bg3: #f0f1f3;
+  --bionic-fg: #1a1a1a;
+  --bionic-fg2: #4a4a4a;
+  --bionic-fg3: #8a8a8a;
+  --bionic-accent: #002cf2;
+  --bionic-accent-hover: #0024c4;
+  --bionic-border: #e5e7eb;
+  --bionic-border2: #d1d5db;
+  --bionic-destructive: #ef4444;
+  --bionic-destructive-fg: #ffffff;
+  --bionic-radius: 16px;
+  --bionic-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+}
+
+.bionic-theme-dark {
+  --bionic-bg: #1a1a2e;
+  --bionic-bg2: #16213e;
+  --bionic-bg3: #0f3460;
+  --bionic-fg: #f0f0f0;
+  --bionic-fg2: #b0b0b0;
+  --bionic-fg3: #707070;
+  --bionic-accent: #4f6cff;
+  --bionic-accent-hover: #3d5afe;
+  --bionic-border: #2a2a4a;
+  --bionic-border2: #3a3a5a;
+  --bionic-destructive: #ef4444;
+  --bionic-destructive-fg: #ffffff;
+  --bionic-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+/* ── Reset for shadow DOM ───────────────────────────────────── */
+:host {
+  all: initial;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  color: var(--bionic-fg);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ── Trigger button ─────────────────────────────────────────── */
+.bionic-trigger {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 99999;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: none;
+  background: var(--bionic-accent);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--bionic-shadow);
+  transition: transform 0.2s ease, background 0.2s ease;
+}
+
+.bionic-trigger:hover {
+  transform: scale(1.08);
+  background: var(--bionic-accent-hover);
+}
+
+/* ── Popup panel ────────────────────────────────────────────── */
+.bionic-popup {
+  position: fixed;
+  right: 16px;
+  bottom: 76px;
+  z-index: 99998;
+  width: 360px;
+  height: 520px;
+  border-radius: 24px;
+  border: 1px solid var(--bionic-border);
+  background: var(--bionic-bg);
+  box-shadow: var(--bionic-shadow);
+  overflow: hidden;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.bionic-popup-closed {
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+}
+
+.bionic-popup-open {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.bionic-popup-inner {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Responsive: on mobile, popup takes more width */
+@media (max-width: 420px) {
+  .bionic-popup {
+    left: 8px;
+    right: 8px;
+    width: auto;
+  }
+}
+
+/* ── Popup view layout ──────────────────────────────────────── */
+.bionic-popup-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+.bionic-popup-content {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Audio Visualizer ───────────────────────────────────────── */
+.bionic-viz-container {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 200px;
+  height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  background: var(--bionic-bg);
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.bionic-viz-small {
+  top: 12px;
+  left: 50%;
+  transform: translate(-50%, 0) scale(0.35);
+  transform-origin: center top;
+}
+
+.bionic-audio-viz {
+  display: flex;
+  height: 100%;
+  width: auto;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.bionic-audio-viz-bar {
+  min-height: 24px;
+  width: 24px;
+  border-radius: 9999px;
+  background: var(--bionic-fg3);
+  transform-origin: center;
+  transition: background 0.25s ease;
+}
+
+.bionic-audio-viz-bar[data-lk-highlighted="true"] {
+  background: var(--bionic-fg);
+}
+
+/* ── Avatar ─────────────────────────────────────────────────── */
+.bionic-avatar-bg {
+  position: absolute;
+  inset: 4px;
+  border-radius: 20px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.bionic-avatar-bg-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 20px;
+  background: #000;
+}
+
+.bionic-avatar-tile {
+  position: absolute;
+  top: 12px;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.bionic-tile-video {
+  width: 70px;
+  height: 70px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: #000;
+  border: 1px solid var(--bionic-border);
+}
+
+/* ── Camera/Screen share tile ───────────────────────────────── */
+.bionic-camera-tile {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+}
+
+/* ── Transcript panel ───────────────────────────────────────── */
+.bionic-transcript-container {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.bionic-transcript-open {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.bionic-transcript-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.bionic-transcript-scroll {
+  flex: 1;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 12px 12px 4px;
+  mask-image: linear-gradient(0deg, rgba(0,0,0,0.2) 0%, rgba(0,0,0,1) 5%, rgba(0,0,0,1) 95%, rgba(0,0,0,0) 100%);
+}
+
+.bionic-transcript-messages {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 100%;
+  gap: 8px;
+  padding-top: 80px;
+}
+
+/* ── Chat messages ──────────────────────────────────────────── */
+.bionic-chat-message {
+  max-width: 85%;
+}
+
+.bionic-chat-local {
+  align-self: flex-end;
+}
+
+.bionic-chat-remote {
+  align-self: flex-start;
+}
+
+.bionic-chat-name {
+  font-size: 11px;
+  color: var(--bionic-fg3);
+  margin-bottom: 2px;
+  padding: 0 4px;
+}
+
+.bionic-chat-content {
+  padding: 8px 12px;
+  border-radius: 12px;
+  line-height: 1.4;
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.bionic-chat-local .bionic-chat-content {
+  background: var(--bionic-accent);
+  color: white;
+  border-bottom-right-radius: 4px;
+}
+
+.bionic-chat-remote .bionic-chat-content {
+  background: var(--bionic-bg3);
+  color: var(--bionic-fg);
+  border-bottom-left-radius: 4px;
+}
+
+.bionic-chat-content p { margin: 0 0 4px; }
+.bionic-chat-content p:last-child { margin: 0; }
+.bionic-chat-content code {
+  background: rgba(0,0,0,0.08);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: "SF Mono", Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+.bionic-chat-content pre {
+  background: rgba(0,0,0,0.06);
+  padding: 8px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 4px 0;
+}
+.bionic-chat-content pre code {
+  background: none;
+  padding: 0;
+}
+.bionic-chat-content a {
+  color: var(--bionic-accent);
+  text-decoration: underline;
+}
+.bionic-chat-content img {
+  max-width: 200px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: block;
+  margin: 4px 0;
+}
+
+/* ── Chat input ─────────────────────────────────────────────── */
+.bionic-chat-input-wrapper {
+  padding: 4px 8px 8px;
+  border-top: 1px solid var(--bionic-border);
+}
+
+.bionic-chat-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--bionic-border);
+  border-radius: 20px;
+  background: var(--bionic-bg2);
+  color: var(--bionic-fg);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.bionic-chat-input:focus {
+  border-color: var(--bionic-accent);
+}
+
+.bionic-chat-input::placeholder {
+  color: var(--bionic-fg3);
+}
+
+/* ── Action bar ─────────────────────────────────────────────── */
+.bionic-action-bar-container {
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.3s ease 0.5s, transform 0.3s ease 0.5s;
+}
+
+.bionic-action-bar-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.bionic-action-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px;
+  margin: 0 8px 8px;
+  border-radius: 20px;
+  border: 1px solid var(--bionic-border);
+  background: var(--bionic-bg);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+
+.bionic-action-bar-left,
+.bionic-action-bar-right {
+  display: flex;
+  gap: 4px;
+}
+
+.bionic-action-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--bionic-border);
+  background: var(--bionic-bg2);
+  color: var(--bionic-fg2);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.bionic-action-btn:hover {
+  background: var(--bionic-bg3);
+  color: var(--bionic-fg);
+}
+
+.bionic-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.bionic-action-btn-active {
+  background: var(--bionic-accent);
+  color: white;
+  border-color: var(--bionic-accent);
+}
+
+.bionic-action-btn-disconnect {
+  background: var(--bionic-destructive);
+  color: var(--bionic-destructive-fg);
+  border-color: var(--bionic-destructive);
+}
+
+.bionic-action-btn-disconnect:hover {
+  opacity: 0.9;
+}
+
+/* ── LiveKit TrackToggle overrides ──────────────────────────── */
+.bionic-action-btn[data-lk-source] {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+}
+
+/* ── Error states ───────────────────────────────────────────── */
+.bionic-popup-error,
+.bionic-iframe-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 24px;
+  text-align: center;
+  gap: 8px;
+}
+
+.bionic-error-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--bionic-fg);
+}
+
+.bionic-error-desc {
+  font-size: 13px;
+  color: var(--bionic-fg3);
+}
+
+.bionic-error-retry {
+  margin-top: 12px;
+  padding: 8px 20px;
+  border-radius: 20px;
+  border: 1px solid var(--bionic-border);
+  background: var(--bionic-bg2);
+  color: var(--bionic-fg);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.bionic-error-retry:hover {
+  background: var(--bionic-bg3);
+}
+
+/* ── Loading states ─────────────────────────────────────────── */
+.bionic-popup-loading,
+.bionic-iframe-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+  color: var(--bionic-fg3);
+  font-size: 14px;
+}
+
+.bionic-loading-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--bionic-border);
+  border-top-color: var(--bionic-accent);
+  border-radius: 50%;
+  animation: bionic-spin 0.8s linear infinite;
+}
+
+@keyframes bionic-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── iFrame root ────────────────────────────────────────────── */
+.bionic-iframe-root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bionic-bg);
+  color: var(--bionic-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ── Lightbox ───────────────────────────────────────────────── */
+.bionic-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  background: rgba(0,0,0,0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.bionic-lightbox-img {
+  max-width: 90%;
+  max-height: 90%;
+  border-radius: 8px;
+  object-fit: contain;
+}
+
+/* ── Scrollbar styling ──────────────────────────────────────── */
+.bionic-transcript-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.bionic-transcript-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.bionic-transcript-scroll::-webkit-scrollbar-thumb {
+  background: var(--bionic-border2);
+  border-radius: 2px;
+}
+
+.bionic-transcript-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--bionic-fg3);
+}
