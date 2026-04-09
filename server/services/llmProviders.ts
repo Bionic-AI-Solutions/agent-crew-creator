@@ -54,7 +54,24 @@ const PROVIDERS: Record<string, ProviderConfig> = {
     modelsUrl: "https://openrouter.ai/api/v1/models",
     // OpenRouter exposes hundreds — let everything through; UI can search.
   },
+  "gpu-ai": {
+    key: "gpu-ai",
+    label: "Bionic GPU (internal)",
+    // Internal cluster URL — only reachable from inside K8s. Server-side
+    // call from the platform pod, the user never sees this URL.
+    modelsUrl:
+      (process.env.GPU_AI_LLM_INTERNAL_URL || "http://mcp-api-server.mcp.svc.cluster.local:8000") +
+      "/v1/models",
+    // Filter out embeddings + audio-only models to leave just chat LLMs.
+    filter: (id) =>
+      !/embedding|whisper|tts|parler|index/i.test(id),
+  },
 };
+
+/** True if the provider is internal (gpu-ai) and the API key is unused. */
+export function providerNeedsApiKey(provider: string): boolean {
+  return provider.toLowerCase() !== "gpu-ai";
+}
 
 export function isSupportedProvider(provider: string): boolean {
   return Object.prototype.hasOwnProperty.call(PROVIDERS, provider.toLowerCase());
@@ -83,15 +100,21 @@ export async function listModelsForProvider(
 
   let res: Response;
   try {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://platform.baisoln.com",
+      "X-Title": "bionic-platform",
+    };
+    // gpu-ai is internal cluster, no auth required. For everything else we
+    // attach the Bearer key. We tolerate an empty key for gpu-ai because
+    // the UI flow will pass an empty string when the user is just browsing
+    // available models on the internal provider.
+    if (provider.toLowerCase() !== "gpu-ai" || apiKey) {
+      headers.Authorization = `Bearer ${apiKey || "not-needed"}`;
+    }
     res = await fetch(cfg.modelsUrl, {
       method: "GET",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        // OpenRouter wants these for tracking — harmless on OpenAI.
-        "HTTP-Referer": "https://platform.baisoln.com",
-        "X-Title": "bionic-platform",
-      },
+      headers,
     });
   } catch (err) {
     log.error("Provider /v1/models fetch failed", { provider, error: String(err) });

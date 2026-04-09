@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     stt_model: str = ""
     tts_provider: str = "gpu-ai"
     tts_voice: str = "Sudhir-IndexTTS2"
+    tts_model: str = "tts-1"
 
     # ── Fallback providers (keys from Vault, not user-configurable) ──
     deepgram_api_key: str = ""

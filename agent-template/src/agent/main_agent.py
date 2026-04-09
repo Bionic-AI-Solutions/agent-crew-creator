@@ -683,22 +683,24 @@ async def entrypoint(ctx: JobContext):
 
     # ── Build session with FallbackAdapters ──────────────────
     # turn_detection lives on the AgentSession (NOT on Agent.__init__).
-    # Setting it on both creates a duplicate detector that gates
-    # commit_user_turn and the LLM never fires.
     #
-    # preemptive_generation=False — the framework's default speculative
-    # LLM call (started during STT, committed at EOU) was hanging
-    # silently against our gpu-ai LLM endpoint. The DEBUG logs showed
-    # 'using preemptive generation, preemptive_lead_time: 0.04s' followed
-    # by total silence — no LLM call ever completed. Disabling it forces
-    # the conventional path: STT → EOU → generate_reply → LLM.
+    # preemptive_generation=True — re-enabled now that the primary LLM
+    # is OpenRouter (claude-sonnet-4.6) instead of gpu-ai. The original
+    # silent hang was specific to gpu-ai's streaming endpoint; OpenRouter
+    # streams correctly. Saves ~1s per turn by starting the LLM call
+    # during STT instead of after EOU.
+    #
+    # min_endpointing_delay=0.4 — drop from default ~1.0 so the framework
+    # decides 'user is done speaking' faster. Saves ~0.6s per turn at the
+    # cost of slightly more interruption mid-thought.
     session = AgentSession(
         stt=create_stt_with_fallback(),
         llm=create_llm_with_fallback(),
         tts=create_tts_with_fallback(),
         vad=silero.VAD.load(),
         turn_detection=MultilingualModel(),
-        preemptive_generation=False,
+        preemptive_generation=True,
+        min_endpointing_delay=0.4,
     )
 
     # ── Metrics logging ──────────────────────────────────────
@@ -800,6 +802,37 @@ async def entrypoint(ctx: JobContext):
         room=ctx.room,
         room_options=room_opts,
     )
+
+    # ── Warm up LLM and TTS in parallel with the user's first words.
+    # First-turn latency is dominated by cold paths: OpenRouter takes ~4s
+    # TTFT on the first request, gpu-ai TTS pages the model into VRAM on
+    # the first synthesize. By kicking off a tiny throwaway request to
+    # both at session start (before the user speaks), we eat the cold
+    # cost during the otherwise-silent on_enter window.
+    async def _warmup_llm() -> None:
+        try:
+            from livekit.agents import llm as _llm
+            # generate one token via a tiny user message — discard result
+            ctx_msgs = _llm.ChatContext()
+            ctx_msgs.add_message(role="user", content="hi")
+            stream = session.llm.chat(chat_ctx=ctx_msgs)
+            async for _ in stream:
+                pass
+            logger.info("[warmup] LLM ready")
+        except Exception as e:
+            logger.info("[warmup] LLM warmup skipped: %s", e)
+
+    async def _warmup_tts() -> None:
+        try:
+            stream = session.tts.synthesize("hi")
+            async for _ in stream:
+                pass
+            logger.info("[warmup] TTS ready")
+        except Exception as e:
+            logger.info("[warmup] TTS warmup skipped: %s", e)
+
+    asyncio.create_task(_warmup_llm(), name="warmup-llm")
+    asyncio.create_task(_warmup_tts(), name="warmup-tts")
 
     if settings.vision_enabled:
         logger.info("Vision enabled — primary LLM receives video frames from user")
