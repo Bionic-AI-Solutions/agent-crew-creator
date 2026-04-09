@@ -64,6 +64,118 @@ function ProviderKeyInput({
 }
 
 /**
+ * Live voice/model picker for STT and TTS providers.
+ *
+ * Same shape as LiveModelPicker but uses agentsCrud.listProviderVoices
+ * which understands cartesia / elevenlabs / deepgram / openai TTS. For
+ * gpu-ai (internal) and "custom" providers, falls back to a static list
+ * passed via the `staticOptions` prop.
+ */
+function LiveVoicePicker({
+  agentId,
+  provider,
+  value,
+  onChange,
+  staticOptions,
+}: {
+  agentId: number;
+  provider: string;
+  value: string;
+  onChange: (v: string) => void;
+  staticOptions: Array<{ value: string; label: string }>;
+}) {
+  const [filter, setFilter] = useState("");
+  const { data, isLoading, isError, error } = trpc.agentsCrud.listProviderVoices.useQuery(
+    { agentId, provider },
+    { enabled: !!provider, retry: false },
+  );
+
+  // gpu-ai / custom / unsupported → static fallback list (TTS_VOICES /
+  // STT_MODELS table from shared/providerOptions). Keeps internal-only
+  // providers usable without an API key.
+  if (data?.supported === false || (!isLoading && !isError && data?.hasKey === false && !data?.voices?.length)) {
+    if (staticOptions.length > 0) {
+      return (
+        <Select value={value} onValueChange={onChange}>
+          <SelectTrigger><SelectValue placeholder="Select voice" /></SelectTrigger>
+          <SelectContent>
+            {staticOptions.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      );
+    }
+    return (
+      <div className="text-xs text-amber-600">
+        Add an API key for this provider to load voices.
+      </div>
+    );
+  }
+
+  if (isLoading) {
+    return <Input value="Loading voices…" disabled />;
+  }
+  if (isError) {
+    return (
+      <div className="text-xs text-destructive">
+        {(error as any)?.message || "Failed to load voices"}
+      </div>
+    );
+  }
+
+  const voices: Array<{ id: string; name?: string; description?: string; language?: string }> =
+    data?.voices ?? [];
+  const filtered = filter
+    ? voices.filter((v) => {
+        const haystack = `${v.id} ${v.name || ""} ${v.description || ""}`.toLowerCase();
+        return haystack.includes(filter.toLowerCase());
+      })
+    : voices;
+  const valueInList = filtered.some((v) => v.id === value);
+  const options = !valueInList && value ? [{ id: value }, ...filtered] : filtered;
+
+  return (
+    <div className="space-y-1">
+      {voices.length > 20 && (
+        <Input
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder={`Search ${voices.length} voices…`}
+          className="h-8 text-xs"
+        />
+      )}
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger><SelectValue placeholder="Select voice" /></SelectTrigger>
+        <SelectContent className="max-h-72">
+          {options.length === 0 ? (
+            <div className="px-2 py-1 text-xs text-muted-foreground">No matches</div>
+          ) : (
+            options.map((v: any) => (
+              <SelectItem key={v.id} value={v.id}>
+                <div className="flex flex-col">
+                  <span className="text-sm">{v.name || v.id}</span>
+                  {(v.language || v.description) && (
+                    <span className="text-[10px] text-muted-foreground">
+                      {[v.language, v.description].filter(Boolean).join(" • ")}
+                    </span>
+                  )}
+                </div>
+              </SelectItem>
+            ))
+          )}
+        </SelectContent>
+      </Select>
+      {voices.length > 0 && (
+        <p className="text-[10px] text-muted-foreground">
+          {voices.length} voices available • live from {provider}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
  * Live model picker — sources options from the provider's /v1/models
  * endpoint using whatever key is in Vault for this agent. Replaces the
  * old hardcoded LLM_MODELS table so the user can never type a model id
@@ -217,19 +329,32 @@ export default function LiveKitSection(props: Props) {
             </div>
             <div>
               <Label className="text-xs">Model</Label>
-              <Select value={props.sttModel} onValueChange={props.setSttModel}>
-                <SelectTrigger><SelectValue placeholder="Select model" /></SelectTrigger>
-                <SelectContent>
-                  {(STT_MODELS[props.sttProvider] || []).map((m) => (
-                    <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <LiveVoicePicker
+                agentId={props.agentId}
+                provider={props.sttProvider}
+                value={props.sttModel}
+                onChange={props.setSttModel}
+                staticOptions={(STT_MODELS[props.sttProvider] || []).map((m) => ({
+                  value: m.value, label: m.label,
+                }))}
+              />
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
             {STT_PROVIDERS.find((p) => p.value === props.sttProvider)?.description}
           </p>
+          {props.sttProvider !== "gpu-ai" && props.sttProvider !== "custom" && (
+            <ProviderKeyInput
+              agentId={props.agentId}
+              provider={props.sttProvider}
+              onSaved={() => {
+                trpcUtils.agentsCrud.listProviderVoices.invalidate({
+                  agentId: props.agentId,
+                  provider: props.sttProvider,
+                });
+              }}
+            />
+          )}
         </CardContent>
       </Card>
 
@@ -309,19 +434,32 @@ export default function LiveKitSection(props: Props) {
             </div>
             <div>
               <Label className="text-xs">Voice</Label>
-              <Select value={props.ttsVoice} onValueChange={props.setTtsVoice}>
-                <SelectTrigger><SelectValue placeholder="Select voice" /></SelectTrigger>
-                <SelectContent>
-                  {(TTS_VOICES[props.ttsProvider] || []).map((v) => (
-                    <SelectItem key={v.value} value={v.value}>{v.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <LiveVoicePicker
+                agentId={props.agentId}
+                provider={props.ttsProvider}
+                value={props.ttsVoice}
+                onChange={props.setTtsVoice}
+                staticOptions={(TTS_VOICES[props.ttsProvider] || []).map((v) => ({
+                  value: v.value, label: v.label,
+                }))}
+              />
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
             {TTS_PROVIDERS.find((p) => p.value === props.ttsProvider)?.description}
           </p>
+          {props.ttsProvider !== "gpu-ai" && props.ttsProvider !== "custom" && (
+            <ProviderKeyInput
+              agentId={props.agentId}
+              provider={props.ttsProvider}
+              onSaved={() => {
+                trpcUtils.agentsCrud.listProviderVoices.invalidate({
+                  agentId: props.agentId,
+                  provider: props.ttsProvider,
+                });
+              }}
+            />
+          )}
         </CardContent>
       </Card>
 

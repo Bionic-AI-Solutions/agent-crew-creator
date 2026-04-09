@@ -44,7 +44,10 @@ class Settings(BaseSettings):
     # ── Fallback providers (keys from Vault, not user-configurable) ──
     deepgram_api_key: str = ""
     openai_api_key: str = ""
+    openrouter_api_key: str = ""
+    anthropic_api_key: str = ""
     cartesia_api_key: str = ""
+    elevenlabs_api_key: str = ""
 
     # System prompt (primary agent)
     system_prompt: str = ""

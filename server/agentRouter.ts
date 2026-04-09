@@ -357,6 +357,67 @@ export const agentRouter = router({
         }
       }
 
+      // Validate tts_voice against the live voice list when either
+      // ttsVoice OR ttsProvider is being changed. Same protection as
+      // llm_model — stops the user from saving a voice ID that doesn't
+      // exist on the chosen TTS provider.
+      const newTtsProvider = (updates.ttsProvider ?? existing.ttsProvider ?? "").toLowerCase();
+      const newTtsVoice = updates.ttsVoice === undefined ? existing.ttsVoice : updates.ttsVoice;
+      const ttsChanged =
+        updates.ttsProvider !== undefined || updates.ttsVoice !== undefined;
+      if (
+        ttsChanged &&
+        newTtsVoice &&
+        newTtsProvider &&
+        newTtsProvider !== "gpu-ai" &&
+        newTtsProvider !== "custom"
+      ) {
+        try {
+          const { isSupportedVoiceProvider, listVoicesForProvider } = await import(
+            "./services/voiceProviders.js"
+          );
+          if (isSupportedVoiceProvider(newTtsProvider)) {
+            const [app2] = await ctx.db.select().from(apps).where(eq(apps.id, existing.appId)).limit(1);
+            if (app2) {
+              const { readAppSecret } = await import("./vaultClient.js");
+              const vault = (await readAppSecret(app2.slug)) || {};
+              const apiKey = vault[`agent_${existing.id}_${newTtsProvider}_api_key`];
+              if (apiKey) {
+                const voices = await listVoicesForProvider(newTtsProvider, apiKey);
+                const ids = new Set(voices.map((v) => v.id));
+                if (!ids.has(newTtsVoice)) {
+                  // Build a short suggestion list — voices that name-match the typed value.
+                  const needle = newTtsVoice.toLowerCase();
+                  const hints = voices
+                    .filter((v) => (v.name || v.id).toLowerCase().includes(needle.slice(0, 5)))
+                    .slice(0, 5)
+                    .map((v) => `${v.id}${v.name ? ` (${v.name})` : ""}`);
+                  throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message:
+                      `Voice '${newTtsVoice}' is not available on ${newTtsProvider}.` +
+                      (hints.length
+                        ? ` Did you mean: ${hints.join(", ")}?`
+                        : ` Run agentsCrud.listProviderVoices to see what is available.`),
+                  });
+                }
+                log.info("Validated tts_voice against provider", {
+                  provider: newTtsProvider,
+                  voice: newTtsVoice,
+                });
+              } else {
+                log.warn("Skipping voice validation — no provider key in Vault", {
+                  provider: newTtsProvider,
+                });
+              }
+            }
+          }
+        } catch (err) {
+          if (err instanceof TRPCError) throw err;
+          log.warn("Voice validation failed (non-fatal)", { error: String(err) });
+        }
+      }
+
       const [updated] = await ctx.db
         .update(agentConfigs)
         .set({ ...updates, updatedAt: new Date() })
@@ -416,15 +477,38 @@ export const agentRouter = router({
       if (!app) throw new Error("App not found");
 
       // Trim whitespace defensively — copy-paste from a UI often picks up
-      // leading/trailing spaces and OpenRouter/OpenAI reject those keys.
+      // leading/trailing spaces and providers reject those keys outright.
       const trimmedKey = input.apiKey.trim();
 
-      // Validate the key at save time by hitting the provider's /v1/models
-      // endpoint. This both confirms the key is correct AND returns the list
-      // of models the user can pick from. Throws TRPCError on auth failure
-      // so the UI shows a meaningful error before persisting to Vault.
-      const { listModelsForProvider } = await import("./services/llmProviders.js");
-      const models = await listModelsForProvider(input.provider, trimmedKey);
+      // Validate the key by hitting the provider's list endpoint:
+      //  - LLM providers (openai, openrouter, gpu-ai): /v1/models
+      //  - TTS providers (cartesia, elevenlabs, openai): /voices
+      //  - STT providers (deepgram): /projects (auth check + static list)
+      // Throws TRPCError on auth failure so the UI shows a real error
+      // before persisting to Vault.
+      const { listModelsForProvider, isSupportedProvider } = await import(
+        "./services/llmProviders.js"
+      );
+      const { listVoicesForProvider, isSupportedVoiceProvider } = await import(
+        "./services/voiceProviders.js"
+      );
+
+      let count = 0;
+      let modelsOrVoices: any[] = [];
+      if (isSupportedProvider(input.provider)) {
+        const models = await listModelsForProvider(input.provider, trimmedKey);
+        count = models.length;
+        modelsOrVoices = models;
+      } else if (isSupportedVoiceProvider(input.provider)) {
+        const voices = await listVoicesForProvider(input.provider, trimmedKey);
+        count = voices.length;
+        modelsOrVoices = voices;
+      } else {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `Provider '${input.provider}' is not supported for key validation`,
+        });
+      }
 
       const { writeAppSecret, readAppSecret } = await import("./vaultClient.js");
       const existing = (await readAppSecret(app.slug)) || {};
@@ -435,9 +519,57 @@ export const agentRouter = router({
       log.info("Provider key validated and written to Vault", {
         slug: app.slug,
         provider: input.provider,
-        modelCount: models.length,
+        count,
       });
-      return { success: true, modelCount: models.length, models };
+      return { success: true, modelCount: count, models: modelsOrVoices };
+    }),
+
+  /**
+   * List voices/STT models for a TTS or STT provider. Same flow as
+   * listProviderModels but uses voiceProviders.ts (cartesia, elevenlabs,
+   * openai TTS, deepgram). Errors with FAILED_PRECONDITION if the
+   * provider doesn't have a known voice list.
+   */
+  listProviderVoices: protectedProcedure
+    .input(
+      z.object({
+        agentId: z.number(),
+        provider: z.string(),
+        apiKey: z.string().optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      if (!ctx.db) return { voices: [], hasKey: false as const };
+      const [agent] = await ctx.db
+        .select()
+        .from(agentConfigs)
+        .where(eq(agentConfigs.id, input.agentId))
+        .limit(1);
+      if (!agent) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      await assertAppMembership(ctx, agent.appId);
+
+      const { listVoicesForProvider, isSupportedVoiceProvider } = await import(
+        "./services/voiceProviders.js"
+      );
+      // gpu-ai TTS uses static voice IDs (Sudhir-IndexTTS2 etc.) and is
+      // not in the voiceProviders table — let the UI fall back to a
+      // small static list.
+      if (!isSupportedVoiceProvider(input.provider)) {
+        return { voices: [], hasKey: false as const, supported: false as const };
+      }
+      let apiKey = input.apiKey;
+      if (!apiKey) {
+        const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
+        if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "App not found" });
+        const { readAppSecret } = await import("./vaultClient.js");
+        const vault = (await readAppSecret(app.slug)) || {};
+        apiKey = vault[`agent_${agent.id}_${input.provider}_api_key`];
+      }
+      if (!apiKey) {
+        return { voices: [], hasKey: false as const, supported: true as const };
+      }
+      const voices = await listVoicesForProvider(input.provider, apiKey);
+      return { voices, hasKey: true as const, supported: true as const };
     }),
 
   /**

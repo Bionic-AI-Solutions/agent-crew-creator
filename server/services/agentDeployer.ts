@@ -172,33 +172,53 @@ export async function deployAgent(
   await k8s.ensureConfigMap(namespace, configMapName, configData);
   await k8s.createExternalSecret(namespace);
 
-  // 5. Resolve per-agent provider API key from Vault.
-  // setProviderKey writes keys to Vault as `agent_${id}_${provider}_api_key`,
-  // but the deployer's secretRef path only knows about the per-app
-  // openai_api_key. Look up the right one for this agent's llmProvider
-  // and inject it as the SDK-standard {PROVIDER}_API_KEY env var.
+  // 5. Resolve per-agent provider API keys from Vault — for ALL three
+  // pipelines (LLM, STT, TTS). setProviderKey writes per-agent keys to
+  // Vault as `agent_${id}_${provider}_api_key`. Look up each pipeline's
+  // configured provider, find the matching key, inject it as the
+  // SDK-standard {PROVIDER}_API_KEY env var on the worker pod.
+  //
+  // Deduped: a single provider used for two pipelines (e.g. openai for
+  // both STT and TTS) only gets one env var injection.
   const extraEnv: Array<{ name: string; value: string }> = [];
+  const injected = new Set<string>();
   try {
     const { readAppSecret } = await import("../vaultClient.js");
     const vault = (await readAppSecret(app.slug)) || {};
-    const provider = (agent.llmProvider || "").toLowerCase();
-    const perAgentKey = vault[`agent_${agent.id}_${provider}_api_key`];
-    const envName = providerEnvName(provider);
-    if (perAgentKey && envName) {
-      // Trim any stray whitespace — Vault saves can pick up leading/trailing
-      // spaces from copy-paste, and OpenRouter / OpenAI reject keys with
-      // even a single leading space (they don't strip).
+    const pipelines: Array<["llm" | "stt" | "tts", string | null]> = [
+      ["llm", agent.llmProvider],
+      ["stt", agent.sttProvider],
+      ["tts", agent.ttsProvider],
+    ];
+    for (const [kind, raw] of pipelines) {
+      const provider = (raw || "").toLowerCase();
+      if (!provider || provider === "gpu-ai" || provider === "custom") continue;
+      const envName = providerEnvName(provider);
+      if (!envName) continue;
+      if (injected.has(envName)) continue; // already added by another pipeline
+      const perAgentKey = vault[`agent_${agent.id}_${provider}_api_key`];
+      if (!perAgentKey) {
+        log.warn("No per-agent provider key found in Vault", {
+          agent: agent.id,
+          pipeline: kind,
+          provider,
+          expectedKey: `agent_${agent.id}_${provider}_api_key`,
+        });
+        continue;
+      }
+      // Trim whitespace — copy-paste from a UI often picks up leading/
+      // trailing spaces and OpenRouter/OpenAI reject those keys.
       extraEnv.push({ name: envName, value: perAgentKey.trim() });
-      log.info("Injected per-agent provider key", { agent: agent.id, provider, envName });
-    } else if (provider && provider !== "gpu-ai" && !perAgentKey) {
-      log.warn("No per-agent provider key found in Vault", {
+      injected.add(envName);
+      log.info("Injected per-agent provider key", {
         agent: agent.id,
+        pipeline: kind,
         provider,
-        expectedKey: `agent_${agent.id}_${provider}_api_key`,
+        envName,
       });
     }
   } catch (err) {
-    log.warn("Failed to resolve per-agent provider key (non-fatal)", { error: String(err) });
+    log.warn("Failed to resolve per-agent provider keys (non-fatal)", { error: String(err) });
   }
 
   // 6. Apply Deployment — just agent-{name} since namespace provides isolation
