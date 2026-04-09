@@ -304,6 +304,7 @@ When the result comes back, summarize it in spoken-friendly language.
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=15.0, read=300.0, write=15.0, pool=15.0),
+                follow_redirects=True,
             ) as client:
                 # Frame as an explicit assignment so Letta understands this
                 # is "the professor has asked you to do X and post the
@@ -316,7 +317,7 @@ When the result comes back, summarize it in spoken-friendly language.
                     + task
                 )
                 response = await client.post(
-                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages/",
+                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages",
                     json={"messages": [{"role": "user", "content": framed_task}]},
                     headers=LETTA_HEADERS,
                 )
@@ -405,9 +406,10 @@ async def forward_to_assistant_async(
 
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
+            follow_redirects=True,
         ) as client:
             response = await client.post(
-                f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages/",
+                f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages",
                 json={"messages": [{"role": "user", "content": framed}]},
                 headers=LETTA_HEADERS,
             )
