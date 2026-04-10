@@ -44,6 +44,8 @@ function providerEnvName(provider: string): string | null {
       return "ELEVENLABS_API_KEY";
     case "groq":
       return "GROQ_API_KEY";
+    case "async":
+      return "ASYNC_API_KEY";
     default:
       return null;
   }
@@ -185,8 +187,20 @@ export async function deployAgent(
   const extraEnv: Array<{ name: string; value: string }> = [];
   const injected = new Set<string>();
   try {
-    const { readAppSecret } = await import("../vaultClient.js");
+    const { readAppSecret, readPlatformVaultPath } = await import("../vaultClient.js");
     const vault = (await readAppSecret(app.slug)) || {};
+
+    // Load shared fallback keys (secret/shared/api-keys) once — used when
+    // per-agent keys are not configured. This allows agents to work out of
+    // the box with shared org-wide keys while still supporting per-agent
+    // overrides via the UI's "Test & Save" flow.
+    let sharedKeys: Record<string, string> = {};
+    try {
+      sharedKeys = (await readPlatformVaultPath("shared/api-keys")) || {};
+    } catch {
+      log.info("No shared API keys found at secret/shared/api-keys");
+    }
+
     const pipelines: Array<["llm" | "stt" | "tts", string | null]> = [
       ["llm", agent.llmProvider],
       ["stt", agent.sttProvider],
@@ -198,29 +212,27 @@ export async function deployAgent(
       const envName = providerEnvName(provider);
       if (!envName) continue;
       if (injected.has(envName)) continue; // already added by another pipeline
+
+      // Priority: per-agent key > shared fallback key
       const perAgentKey = vault[`agent_${agent.id}_${provider}_api_key`];
-      if (!perAgentKey) {
-        log.warn("No per-agent provider key found in Vault", {
-          agent: agent.id,
-          pipeline: kind,
-          provider,
-          expectedKey: `agent_${agent.id}_${provider}_api_key`,
+      const sharedKey = sharedKeys[`${provider}_api_key`];
+      const key = perAgentKey || sharedKey;
+
+      if (!key) {
+        log.warn("No provider key found (per-agent or shared)", {
+          agent: agent.id, pipeline: kind, provider,
         });
         continue;
       }
-      // Trim whitespace — copy-paste from a UI often picks up leading/
-      // trailing spaces and OpenRouter/OpenAI reject those keys.
-      extraEnv.push({ name: envName, value: perAgentKey.trim() });
+      extraEnv.push({ name: envName, value: key.trim() });
       injected.add(envName);
-      log.info("Injected per-agent provider key", {
-        agent: agent.id,
-        pipeline: kind,
-        provider,
-        envName,
+      log.info("Injected provider key", {
+        agent: agent.id, pipeline: kind, provider, envName,
+        source: perAgentKey ? "per-agent" : "shared",
       });
     }
   } catch (err) {
-    log.warn("Failed to resolve per-agent provider keys (non-fatal)", { error: String(err) });
+    log.warn("Failed to resolve provider keys (non-fatal)", { error: String(err) });
   }
 
   // 5b. BitHuman avatar keys — shared across all agents (one GPU server).

@@ -203,6 +203,11 @@ def create_tts_with_fallback():
         logger.warning("Primary TTS (%s) failed to initialize: %s — using fallback",
                        settings.tts_provider, e)
 
+    # AsyncAI is streaming-only — FallbackTTSAdapter uses synthesize()
+    # which AsyncAI doesn't support. Return it directly without fallback.
+    if settings.tts_provider == "async" and primary:
+        return primary
+
     fallbacks = []
 
     if settings.cartesia_api_key:
@@ -281,6 +286,13 @@ def _create_primary_tts():
         return elevenlabs.TTS(
             voice_id=settings.tts_voice or "default",
             api_key=settings.elevenlabs_api_key or None,
+        )
+
+    if provider == "async":
+        from livekit.plugins.asyncai import tts as asyncai_tts
+        return asyncai_tts.TTS(
+            api_key=settings.async_api_key or None,
+            voice=settings.tts_voice or "e0f39dc4-f691-4e78-bba5-5c636692cc04",
         )
 
     raise ValueError(f"Unknown TTS provider: {provider}")

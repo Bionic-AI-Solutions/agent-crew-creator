@@ -24,6 +24,8 @@ RUN pip install --no-cache-dir \
     "livekit-plugins-deepgram>=1.0.0" \
     "livekit-plugins-cartesia>=1.0.0" \
     "livekit-plugins-elevenlabs>=1.0.0" \
+    # Async TTS — streaming-first, low-latency
+    "livekit-plugins-asyncai>=1.5.0" \
     # Avatar
     "livekit-plugins-bithuman>=0.1.0" \
     # Capture (frame → PNG) and storage

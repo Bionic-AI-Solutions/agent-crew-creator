@@ -35,6 +35,8 @@ interface VoiceProviderConfig {
   authHeader: (apiKey: string) => Record<string, string>;
   /** URL returning the list. */
   listUrl: string;
+  /** HTTP method — defaults to GET. Async uses POST. */
+  method?: "GET" | "POST";
   /** Parse the raw API response into VoiceOption[]. */
   parse: (raw: any) => VoiceOption[];
 }
@@ -101,6 +103,23 @@ const PROVIDERS: Record<string, VoiceProviderConfig> = {
       { id: "shimmer", name: "Shimmer", description: "soft female" },
     ],
   },
+  async: {
+    key: "async",
+    label: "Async",
+    pipeline: "tts",
+    authHeader: (key) => ({ "X-Api-Key": key, "Content-Type": "application/json" }),
+    listUrl: "https://api.async.com/voices",
+    method: "POST",
+    parse: (raw: any) => {
+      const voices = raw?.voices || (Array.isArray(raw) ? raw : []);
+      return voices.map((v: any) => ({
+        id: v.voice_id || v.id || "",
+        name: v.name || "Unknown",
+        description: `${v.accent || ""} ${v.gender || ""} — ${(v.style || "").slice(0, 50)}`.trim(),
+        language: v.language || "",
+      }));
+    },
+  },
   // ── STT side ────────────────────────────────────────────────
   deepgram: {
     key: "deepgram",
@@ -147,10 +166,14 @@ export async function listVoicesForProvider(
 
   let res: Response;
   try {
-    res = await fetch(cfg.listUrl, {
-      method: "GET",
+    const fetchOpts: RequestInit = {
+      method: cfg.method || "GET",
       headers: cfg.authHeader(apiKey),
-    });
+    };
+    if (cfg.method === "POST") {
+      fetchOpts.body = JSON.stringify({});
+    }
+    res = await fetch(cfg.listUrl, fetchOpts);
   } catch (err) {
     log.error("Provider list fetch failed", { provider, error: String(err) });
     throw new TRPCError({

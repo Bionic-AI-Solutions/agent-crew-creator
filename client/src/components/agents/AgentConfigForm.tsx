@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { Save, Rocket, Trash2 } from "lucide-react";
+import { Rocket, Trash2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { useAppContext } from "@/contexts/AppContext";
 import LiveKitSection from "./LiveKitSection";
@@ -75,21 +75,29 @@ export default function AgentConfigForm({ agentId }: Props) {
     onError: (err) => toast.error(err.message),
   });
 
-  const handleSave = () => {
-    updateMutation.mutate({
-      id: agentId,
-      sttProvider,
-      sttModel: sttModel || null,
-      llmProvider,
-      llmModel: llmModel || null,
-      ttsProvider,
-      ttsVoice: ttsVoice || null,
-      systemPrompt: systemPrompt || null,
-      avatarEnabled,
-      lettaAgentName: lettaAgentName || null,
-      lettaLlmModel: lettaLlmModel || null,
-      lettaSystemPrompt: lettaSystemPrompt || null,
-    });
+  const handleDeploy = () => {
+    // Save all fields first, then deploy (which auto-provisions Letta if needed)
+    updateMutation.mutate(
+      {
+        id: agentId,
+        sttProvider,
+        sttModel: sttModel || null,
+        llmProvider,
+        llmModel: llmModel || null,
+        ttsProvider,
+        ttsVoice: ttsVoice || null,
+        systemPrompt: systemPrompt || null,
+        avatarEnabled,
+        lettaAgentName: lettaAgentName || null,
+        lettaLlmModel: lettaLlmModel || null,
+        lettaSystemPrompt: lettaSystemPrompt || null,
+      },
+      {
+        onSuccess: () => {
+          deployMutation.mutate({ id: agentId });
+        },
+      },
+    );
   };
 
   if (isLoading) {
@@ -174,17 +182,16 @@ export default function AgentConfigForm({ agentId }: Props) {
 
       {/* Action bar */}
       <div className="flex items-center gap-2 border-t pt-4">
-        <Button onClick={handleSave} disabled={updateMutation.isPending}>
-          <Save className="h-4 w-4 mr-1" />
-          {updateMutation.isPending ? "Saving..." : "Save"}
-        </Button>
         <Button
-          variant="secondary"
-          onClick={() => deployMutation.mutate({ id: agentId })}
-          disabled={deployMutation.isPending}
+          onClick={handleDeploy}
+          disabled={updateMutation.isPending || deployMutation.isPending}
         >
           <Rocket className="h-4 w-4 mr-1" />
-          {deployMutation.isPending ? "Deploying..." : "Deploy"}
+          {updateMutation.isPending
+            ? "Saving..."
+            : deployMutation.isPending
+              ? "Deploying..."
+              : "Deploy"}
         </Button>
         <div className="flex-1" />
         <Button

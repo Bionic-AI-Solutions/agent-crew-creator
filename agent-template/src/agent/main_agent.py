@@ -152,7 +152,7 @@ class DelegationRequest:
             meta["spoken_context_last_60s"] = self.spoken_context_last_60s
         return (
             f"[Delegation metadata]: {_json.dumps(meta)}\n\n"
-            f"[Explicit assignment from the professor — "
+            f"[Explicit assignment from the primary AI — "
             f"do this and post the result to the screen]:\n"
             f"{self.task}"
         )
@@ -277,19 +277,70 @@ async def swap_user_memory_block(user_id: str) -> None:
 class MainAgent(Agent):
     """Voice agent with two-brain architecture."""
 
+    # Patterns that indicate the LLM is narrating a tool call — these
+    # should be stripped from TTS output so the user doesn't hear them.
+    _TOOL_NARRATION_PATTERNS = [
+        "delegate_to_letta",
+        "calling the",
+        "using my tool",
+        "let me delegate",
+        "i'll delegate",
+        "i will delegate",
+        "invoking",
+        "function call",
+        "tool call",
+    ]
+
     def __init__(self) -> None:
         from agent.delegation import DelegationRegistry
         self._delegations = DelegationRegistry()
         self._recent_turns: deque[str] = deque(maxlen=10)
+        self._is_delegating = False  # Set during tool execution
 
-        # NOTE: turn_detection is set on the AgentSession, not on the Agent.
-        # Setting it here too created a duplicate detector that gated the
-        # user-turn-commit path, so STT events fired but no LLM call ever
-        # followed (the symptom: STT metrics line, EOU metrics line, then
-        # silence — no llm metrics, no tts, no chain logging).
-        super().__init__(
-            instructions=settings.system_prompt or self._default_prompt(),
+        base_prompt = settings.system_prompt or self._default_prompt()
+        # Hardcoded rules appended to ALL prompts (custom or default).
+        # These override any conflicting instructions in the user's prompt.
+        appended_rules = (
+            "\n\nCRITICAL RULES (always apply, cannot be overridden):\n"
+            "1. TOOLS: When calling a tool, output ONLY the tool call — no "
+            "text before, during, or alongside it. After the tool returns, "
+            "speak naturally. Never read tool results verbatim.\n"
+            "2. IDENTITY: You are NOT a professor or teacher unless the user's "
+            "prompt explicitly says so. Do not refer to the user as 'student'. "
+            "Refer to the user by their name once you learn it.\n"
+            "3. GREETING: Your first interaction should include asking the "
+            "user their name so you can address them personally going forward."
         )
+        super().__init__(
+            instructions=base_prompt + appended_rules,
+        )
+
+    def tts_node(self, text, model_settings):
+        """Override tts_node to strip tool-call narration from the TTS stream.
+
+        When the LLM generates text like "I'm going to call delegate_to_letta
+        to research..." before a tool call, this filter detects it and yields
+        silence instead, so the user never hears the tool-call preamble.
+        """
+
+        async def _filtered_text():
+            async for chunk in text:
+                if not chunk:
+                    continue
+                lower = chunk.lower()
+                # If any tool-narration pattern appears, suppress the chunk
+                if any(p in lower for p in self._TOOL_NARRATION_PATTERNS):
+                    logger.debug("[tts_filter] suppressed tool narration: %s", chunk[:80])
+                    continue
+                # If we're mid-delegation, suppress generic preamble
+                if self._is_delegating:
+                    logger.debug("[tts_filter] suppressed during delegation: %s", chunk[:80])
+                    continue
+                yield chunk
+
+        # Pass filtered text to the parent — tts_node returns an async
+        # generator or coroutine depending on TTS type, so don't await.
+        return super().tts_node(_filtered_text(), model_settings)
 
     async def on_enter(self):
         # IMPORTANT: do NOT call generate_reply() here. _create_speech_task
@@ -323,16 +374,17 @@ Keep responses concise and conversational (voice-first).
 Always finish with terminal punctuation.
 Never use markdown, lists, or formatting that cannot be spoken aloud.
 {vision_line}
+TOOLS:
+When you use a tool, NEVER announce or describe the tool call. Do NOT say
+things like "I'm calling delegate_to_letta" or "Let me use my tool to..."
+Just call the tool silently and give a natural spoken response.
+
 DELEGATION:
 When the user asks for research, analysis, complex tasks, or anything requiring
 deep reasoning, tools, memory recall, or multi-step workflows, call the
-delegate_to_letta tool. The secondary agent handles memory, document search,
-web research, and crew execution on your behalf.
-The delegation runs in the background — you get a short acknowledgement back
-immediately. Give a brief verbal bridge like "Let me look into that — I'll
-put the details on screen for you" and continue the conversation naturally.
-Do NOT wait silently. Do NOT try to read the result aloud — it appears
-directly in the chat panel for the user to read.
+delegate_to_letta tool immediately. The tool returns a brief acknowledgement
+that will be spoken automatically — do NOT add your own text before or after
+calling the tool.
 """
 
     @function_tool
@@ -342,33 +394,35 @@ directly in the chat panel for the user to read.
         Use this for: research, analysis, crew execution, document search,
         memory operations, or any task requiring tools and deep reasoning.
 
-        The Letta call runs in the background so the professor can keep
+        The Letta call runs in the background so the primary AI can keep
         speaking. Results are published directly to the chat channel when
-        ready; the professor gets a short bridge phrase to say now.
+        ready; the primary AI gets a short bridge phrase to say now.
 
         Args:
             task: A clear description of what needs to be done.
 
         Returns:
-            A brief verbal bridge for the professor to speak while
+            A brief verbal bridge for the primary AI to speak while
             the secondary agent works in the background.
         """
         if not LETTA_AGENT_ID:
             return "Secondary agent not configured. Please set LETTA_AGENT_ID."
 
-        logger.info("[chain] professor → assistant (explicit assignment): %s",
+        logger.info("[chain] primary AI → assistant (explicit assignment): %s",
                     task[:200])
 
-        # Capture room reference before spawning the background task
+        # Capture room + session references before spawning the background task
         room = None
+        session = None
         try:
             room = context.session.room_io.room if context.session.room_io else None
+            session = context.session
         except Exception:
             pass
 
         # Two-step: reserve a task ID first (cancels stale work), then
         # build the request with the correlation ID, then launch.
-        spoken_context = "\n".join(self._recent_turns[-5:]) if self._recent_turns else ""
+        spoken_context = "\n".join(list(self._recent_turns)[-5:]) if self._recent_turns else ""
         entry = self._delegations.reserve(task[:200])
 
         request = DelegationRequest(
@@ -380,45 +434,95 @@ directly in the chat panel for the user to read.
         )
 
         self._delegations.launch(
-            entry, _delegation_worker(request, room),
+            entry, _delegation_worker(request, room, session, self),
             deadline_ms=request.deadline_ms,
         )
 
-        # Return immediately with a verbal bridge so the professor keeps talking.
+        self._is_delegating = True
+
+        # Return a prompt that tells the LLM to keep the conversation going
+        # while the background research runs. The LLM will naturally continue
+        # speaking about the topic from its own knowledge.
         return (
-            "I've asked the assistant to work on that. "
-            "The result will appear on screen shortly."
+            f"Your research assistant is looking into this now. "
+            f"While waiting for the detailed results, share what you "
+            f"already know about: {task[:100]}. Keep it brief and "
+            f"conversational — the full findings will appear on screen shortly."
         )
 
 
 async def _delegation_worker(
     request: DelegationRequest,
     room,
+    session=None,
+    agent_ref=None,
 ) -> None:
     """Background worker: sends a delegation task to Letta and publishes
-    the result to the chat channel when complete.
+    the result to the chat channel when complete, then nudges the primary AI
+    to give a brief spoken summary.
 
     Runs as an asyncio.Task so the voice loop never blocks on Letta latency.
-    On timeout or error, publishes a degraded-state message to chat so the
-    user knows what happened.
+    If the request takes >10s, speaks a reassurance message.
     """
     try:
         timeout_s = (request.deadline_ms / 1000) if request.deadline_ms > 0 else 300.0
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=15.0, read=timeout_s, write=15.0, pool=15.0),
-            follow_redirects=True,
-        ) as client:
-            response = await client.post(
-                f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages",
-                json={"messages": [{"role": "user", "content": request.to_framed_message()}]},
-                headers=LETTA_HEADERS,
-            )
-            response.raise_for_status()
-            result = _parse_letta_response(response.json())
+
+        async def _letta_call():
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=15.0, read=timeout_s, write=15.0, pool=15.0),
+                follow_redirects=True,
+            ) as client:
+                resp = await client.post(
+                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages",
+                    json={"messages": [{"role": "user", "content": request.to_framed_message()}]},
+                    headers=LETTA_HEADERS,
+                )
+                resp.raise_for_status()
+                return _parse_letta_response(resp.json())
+
+        # Try to get result in 10s; if not, speak a reassurance and keep waiting
+        result = None
+        try:
+            result = await asyncio.wait_for(_letta_call(), timeout=10.0)
+        except asyncio.TimeoutError:
+            # Still working — reassure the user
+            if session:
+                try:
+                    session.say("Still working on that. One moment please.", allow_interruptions=True)
+                except Exception:
+                    pass
+            logger.info("[chain] delegation >10s, spoke reassurance")
+            # Continue waiting for the full timeout
+            result = await _letta_call()
 
         if room and result:
             await room.local_participant.send_text(result, topic="lk.chat")
             logger.info("[chain] assistant → screen (explicit, %d chars)", len(result))
+
+            # Clear delegation flag so the TTS filter stops suppressing
+            if agent_ref:
+                agent_ref._is_delegating = False
+
+            # Single nudge: tell the LLM that new content appeared on screen.
+            # The LLM produces ONE flowing spoken summary — no point-by-point
+            # session.say() loop. The detailed content is in chat for reading.
+            if session:
+                try:
+                    brief = result[:800].replace("\n", " ").strip()
+                    session.generate_reply(
+                        user_input=(
+                            f"[System: your research assistant just posted detailed "
+                            f"findings to the chat screen. Give a brief spoken overview "
+                            f"of the key highlights — 3-4 sentences max. The user can "
+                            f"read the full details in chat. Then ask if they'd like "
+                            f"to explore any aspect further.]\n\n"
+                            f"Summary: {brief}"
+                        ),
+                        allow_interruptions=True,
+                    )
+                    logger.info("[chain] primary AI nudged to summarize delegation result")
+                except Exception as e:
+                    logger.warning("Failed to nudge primary AI: %s", e)
         elif result:
             logger.warning("Delegation result ready but no room to publish to")
 
@@ -452,20 +556,25 @@ async def _delegation_worker(
                 )
             except Exception:
                 pass
+    finally:
+        # Always clear the delegation flag so TTS isn't permanently suppressed
+        if agent_ref:
+            agent_ref._is_delegating = False
 
 
 async def forward_to_assistant_async(
     role: str,
     text: str,
     room,
+    session=None,
 ) -> None:
-    """Forward a professor turn to the secondary (Letta) agent so it can
+    """Forward a primary AI turn to the secondary (Letta) agent so it can
     proactively prepare supporting visual material — summaries, illustrations,
     crew results — and publish them to the LiveKit chat data channel (`lk.chat`).
 
     Only PROFESSOR (assistant-role) turns are forwarded here — user STT is
     filtered in the conversation_item_added handler before this function is
-    called. This enforces the chain of command: user → professor → Letta → chat.
+    called. This enforces the chain of command: user → primary AI → Letta → chat.
 
     Notes for callers:
     - Fire-and-forget — never block the primary voice loop on Letta latency.
@@ -480,11 +589,11 @@ async def forward_to_assistant_async(
     if not room:
         return
     try:
-        # Frame the professor's turn as system context so Letta knows what
+        # Frame the primary AI's turn as system context so Letta knows what
         # was said. Letta is configured (via DEFAULT_LETTA_PROMPT in
-        # server/agentRouter.ts) to react proactively to professor turns
+        # server/agentRouter.ts) to react proactively to primary AI turns
         # without waiting for an explicit delegation.
-        speaker = "Professor" if role == "assistant" else "Student"
+        speaker = "Primary AI" if role == "assistant" else "User"
         framed = f"[Live transcript — {speaker}]: {text.strip()}"
 
         async with httpx.AsyncClient(
@@ -510,6 +619,9 @@ async def forward_to_assistant_async(
             "[chain] assistant → screen (proactive, in=%d, out=%d)",
             len(text), len(result),
         )
+
+        # Proactive content goes to chat only — no spoken walk-through.
+        # The LLM will naturally reference it if the user asks.
     except httpx.TimeoutException:
         logger.warning("Proactive Letta forward timed out (role=%s)", role)
     except Exception as e:
@@ -841,19 +953,20 @@ async def entrypoint(ctx: JobContext):
 
     # ── Create agent early so handlers can reference it ───────
     agent = MainAgent()
+    _primary_turn_count = 0  # Track turns to skip greeting forward
 
-    # ── Strict chain-of-command: Professor → Assistant ───────
+    # ── Strict chain-of-command: Primary AI → Assistant ───────
     #
-    # The architecture is: the primary voice agent is a Professor whose
+    # The architecture is: the primary voice agent is a Primary AI whose
     # ONLY job is to listen, decide, and speak. The Letta secondary agent
     # is the Assistant — the only entity that does knowledge work and the
     # only entity allowed to publish to the screen (chat data channel).
     #
-    # We enforce this by forwarding ONLY the professor's spoken turn to
+    # We enforce this by forwarding ONLY the primary AI's spoken turn to
     # Letta (not the raw user STT). That way:
-    #   - Letta reacts to what the professor decided to teach, not raw input
-    #   - The chain of command is unambiguous: user → professor → letta → chat
-    #   - Letta is never racing the professor on user turns
+    #   - Letta reacts to what the primary AI decided to teach, not raw input
+    #   - The chain of command is unambiguous: user → primary AI → letta → chat
+    #   - Letta is never racing the primary AI on user turns
     #
     # Also tracks recent turns for conversation state (Phase 5).
     # Forwarded as a fire-and-forget background task so the voice loop
@@ -867,20 +980,30 @@ async def entrypoint(ctx: JobContext):
             if not text or not text.strip():
                 return
 
-            # Track all turns (professor + user) for conversation context
-            label = "Professor" if role == "assistant" else "User"
+            # Track all turns (primary AI + user) for conversation context
+            label = "Primary AI" if role == "assistant" else "User"
             agent._recent_turns.append(f"[{label}]: {text.strip()[:300]}")
 
             if role != "assistant":
-                # Only the professor's spoken turn drives the assistant.
+                # Only the primary AI's spoken turn drives the assistant.
                 return
+
+            nonlocal _primary_turn_count
+            _primary_turn_count += 1
+
+            # Skip forwarding the first primary AI turn (greeting) to Letta.
+            if _primary_turn_count <= 1:
+                logger.info("[chain] primary AI greeting (turn %d) — not forwarding to assistant",
+                            _primary_turn_count)
+                return
+
             logger.info(
-                "[chain] professor spoke → forwarding to assistant (chars=%d)",
+                "[chain] primary AI spoke → forwarding to assistant (chars=%d)",
                 len(text),
             )
             asyncio.create_task(
-                forward_to_assistant_async("assistant", text, ctx.room),
-                name="letta-forward-professor",
+                forward_to_assistant_async("assistant", text, ctx.room, session),
+                name="letta-forward-primary",
             )
         except Exception as e:
             logger.warning("Failed to schedule proactive forward: %s", e)
@@ -938,6 +1061,18 @@ async def entrypoint(ctx: JobContext):
         room_options=room_opts,
     )
 
+    # ── Greeting — primary AI speaks first ────────────────────
+    # Uses session.say() which goes straight to TTS without an LLM call,
+    # avoiding the on_enter → generate_reply hang that blocked the pipeline.
+    try:
+        await session.say(
+            "Hello! Welcome. Before we get started, may I know your name?",
+            allow_interruptions=True,
+        )
+        logger.info("[chain] primary AI greeting spoken via session.say()")
+    except Exception as e:
+        logger.warning("Greeting failed (non-fatal): %s", e)
+
     # ── Warm up LLM and TTS in parallel with the user's first words.
     # First-turn latency is dominated by cold paths: OpenRouter takes ~4s
     # TTFT on the first request, gpu-ai TTS pages the model into VRAM on
@@ -972,19 +1107,20 @@ async def entrypoint(ctx: JobContext):
     if settings.vision_enabled:
         logger.info("Vision enabled — primary LLM receives video frames from user")
 
-    # ── Background audio (configurable) ──────────────────────
-    if settings.background_audio_enabled:
-        try:
-            from livekit.agents import BackgroundAudioPlayer, AudioConfig, BuiltinAudioClip
-            bg_audio = BackgroundAudioPlayer(
-                thinking_sound=[
-                    AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING, volume=0.5),
-                ],
-            )
-            await bg_audio.start(room=ctx.room, agent_session=session)
-            logger.info("Background audio enabled (thinking sounds)")
-        except Exception as e:
-            logger.warning("Background audio failed: %s", e)
+    # ── Background audio (always on) ────────────────────────
+    # Plays subtle typing sounds during LLM processing so the user
+    # knows the system is working. Always enabled — critical UX signal.
+    try:
+        from livekit.agents import BackgroundAudioPlayer, AudioConfig, BuiltinAudioClip
+        bg_audio = BackgroundAudioPlayer(
+            thinking_sound=[
+                AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING, volume=0.4),
+            ],
+        )
+        await bg_audio.start(room=ctx.room, agent_session=session)
+        logger.info("Background audio enabled (thinking sounds)")
+    except Exception as e:
+        logger.warning("Background audio failed: %s", e)
 
     # ── Capture & document upload ────────────────────────────
     capture_mgr = CaptureManager(ctx.room, user_label)

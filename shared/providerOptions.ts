@@ -73,6 +73,7 @@ export const LLM_MODELS: Record<string, ModelOption[]> = {
 
 export const TTS_PROVIDERS: ProviderOption[] = [
   { value: "gpu-ai", label: "GPU-AI (IndexTTS-2 / Indic Parler)", description: "In-cluster GPU — cloned & named voices" },
+  { value: "async", label: "Async (Cloud)", description: "Streaming-first, ultra-low latency TTS", requiresKey: true, keyEnvName: "ASYNC_API_KEY" },
   { value: "elevenlabs", label: "ElevenLabs (Cloud)", description: "Cloud API, premium voices", requiresKey: true, keyEnvName: "ELEVENLABS_API_KEY" },
   { value: "cartesia", label: "Cartesia (Cloud)", description: "Cloud API, fast low-latency TTS", requiresKey: true, keyEnvName: "CARTESIA_API_KEY" },
 ];
@@ -93,6 +94,9 @@ export const TTS_VOICES: Record<string, ModelOption[]> = {
   "cartesia": [
     { value: "a0e99841-438c-4a64-b679-ae501e7d6091", label: "Barbershop Man" },
     { value: "248be419-c632-4f23-adf1-5324ed7dbf1d", label: "British Lady" },
+  ],
+  "async": [
+    { value: "e0f39dc4-f691-4e78-bba5-5c636692cc04", label: "Default" },
   ],
 };
 

@@ -1311,6 +1311,33 @@ export const agentRouter = router({
         })
         .where(eq(agentConfigs.id, input.id));
 
+      // Auto-provision Letta agent if name is set but ID is missing.
+      // This ensures newly created agents get a Letta brain on first deploy.
+      if (agent.lettaAgentName && !agent.lettaAgentId) {
+        try {
+          const { lettaAdmin } = await import("./services/lettaAdmin.js");
+          const model = agent.lettaLlmModel || "openai-proxy/qwen3.5-27b-fp8";
+          const created = await lettaAdmin.createAgent(
+            agent.lettaAgentName,
+            model,
+            agent.lettaSystemPrompt || "",
+          );
+          await ctx.db
+            .update(agentConfigs)
+            .set({ lettaAgentId: created.id, updatedAt: new Date() })
+            .where(eq(agentConfigs.id, input.id));
+          // Update the in-memory agent object so deployer sees the ID
+          (agent as any).lettaAgentId = created.id;
+          log.info("Auto-provisioned Letta agent on deploy", {
+            agentId: agent.id, lettaAgentId: created.id,
+          });
+        } catch (err) {
+          log.warn("Auto-provision Letta failed (non-fatal, deploy continues)", {
+            error: String(err),
+          });
+        }
+      }
+
       // Fire-and-forget deployment
       const { deployAgent } = await import("./services/agentDeployer.js");
       deployAgent(ctx.db, app, agent).catch((err) => {
