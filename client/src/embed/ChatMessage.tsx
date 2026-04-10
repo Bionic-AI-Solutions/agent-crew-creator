@@ -4,12 +4,6 @@ import { marked } from "marked";
 // Configure marked for safe rendering
 marked.setOptions({ breaks: true, gfm: true });
 
-/** Allowlisted HTML tags for sanitization. */
-const SAFE_TAGS = new Set([
-  "p", "strong", "em", "code", "pre", "a", "img", "ul", "ol", "li",
-  "h1", "h2", "h3", "h4", "h5", "h6", "br", "blockquote", "span",
-]);
-
 /** Strip unsafe HTML while keeping allowed tags and attributes. */
 function sanitizeHtml(html: string): string {
   // Remove <script> tags and their content
@@ -27,6 +21,133 @@ function sanitizeHtml(html: string): string {
   return clean;
 }
 
+// ── Structured message types ────────────────────────────────────
+
+interface StructuredArtifact {
+  type: "artifact";
+  title: string;
+  download_url?: string;
+  content_type?: string;
+  summary?: string;
+}
+
+interface StructuredStatus {
+  type: "status";
+  message: string;
+  step?: number;
+  total?: number;
+}
+
+interface StructuredSummary {
+  type: "summary";
+  content: string;
+  citations?: string[];
+}
+
+type StructuredMessage = StructuredArtifact | StructuredStatus | StructuredSummary;
+
+/** Try to parse a message as a structured JSON payload. Returns null for plain text. */
+function tryParseStructured(message: string): StructuredMessage | null {
+  const trimmed = message.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed.type === "string" && ["artifact", "status", "summary"].includes(parsed.type)) {
+      return parsed as StructuredMessage;
+    }
+  } catch {
+    // Not JSON — treat as regular text
+  }
+  return null;
+}
+
+/** Sanitize a URL — reject javascript: and data: schemes. */
+function safeUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  const trimmed = url.trim().toLowerCase();
+  if (trimmed.startsWith("javascript:") || trimmed.startsWith("data:text")) return undefined;
+  return url;
+}
+
+/** Render an artifact card with optional download link and image preview. */
+function ArtifactCard({ data }: { data: StructuredArtifact }) {
+  const isImage = data.content_type?.startsWith("image/");
+  const url = safeUrl(data.download_url);
+  return (
+    <div className="bionic-artifact-card">
+      <div className="bionic-artifact-header">
+        <span className="bionic-artifact-icon">📎</span>
+        <strong>{data.title}</strong>
+      </div>
+      {data.summary && <p className="bionic-artifact-summary">{data.summary}</p>}
+      {isImage && url && (
+        <img
+          src={url}
+          alt={data.title}
+          loading="lazy"
+          className="bionic-artifact-preview"
+        />
+      )}
+      {url && (
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="bionic-artifact-download"
+        >
+          Download
+        </a>
+      )}
+    </div>
+  );
+}
+
+/** Render a progress/status indicator inline in chat. */
+function StatusIndicator({ data }: { data: StructuredStatus }) {
+  const progress = data.step && data.total
+    ? ` (${data.step}/${data.total})`
+    : "";
+  return (
+    <div className="bionic-status-indicator">
+      <span className="bionic-status-spinner" />
+      <span>{data.message}{progress}</span>
+    </div>
+  );
+}
+
+/** Render a summary card with optional citations. */
+function SummaryCard({ data }: { data: StructuredSummary }) {
+  const renderedHtml = useMemo(() => {
+    try {
+      const raw = marked.parse(data.content, { async: false }) as string;
+      return sanitizeHtml(raw);
+    } catch {
+      return data.content;
+    }
+  }, [data.content]);
+
+  return (
+    <div className="bionic-summary-card">
+      <div
+        className="bionic-chat-content"
+        dangerouslySetInnerHTML={{ __html: renderedHtml }}
+      />
+      {data.citations && data.citations.length > 0 && (
+        <div className="bionic-citations">
+          <small>Sources:</small>
+          <ul>
+            {data.citations.map((c, i) => (
+              <li key={i}><small>{c}</small></li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main ChatMessage component ──────────────────────────────────
+
 interface ChatMessageProps {
   message: string;
   isLocal: boolean;
@@ -36,14 +157,32 @@ interface ChatMessageProps {
 export function ChatMessage({ message, isLocal, name }: ChatMessageProps) {
   const [expandedImg, setExpandedImg] = useState<string | null>(null);
 
+  // Check if the message (or any line in it) is a structured JSON payload
+  const { structured, plainParts } = useMemo(() => {
+    const lines = message.split("\n\n");
+    const structured: StructuredMessage[] = [];
+    const plainParts: string[] = [];
+
+    for (const line of lines) {
+      const parsed = tryParseStructured(line);
+      if (parsed) {
+        structured.push(parsed);
+      } else if (line.trim()) {
+        plainParts.push(line);
+      }
+    }
+    return { structured, plainParts };
+  }, [message]);
+
   const renderedHtml = useMemo(() => {
+    if (!plainParts.length) return "";
     try {
-      const raw = marked.parse(message, { async: false }) as string;
+      const raw = marked.parse(plainParts.join("\n\n"), { async: false }) as string;
       return sanitizeHtml(raw);
     } catch {
-      return message;
+      return plainParts.join("\n\n");
     }
-  }, [message]);
+  }, [plainParts]);
 
   const handleClick = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
@@ -60,11 +199,29 @@ export function ChatMessage({ message, isLocal, name }: ChatMessageProps) {
     <>
       <div className={`bionic-chat-message ${isLocal ? "bionic-chat-local" : "bionic-chat-remote"}`}>
         {name && <div className="bionic-chat-name">{name}</div>}
-        <div
-          className="bionic-chat-content"
-          onClick={handleClick}
-          dangerouslySetInnerHTML={{ __html: renderedHtml }}
-        />
+
+        {/* Render plain text / markdown content */}
+        {renderedHtml && (
+          <div
+            className="bionic-chat-content"
+            onClick={handleClick}
+            dangerouslySetInnerHTML={{ __html: renderedHtml }}
+          />
+        )}
+
+        {/* Render structured messages as rich cards */}
+        {structured.map((item, idx) => {
+          switch (item.type) {
+            case "artifact":
+              return <ArtifactCard key={`struct-${idx}`} data={item} />;
+            case "status":
+              return <StatusIndicator key={`struct-${idx}`} data={item} />;
+            case "summary":
+              return <SummaryCard key={`struct-${idx}`} data={item} />;
+            default:
+              return null;
+          }
+        })}
       </div>
 
       {/* Lightbox for expanded images */}

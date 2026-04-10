@@ -196,7 +196,13 @@ def create_fallback_stt():
 
 def create_tts_with_fallback():
     """Create primary TTS with runtime fallback to Cartesia/OpenAI."""
-    primary = _create_primary_tts()
+    primary = None
+    try:
+        primary = _create_primary_tts()
+    except (ValueError, ImportError) as e:
+        logger.warning("Primary TTS (%s) failed to initialize: %s — using fallback",
+                       settings.tts_provider, e)
+
     fallbacks = []
 
     if settings.cartesia_api_key:
@@ -214,10 +220,27 @@ def create_tts_with_fallback():
             api_key=settings.openai_api_key,
         ))
 
-    if not fallbacks:
-        return primary
+    # gpu-ai TTS is always available on the cluster (no API key needed)
+    if settings.tts_provider != "gpu-ai":
+        try:
+            fallbacks.append(_GpuAiStreamingTTS(
+                base_url=settings.gpu_ai_llm_url.rstrip("/") + "/v1",
+                voice=settings.tts_voice or "Sudhir-IndexTTS2",
+                model=settings.tts_model or "tts-1",
+            ))
+        except Exception:
+            pass
 
-    return FallbackTTSAdapter(tts=[primary, *fallbacks])
+    tts_chain = [t for t in [primary, *fallbacks] if t is not None]
+    if not tts_chain:
+        raise RuntimeError(
+            f"No TTS available: primary ({settings.tts_provider}) failed and "
+            "no fallback providers could be initialized."
+        )
+    if len(tts_chain) == 1:
+        return tts_chain[0]
+
+    return FallbackTTSAdapter(tts=tts_chain)
 
 
 def _create_primary_tts():
@@ -255,7 +278,10 @@ def _create_primary_tts():
 
     if provider == "elevenlabs":
         from livekit.plugins import elevenlabs
-        return elevenlabs.TTS(voice=settings.tts_voice or "default")
+        return elevenlabs.TTS(
+            voice_id=settings.tts_voice or "default",
+            api_key=settings.elevenlabs_api_key or None,
+        )
 
     raise ValueError(f"Unknown TTS provider: {provider}")
 

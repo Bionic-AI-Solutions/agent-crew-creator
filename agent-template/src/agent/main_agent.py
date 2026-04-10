@@ -15,8 +15,11 @@ Uses official LiveKit patterns:
 
 import asyncio
 import base64
+import json as _json
 import logging
 import os
+from dataclasses import dataclass
+from typing import Optional
 
 import livekit.agents
 livekit.agents.DEFAULT_API_CONNECT_OPTIONS = livekit.agents.APIConnectOptions(
@@ -115,6 +118,48 @@ LETTA_HEADERS = {
     "Content-Type": "application/json",
     **({"Authorization": f"Bearer {LETTA_TOKEN}"} if LETTA_TOKEN else {}),
 }
+
+
+# ── Delegation contracts ───────────────────────────────────────────
+
+@dataclass
+class DelegationRequest:
+    """Structured payload sent to Letta for delegation tasks."""
+    task: str
+    task_type: str = "general"  # general | research | crew | summarize | expand
+    output_target: str = "chat"  # chat | speaker_brief
+    spoken_context_last_60s: str = ""
+    deadline_ms: int = 0  # 0 = use default HTTP timeout (300s); >0 = registry-level cancel after N ms
+    correlation_id: str = ""
+
+    def to_framed_message(self) -> str:
+        """Convert to a framed message for Letta, embedding structured metadata
+        as a JSON header followed by the natural-language task.
+
+        Letta receives this as a user message. The JSON header lets the
+        assistant extract routing/deadline info; the natural-language task
+        remains readable for the LLM's reasoning.
+        """
+        meta = {
+            "type": "delegation_request",
+            "task_type": self.task_type,
+            "output_target": self.output_target,
+            "deadline_ms": self.deadline_ms,
+            "correlation_id": self.correlation_id,
+        }
+        if self.spoken_context_last_60s:
+            meta["spoken_context_last_60s"] = self.spoken_context_last_60s
+        return (
+            f"[Delegation metadata]: {_json.dumps(meta)}\n\n"
+            f"[Explicit assignment from the professor — "
+            f"do this and post the result to the screen]:\n"
+            f"{self.task}"
+        )
+
+
+# NOTE: Structured response parsing (DelegationResponse) is deferred until
+# Letta's run_crew tool returns JSON instead of formatted strings. Currently
+# _parse_letta_response returns str and extracts artifacts opportunistically.
 
 
 # ── Per-user memory isolation ────────────────────────────────────
@@ -232,6 +277,11 @@ class MainAgent(Agent):
     """Voice agent with two-brain architecture."""
 
     def __init__(self) -> None:
+        from agent.delegation import DelegationRegistry
+        self._delegations = DelegationRegistry()
+        self._recent_turns: list[str] = []  # Last N professor/student turns
+        self._max_recent_turns = 10
+
         # NOTE: turn_detection is set on the AgentSession, not on the Agent.
         # Setting it here too created a duplicate detector that gated the
         # user-turn-commit path, so STT events fired but no LLM call ever
@@ -278,8 +328,11 @@ When the user asks for research, analysis, complex tasks, or anything requiring
 deep reasoning, tools, memory recall, or multi-step workflows, call the
 delegate_to_letta tool. The secondary agent handles memory, document search,
 web research, and crew execution on your behalf.
-While waiting, keep the user engaged with brief conversational responses.
-When the result comes back, summarize it in spoken-friendly language.
+The delegation runs in the background — you get a short acknowledgement back
+immediately. Give a brief verbal bridge like "Let me look into that — I'll
+put the details on screen for you" and continue the conversation naturally.
+Do NOT wait silently. Do NOT try to read the result aloud — it appears
+directly in the chat panel for the user to read.
 """
 
     @function_tool
@@ -289,11 +342,16 @@ When the result comes back, summarize it in spoken-friendly language.
         Use this for: research, analysis, crew execution, document search,
         memory operations, or any task requiring tools and deep reasoning.
 
+        The Letta call runs in the background so the professor can keep
+        speaking. Results are published directly to the chat channel when
+        ready; the professor gets a short bridge phrase to say now.
+
         Args:
             task: A clear description of what needs to be done.
 
         Returns:
-            The result from the secondary agent.
+            A brief verbal bridge for the professor to speak while
+            the secondary agent works in the background.
         """
         if not LETTA_AGENT_ID:
             return "Secondary agent not configured. Please set LETTA_AGENT_ID."
@@ -301,70 +359,99 @@ When the result comes back, summarize it in spoken-friendly language.
         logger.info("[chain] professor → assistant (explicit assignment): %s",
                     task[:200])
 
+        # Capture room reference before spawning the background task
+        room = None
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=15.0, read=300.0, write=15.0, pool=15.0),
-                follow_redirects=True,
-            ) as client:
-                # Frame as an explicit assignment so Letta understands this
-                # is "the professor has asked you to do X and post the
-                # result to the screen" — distinct from the passive
-                # [Live transcript ...] forwards that the assistant sees
-                # for every spoken turn.
-                framed_task = (
-                    "[Explicit assignment from the professor — "
-                    "do this and post the result to the screen]:\n"
-                    + task
+            room = context.session.room_io.room if context.session.room_io else None
+        except Exception:
+            pass
+
+        # Two-step: reserve a task ID first (cancels stale work), then
+        # build the request with the correlation ID, then launch.
+        spoken_context = "\n".join(self._recent_turns[-5:]) if self._recent_turns else ""
+        entry = self._delegations.reserve(task[:200])
+
+        request = DelegationRequest(
+            task=task,
+            task_type="general",
+            output_target="chat",
+            spoken_context_last_60s=spoken_context,
+            correlation_id=entry.task_id,
+        )
+
+        self._delegations.launch(
+            entry, _delegation_worker(request, room),
+            deadline_ms=request.deadline_ms,
+        )
+
+        # Return immediately with a verbal bridge so the professor keeps talking.
+        return (
+            "I've asked the assistant to work on that. "
+            "The result will appear on screen shortly."
+        )
+
+
+async def _delegation_worker(
+    request: DelegationRequest,
+    room,
+) -> None:
+    """Background worker: sends a delegation task to Letta and publishes
+    the result to the chat channel when complete.
+
+    Runs as an asyncio.Task so the voice loop never blocks on Letta latency.
+    On timeout or error, publishes a degraded-state message to chat so the
+    user knows what happened.
+    """
+    try:
+        timeout_s = (request.deadline_ms / 1000) if request.deadline_ms > 0 else 300.0
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=15.0, read=timeout_s, write=15.0, pool=15.0),
+            follow_redirects=True,
+        ) as client:
+            response = await client.post(
+                f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages",
+                json={"messages": [{"role": "user", "content": request.to_framed_message()}]},
+                headers=LETTA_HEADERS,
+            )
+            response.raise_for_status()
+            result = _parse_letta_response(response.json())
+
+        if room and result:
+            await room.local_participant.send_text(result, topic="lk.chat")
+            logger.info("[chain] assistant → screen (explicit, %d chars)", len(result))
+        elif result:
+            logger.warning("Delegation result ready but no room to publish to")
+
+    except httpx.TimeoutException:
+        logger.error("Letta delegation timed out for task: %s", request.task[:100])
+        if room:
+            try:
+                await room.local_participant.send_text(
+                    "[The assistant is still working on this — results may appear shortly.]",
+                    topic="lk.chat",
                 )
-                response = await client.post(
-                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages",
-                    json={"messages": [{"role": "user", "content": framed_task}]},
-                    headers=LETTA_HEADERS,
+            except Exception:
+                pass
+    except httpx.HTTPStatusError as e:
+        logger.error("Letta delegation HTTP error: %s", e.response.status_code)
+        if room:
+            try:
+                await room.local_participant.send_text(
+                    "[The assistant encountered an error processing that request.]",
+                    topic="lk.chat",
                 )
-                response.raise_for_status()
-                result = _parse_letta_response(response.json())
-
-                # Publish the secondary agent's full structured output to the
-                # LiveKit chat data channel (topic 'lk.chat') so it appears in
-                # the Playground chat panel as a "slide" / supporting material.
-                # The voice agent gets back ONLY a short acknowledgement so it
-                # gives a brief spoken intro ("Here's a summary on screen…")
-                # rather than reading the full result aloud over TTS.
-                published = False
-                try:
-                    room = context.session.room_io.room if context.session.room_io else None
-                    if room and result:
-                        await room.local_participant.send_text(
-                            result,
-                            topic="lk.chat",
-                        )
-                        published = True
-                        logger.info(
-                            "[chain] assistant → screen (explicit, %d chars)",
-                            len(result),
-                        )
-                except Exception as e:
-                    logger.warning("Failed to publish Letta result to chat: %s", e)
-
-                # IMPORTANT: do NOT return the full Letta text to the voice
-                # LLM. Returning long content makes the LLM read it back over
-                # TTS, duplicating what's already in chat and dragging the
-                # spoken latency. A short acknowledgement is enough — the
-                # primary prompt instructs the model to give a one-line
-                # verbal cue ("I've put a summary on screen for you").
-                if published:
-                    return "Posted to chat."
-                return result[:280] if result else "Done."
-
-        except httpx.TimeoutException:
-            logger.error("Letta delegation timed out")
-            return "The secondary agent is still processing. It may take a moment for complex tasks."
-        except httpx.HTTPStatusError as e:
-            logger.error("Letta delegation HTTP error: %s", e.response.status_code)
-            return "Secondary agent encountered an error. Please try again."
-        except Exception as e:
-            logger.error("Letta delegation failed: %s", e)
-            return "Failed to reach secondary agent. Please try again shortly."
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error("Letta delegation failed: %s", e)
+        if room:
+            try:
+                await room.local_participant.send_text(
+                    "[Could not reach the assistant. Please try again.]",
+                    topic="lk.chat",
+                )
+            except Exception:
+                pass
 
 
 async def forward_to_assistant_async(
@@ -372,17 +459,13 @@ async def forward_to_assistant_async(
     text: str,
     room,
 ) -> None:
-    """Stream a turn from the live conversation to the secondary (Letta) agent
-    so it can proactively prepare supporting visual material — slides,
-    summaries, illustrations, crew results — and publish them straight to the
-    LiveKit chat data channel (`lk.chat`) for the user to see.
+    """Forward a professor turn to the secondary (Letta) agent so it can
+    proactively prepare supporting visual material — summaries, illustrations,
+    crew results — and publish them to the LiveKit chat data channel (`lk.chat`).
 
-    This is the "professor + assistant" wiring: the primary voice agent owns
-    the spoken channel, the secondary brain owns the visual channel. Both run
-    in parallel — the assistant doesn't wait for an explicit `delegate_to_letta`
-    tool call. Every user utterance and every primary-agent reply is forwarded
-    here, the assistant decides whether to react, and any substantive output
-    is pushed to chat as a "slide".
+    Only PROFESSOR (assistant-role) turns are forwarded here — user STT is
+    filtered in the conversation_item_added handler before this function is
+    called. This enforces the chain of command: user → professor → Letta → chat.
 
     Notes for callers:
     - Fire-and-forget — never block the primary voice loop on Letta latency.
@@ -397,10 +480,10 @@ async def forward_to_assistant_async(
     if not room:
         return
     try:
-        # Frame the inbound turn as system context so Letta knows who said
-        # what. Letta is configured (via DEFAULT_LETTA_PROMPT in
-        # server/agentRouter.ts) to react proactively to "the professor said"
-        # and "the user said" lines without waiting for an explicit ask.
+        # Frame the professor's turn as system context so Letta knows what
+        # was said. Letta is configured (via DEFAULT_LETTA_PROMPT in
+        # server/agentRouter.ts) to react proactively to professor turns
+        # without waiting for an explicit delegation.
         speaker = "Professor" if role == "assistant" else "Student"
         framed = f"[Live transcript — {speaker}]: {text.strip()}"
 
@@ -435,19 +518,25 @@ async def forward_to_assistant_async(
 
 
 def _parse_letta_response(data: dict | list) -> str:
-    """Parse Letta API response, handling known message_type variants.
+    """Parse Letta API response into displayable text.
 
     Known message_type values:
       reasoning_message — internal chain-of-thought (skipped)
       tool_call_message — tool invocation (skipped)
       tool_return_message — tool result (included if substantial)
       assistant_message — spoken output (always included)
+
+    Also extracts structured artifacts from tool_return_message payloads
+    when the content is JSON with a recognized schema (crew results,
+    artifact references, etc.).
     """
     messages = data if isinstance(data, list) else data.get("messages", [])
     if not messages:
         return "Secondary agent returned no output."
 
     result_parts = []
+    artifacts = []
+
     for msg in messages:
         if not isinstance(msg, dict):
             continue
@@ -465,11 +554,39 @@ def _parse_letta_response(data: dict | list) -> str:
             if status == "error":
                 result_parts.append(f"[Tool error]: {str(tool_return)[:500]}")
             elif tool_return and len(str(tool_return)) > 20:
-                result_parts.append(f"[Tool result]: {str(tool_return)[:2000]}")
+                # Try to extract structured crew results
+                try:
+                    parsed = _json.loads(str(tool_return)) if isinstance(tool_return, str) else tool_return
+                    if isinstance(parsed, dict):
+                        # Crew result with summary + artifacts
+                        if "summary" in parsed:
+                            result_parts.append(str(parsed["summary"]))
+                        if "artifacts" in parsed and isinstance(parsed["artifacts"], list):
+                            artifacts.extend(parsed["artifacts"])
+                        if "summary" not in parsed:
+                            result_parts.append(f"[Tool result]: {str(tool_return)[:2000]}")
+                    else:
+                        result_parts.append(f"[Tool result]: {str(tool_return)[:2000]}")
+                except (ValueError, TypeError):
+                    result_parts.append(f"[Tool result]: {str(tool_return)[:2000]}")
 
-    if result_parts:
-        return "\n\n".join(result_parts)
-    return "Task delegated. Secondary agent processed but produced no text output."
+    text = "\n\n".join(result_parts) if result_parts else ""
+
+    # Append artifact references as structured JSON blocks so the frontend
+    # can render them as rich cards (Phase 4).
+    if artifacts:
+        for artifact in artifacts:
+            if isinstance(artifact, dict):
+                artifact_msg = _json.dumps({
+                    "type": "artifact",
+                    "title": artifact.get("title", "Artifact"),
+                    "download_url": artifact.get("path") or artifact.get("url", ""),
+                    "content_type": artifact.get("content_type", ""),
+                    "summary": artifact.get("summary", ""),
+                })
+                text = f"{text}\n\n{artifact_msg}" if text else artifact_msg
+
+    return text or "Task delegated. Secondary agent processed but produced no text output."
 
 
 # ── Capture: periodic frame storage ──────────────────────────────
@@ -722,6 +839,9 @@ async def entrypoint(ctx: JobContext):
         except Exception:
             pass
 
+    # ── Create agent early so handlers can reference it ───────
+    agent = MainAgent()
+
     # ── Strict chain-of-command: Professor → Assistant ───────
     #
     # The architecture is: the primary voice agent is a Professor whose
@@ -735,6 +855,7 @@ async def entrypoint(ctx: JobContext):
     #   - The chain of command is unambiguous: user → professor → letta → chat
     #   - Letta is never racing the professor on user turns
     #
+    # Also tracks recent turns for conversation state (Phase 5).
     # Forwarded as a fire-and-forget background task so the voice loop
     # never blocks on Letta latency.
     @session.on("conversation_item_added")
@@ -745,9 +866,15 @@ async def entrypoint(ctx: JobContext):
             text = getattr(msg, "text_content", None)
             if not text or not text.strip():
                 return
+
+            # Track all turns (professor + user) for conversation context
+            label = "Professor" if role == "assistant" else "User"
+            agent._recent_turns.append(f"[{label}]: {text.strip()[:300]}")
+            if len(agent._recent_turns) > agent._max_recent_turns:
+                agent._recent_turns.pop(0)
+
             if role != "assistant":
-                # Ignore user STT and tool messages — only the professor's
-                # spoken turn drives the assistant.
+                # Only the professor's spoken turn drives the assistant.
                 return
             logger.info(
                 "[chain] professor spoke → forwarding to assistant (chars=%d)",
@@ -798,7 +925,7 @@ async def entrypoint(ctx: JobContext):
     )
 
     await session.start(
-        agent=MainAgent(),
+        agent=agent,
         room=ctx.room,
         room_options=room_opts,
     )
