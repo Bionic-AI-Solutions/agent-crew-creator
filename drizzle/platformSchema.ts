@@ -98,6 +98,7 @@ export const agentConfigs = pgTable(
     systemPrompt: text("system_prompt"),
     visionEnabled: boolean("vision_enabled").default(false).notNull(),
     avatarEnabled: boolean("avatar_enabled").default(false).notNull(),
+    avatarImageUrl: varchar("avatar_image_url", { length: 500 }),
     backgroundAudioEnabled: boolean("background_audio_enabled").default(false).notNull(),
     captureMode: varchar("capture_mode", { length: 20 }).default("off").notNull(),
     captureInterval: integer("capture_interval").default(5),

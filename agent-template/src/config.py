@@ -60,11 +60,12 @@ class Settings(BaseSettings):
     # qwen3.5-*-think → llm-deep, etc.). Used by plugins.py for STT/TTS/LLM.
     gpu_ai_llm_url: str = "http://mcp-api-server.mcp.svc.cluster.local:8000"
 
-    # Avatar
+    # Avatar (BitHuman)
     avatar_enabled: bool = False
     bithuman_api_key: str = ""
     bithuman_api_secret: str = ""
     bithuman_api_url: str = "http://192.168.0.10:8089/launch"
+    bithuman_avatar_image: str = ""
 
     # Vision (feed camera/screen frames to the primary LLM)
     vision_enabled: bool = False

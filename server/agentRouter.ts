@@ -2,6 +2,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { router, adminProcedure, protectedProcedure, analystOrAdminProcedure, appScopedProcedure, assertAppMembership } from "./_core/trpc.js";
 import { TRPCError } from "@trpc/server";
+import { getClient as getMinioClient } from "./services/minioAdmin.js";
 import { appMembers } from "../drizzle/platformSchema.js";
 import { createLogger } from "./_core/logger.js";
 import {
@@ -269,6 +270,7 @@ export const agentRouter = router({
         systemPrompt: z.string().nullable().optional(),
         visionEnabled: z.boolean().optional(),
         avatarEnabled: z.boolean().optional(),
+        avatarImageUrl: z.string().nullable().optional(),
         backgroundAudioEnabled: z.boolean().optional(),
         captureMode: z.string().optional(),
         captureInterval: z.number().optional(),
@@ -534,6 +536,65 @@ export const agentRouter = router({
         count,
       });
       return { success: true, modelCount: count, models: modelsOrVoices };
+    }),
+
+  // ── Upload avatar image to MinIO ──────────────────────────────
+  uploadAvatarImage: protectedProcedure
+    .input(
+      z.object({
+        agentId: z.number(),
+        imageBase64: z.string().min(1),
+        filename: z.string().default("avatar.png"),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (!ctx.db) throw new Error("DB not available");
+      const [agent] = await ctx.db
+        .select()
+        .from(agentConfigs)
+        .where(eq(agentConfigs.id, input.agentId))
+        .limit(1);
+      if (!agent) throw new Error("Agent not found");
+      await assertAppMembership(ctx, agent.appId);
+
+      const [app] = await ctx.db
+        .select()
+        .from(apps)
+        .where(eq(apps.id, agent.appId))
+        .limit(1);
+      if (!app) throw new Error("App not found");
+
+      // Upload to MinIO
+      const client = await getMinioClient();
+      const bucket = app.slug;
+
+      // Ensure bucket exists
+      const exists = await client.bucketExists(bucket);
+      if (!exists) {
+        await client.makeBucket(bucket);
+      }
+
+      // Decode base64 and upload
+      const buf = Buffer.from(input.imageBase64, "base64");
+      const ext = input.filename.split(".").pop() || "png";
+      const key = `avatars/${agent.id}/${randomUUID()}.${ext}`;
+      await client.putObject(bucket, key, buf, buf.length, {
+        "Content-Type": `image/${ext === "jpg" ? "jpeg" : ext}`,
+      });
+
+      // Generate presigned URL for the agent pod to download at runtime
+      const url = await client.presignedGetObject(bucket, key, 7 * 24 * 60 * 60);
+
+      // Store the MinIO object path (not presigned URL) — deployer will
+      // generate a fresh presigned URL at deploy time.
+      const minioPath = `${bucket}/${key}`;
+      await ctx.db
+        .update(agentConfigs)
+        .set({ avatarImageUrl: minioPath, updatedAt: new Date() })
+        .where(eq(agentConfigs.id, input.agentId));
+
+      log.info("Uploaded avatar image", { agentId: input.agentId, key, size: buf.length });
+      return { success: true, path: minioPath, previewUrl: url };
     }),
 
   /**
@@ -1305,8 +1366,39 @@ export const agentRouter = router({
 
       try {
         const { getAgentStatus } = await import("./services/agentDeployer.js");
-        return getAgentStatus(app.slug, agent.name);
+        const k8sSt = await getAgentStatus(app.slug, agent.name);
+        const dispatchName = `${app.slug}-${agent.name}`;
+        const k8sDeploymentName = `agent-${agent.name}`;
+        // #region agent log
+        const { emitDebugLog } = await import("./debugSessionLog.js");
+        emitDebugLog({
+          location: "agentRouter.ts:getDeploymentStatus",
+          message: "k8s deployment status vs livekit dispatch",
+          hypothesisId: "H1-H3",
+          data: {
+            agentId: agent.id,
+            dbAgentName: agent.name,
+            appSlug: app.slug,
+            dispatchName,
+            k8sDeploymentName,
+            dbDeploymentStatus: agent.deploymentStatus,
+            k8sStatus: k8sSt.status,
+            k8sReplicas: k8sSt.replicas,
+            k8sMessage: k8sSt.message,
+          },
+        });
+        // #endregion
+        return k8sSt;
       } catch {
+        // #region agent log
+        const { emitDebugLog } = await import("./debugSessionLog.js");
+        emitDebugLog({
+          location: "agentRouter.ts:getDeploymentStatus",
+          message: "getAgentStatus threw",
+          hypothesisId: "H2",
+          data: { agentId: agent.id, agentName: agent.name, appSlug: app.slug },
+        });
+        // #endregion
         return { status: agent.deploymentStatus, replicas: 0, message: "Unable to check status" };
       }
     }),

@@ -158,4 +158,6 @@ class DelegationRegistry:
     @property
     def active_task_id(self) -> str:
         """Convenience: return the active task's ID or empty string."""
-        return self._active.task_id if self._active else ""
+        if self._active and self._active.status in ("pending", "running"):
+            return self._active.task_id
+        return ""

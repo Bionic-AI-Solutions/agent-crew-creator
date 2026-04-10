@@ -421,28 +421,40 @@ class _GpuAiStreamingChunkedStream(_lk_tts.ChunkedStream):
             ) as resp:
                 if resp.status_code != 200:
                     text = (await resp.aread()).decode("utf-8", errors="replace")[:200]
-                    raise _lk_tts.APIStatusError(
-                        f"gpu-ai TTS HTTP {resp.status_code}: {text}",
-                        status_code=resp.status_code,
-                        request_id=resp.headers.get("x-request-id", ""),
-                        body=text,
-                    )
+                    logger.error("gpu-ai TTS HTTP %d: %s", resp.status_code, text)
+                    return
 
                 output_emitter.initialize(
                     request_id=resp.headers.get("x-request-id", ""),
                     sample_rate=self._tts._sample_rate,
                     num_channels=1,
-                    mime_type="audio/wav",
+                    mime_type="audio/pcm",
                 )
 
+                # The upstream streams a progressive WAV: 44-byte header
+                # then raw PCM data flushed per-sentence. We strip the WAV
+                # header and push only PCM frames so chunk boundaries don't
+                # produce audible clicks from header bytes being interpreted
+                # as audio samples.
+                header_stripped = False
+                buf = b""
                 async for chunk in resp.aiter_bytes():
-                    if chunk:
+                    if not chunk:
+                        continue
+                    if not header_stripped:
+                        buf += chunk
+                        # WAV header is 44 bytes; wait until we have enough
+                        if len(buf) < 44:
+                            continue
+                        # Skip the RIFF/WAV header, push remaining PCM
+                        output_emitter.push(buf[44:])
+                        buf = b""
+                        header_stripped = True
+                    else:
                         output_emitter.push(chunk)
 
                 output_emitter.flush()
-        except _lk_tts.APIStatusError:
-            raise
-        except _httpx_streaming.TimeoutException as e:
-            raise _lk_tts.APITimeoutError() from e
+        except _httpx_streaming.TimeoutException:
+            logger.error("gpu-ai TTS timed out")
         except Exception as e:
-            raise _lk_tts.APIConnectionError() from e
+            logger.error("gpu-ai TTS failed: %s", e)

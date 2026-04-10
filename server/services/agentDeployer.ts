@@ -133,6 +133,8 @@ export async function deployAgent(
     BACKGROUND_AUDIO_ENABLED: String(agent.backgroundAudioEnabled),
     CAPTURE_MODE: agent.captureMode,
     CAPTURE_INTERVAL_SECONDS: String(agent.captureInterval || 5),
+    BITHUMAN_AVATAR_IMAGE: "",  // Populated below with presigned URL if avatar image exists
+    BITHUMAN_API_URL: "http://192.168.0.10:8089/launch",
     MCP_SERVERS: JSON.stringify(mcpLinks.map((m) => ({ name: m.name, url: m.url, transport: m.transport }))),
     ENABLED_CREWS: JSON.stringify(agentCrewLinks.map((c) => c.crewName)),
     CREW_REGISTRY: JSON.stringify(
@@ -219,6 +221,40 @@ export async function deployAgent(
     }
   } catch (err) {
     log.warn("Failed to resolve per-agent provider keys (non-fatal)", { error: String(err) });
+  }
+
+  // 5b. BitHuman avatar keys — shared across all agents (one GPU server).
+  // These live at secret/shared/bithuman, not per-app.
+  if (agent.avatarEnabled) {
+    try {
+      const { readPlatformVaultPath } = await import("../vaultClient.js");
+      const bhData = (await readPlatformVaultPath("shared/bithuman")) || {};
+      if (bhData.bithuman_api_key) {
+        extraEnv.push({ name: "BITHUMAN_API_KEY", value: bhData.bithuman_api_key });
+      }
+      if (bhData.bithuman_api_secret) {
+        extraEnv.push({ name: "BITHUMAN_API_SECRET", value: bhData.bithuman_api_secret });
+      }
+      log.info("Injected BitHuman keys from shared Vault", { agentId: agent.id });
+    } catch (err) {
+      log.warn("Failed to read BitHuman keys from shared Vault (non-fatal)", { error: String(err) });
+    }
+
+    // Generate a presigned URL for the avatar image so the agent pod can
+    // fetch it over HTTP. The MinIO path is stored in DB as "bucket/key".
+    if (agent.avatarImageUrl) {
+      try {
+        const { getClient } = await import("./minioAdmin.js");
+        const client = await getClient();
+        const [bucket, ...keyParts] = agent.avatarImageUrl.split("/");
+        const key = keyParts.join("/");
+        const presignedUrl = await client.presignedGetObject(bucket, key, 7 * 24 * 60 * 60);
+        configData.BITHUMAN_AVATAR_IMAGE = presignedUrl;
+        log.info("Generated presigned avatar URL", { agentId: agent.id, bucket, key });
+      } catch (err) {
+        log.warn("Failed to generate presigned avatar URL (non-fatal)", { error: String(err) });
+      }
+    }
   }
 
   // 6. Apply Deployment — just agent-{name} since namespace provides isolation

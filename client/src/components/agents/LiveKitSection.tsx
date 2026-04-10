@@ -5,7 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Mic, Volume2, Brain, Save } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Mic, Volume2, Brain, Save, User, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 
@@ -310,13 +311,119 @@ interface Props {
   setTtsVoice: (v: string) => void;
   systemPrompt: string;
   setSystemPrompt: (v: string) => void;
+  avatarEnabled: boolean;
+  setAvatarEnabled: (v: boolean) => void;
+  avatarImageUrl: string;
   agentId: number;
+}
+
+function AvatarUpload({ agentId, currentUrl }: { agentId: number; currentUrl: string }) {
+  // Preview uses a local data URL (browser-side), not the MinIO presigned URL
+  // (which points to an internal K8s service unreachable from the browser).
+  const [preview, setPreview] = useState<string>("");
+  const [uploading, setUploading] = useState(false);
+  const [uploaded, setUploaded] = useState(!!currentUrl);
+  const uploadMutation = trpc.agentsCrud.uploadAvatarImage.useMutation({
+    onSuccess: () => {
+      toast.success("Avatar image uploaded");
+      setUploading(false);
+      setUploaded(true);
+    },
+    onError: (err: any) => {
+      toast.error(err.message);
+      setUploading(false);
+    },
+  });
+
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please select an image file");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Image must be under 5MB");
+      return;
+    }
+    setUploading(true);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      // Show local preview immediately
+      setPreview(dataUrl);
+      // Upload the base64 payload (strip data URL prefix)
+      const base64 = dataUrl.split(",")[1];
+      uploadMutation.mutate({
+        agentId,
+        imageBase64: base64,
+        filename: file.name,
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  return (
+    <div className="flex gap-4 items-start">
+      <div className="w-20 h-20 rounded-lg border-2 border-dashed border-muted-foreground/30 flex items-center justify-center overflow-hidden bg-muted/30 shrink-0">
+        {preview ? (
+          <img src={preview} alt="Avatar" className="w-full h-full object-cover rounded-lg" />
+        ) : uploaded ? (
+          <div className="text-center">
+            <User className="h-6 w-6 text-green-500 mx-auto" />
+            <span className="text-[9px] text-green-500">Uploaded</span>
+          </div>
+        ) : (
+          <User className="h-8 w-8 text-muted-foreground/40" />
+        )}
+      </div>
+      <div className="space-y-2">
+        <p className="text-xs text-muted-foreground">
+          Upload a face image for the avatar. The image should be a clear, front-facing photo.
+        </p>
+        <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer px-3 py-1.5 border rounded-md hover:bg-muted transition-colors">
+          <Upload className="h-3 w-3" />
+          {uploading ? "Uploading..." : "Choose Image"}
+          <input type="file" accept="image/*" className="hidden" onChange={handleFile} disabled={uploading} />
+        </label>
+      </div>
+    </div>
+  );
 }
 
 export default function LiveKitSection(props: Props) {
   const trpcUtils = trpc.useUtils();
   return (
     <div className="space-y-4">
+      {/* Avatar */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <User className="h-4 w-4" /> Avatar (BitHuman)
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="avatar-toggle"
+              checked={props.avatarEnabled}
+              onCheckedChange={(v) => props.setAvatarEnabled(v === true)}
+            />
+            <Label htmlFor="avatar-toggle" className="text-xs cursor-pointer">
+              Enable Avatar
+            </Label>
+          </div>
+          {props.avatarEnabled && (
+            <>
+              <AvatarUpload agentId={props.agentId} currentUrl={props.avatarImageUrl} />
+              <p className="text-[10px] text-muted-foreground">
+                GPU Server: 192.168.0.10:8089 • When avatar is enabled, audio output is handled by the avatar video stream.
+              </p>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
       {/* STT */}
       <Card>
         <CardHeader className="pb-3">

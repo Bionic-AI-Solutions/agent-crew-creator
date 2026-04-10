@@ -61,11 +61,11 @@ function tryParseStructured(message: string): StructuredMessage | null {
   return null;
 }
 
-/** Sanitize a URL — reject javascript: and data: schemes. */
+/** Sanitize a URL — only allow http/https schemes. */
 function safeUrl(url: string | undefined): string | undefined {
   if (!url) return undefined;
   const trimmed = url.trim().toLowerCase();
-  if (trimmed.startsWith("javascript:") || trimmed.startsWith("data:text")) return undefined;
+  if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) return undefined;
   return url;
 }
 

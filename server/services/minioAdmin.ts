@@ -23,7 +23,7 @@ function ensureConfigured() {
   }
 }
 
-async function getClient() {
+export async function getClient() {
   ensureConfigured();
   if (_client) return _client;
 

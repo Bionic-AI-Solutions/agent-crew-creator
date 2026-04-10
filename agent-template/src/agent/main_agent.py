@@ -18,6 +18,7 @@ import base64
 import json as _json
 import logging
 import os
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
@@ -279,8 +280,7 @@ class MainAgent(Agent):
     def __init__(self) -> None:
         from agent.delegation import DelegationRegistry
         self._delegations = DelegationRegistry()
-        self._recent_turns: list[str] = []  # Last N professor/student turns
-        self._max_recent_turns = 10
+        self._recent_turns: deque[str] = deque(maxlen=10)
 
         # NOTE: turn_detection is set on the AgentSession, not on the Agent.
         # Setting it here too created a duplicate detector that gated the
@@ -870,8 +870,6 @@ async def entrypoint(ctx: JobContext):
             # Track all turns (professor + user) for conversation context
             label = "Professor" if role == "assistant" else "User"
             agent._recent_turns.append(f"[{label}]: {text.strip()[:300]}")
-            if len(agent._recent_turns) > agent._max_recent_turns:
-                agent._recent_turns.pop(0)
 
             if role != "assistant":
                 # Only the professor's spoken turn drives the assistant.
@@ -903,25 +901,35 @@ async def entrypoint(ctx: JobContext):
     await swap_user_memory_block(user_label)
 
     # ── Avatar (BitHuman, configurable) ──────────────────────
+    avatar_active = False
     if settings.avatar_enabled and settings.bithuman_api_key:
         try:
             from livekit.plugins import bithuman
-            avatar = bithuman.AvatarSession(
-                api_secret=settings.bithuman_api_secret or settings.bithuman_api_key,
-            )
+            avatar_kwargs: dict = {
+                "api_secret": settings.bithuman_api_secret or settings.bithuman_api_key,
+            }
+            if settings.bithuman_api_url:
+                avatar_kwargs["api_url"] = settings.bithuman_api_url
+            if settings.bithuman_avatar_image:
+                avatar_kwargs["avatar_image"] = settings.bithuman_avatar_image
+            avatar = bithuman.AvatarSession(**avatar_kwargs)
             await avatar.start(session, room=ctx.room)
-            logger.info("BitHuman avatar started")
+            avatar_active = True
+            logger.info("BitHuman avatar started (url=%s, image=%s)",
+                        settings.bithuman_api_url or "default",
+                        settings.bithuman_avatar_image[:50] if settings.bithuman_avatar_image else "none")
         except ImportError:
-            logger.warning("livekit-plugins-bithuman not installed — avatar disabled")
+            logger.warning("livekit-plugins-bithuman not installed — avatar disabled, audio fallback ON")
         except Exception as e:
-            logger.warning("Avatar start failed: %s", e)
+            logger.warning("Avatar start failed: %s — audio fallback ON", e)
 
     # ── Room options ─────────────────────────────────────────
     room_opts = room_io.RoomOptions(
         # Vision: feed camera/screen frames to the primary LLM (e.g., Gemma 4 E4B)
         video_input=settings.vision_enabled,
-        # If avatar is active, it handles audio output
-        audio_output=not settings.avatar_enabled,
+        # Only disable audio output if avatar actually started successfully.
+        # If avatar failed, we MUST keep audio output enabled or the agent is mute.
+        audio_output=not avatar_active,
     )
 
     await session.start(
