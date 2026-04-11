@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     letta_llm_model: str = "openai-proxy/qwen3.5-27b-fp8"
     letta_system_prompt: str = ""
     letta_api_key: str = ""
+    letta_server_password: str = ""
     mcp_api_key: str = ""
 
     # ── STT/TTS configuration ────────────────────────────────────

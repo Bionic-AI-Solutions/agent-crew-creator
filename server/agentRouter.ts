@@ -65,8 +65,53 @@ PROACTIVITY:
   the system filters short replies.
 
 TOOLS:
+- generate_image: Gemini Nano Banana image generation. MANDATORY when the
+  professor or student mentions any of these intent signals: "show",
+  "show me", "see", "look at", "diagram", "picture", "image", "drawing",
+  "illustration", "visualize", "draw", "sketch", "display", "on screen",
+  "can I see", "what does X look like". You MUST call generate_image
+  FIRST in that turn BEFORE writing any markdown — do not substitute a
+  text description for an image. Text alone is NEVER an acceptable
+  response when a visual is requested.
 - run_crew: Dify crew for complex research / multi-step workflows.
 - archival_memory_search, conversation_search: prior session context.
+
+IMAGE GENERATION RULES (strict — violating any of these is a failure):
+1. Trigger detection: scan EVERY incoming [Live transcript — Primary AI]
+   AND [Live transcript — User] message for visual-intent words. If ANY
+   are present, you MUST call generate_image FIRST in THIS turn before
+   writing any other output.
+2. NEVER inline image URLs as markdown \`![alt](url)\`. The frontend does
+   NOT render markdown images — it ONLY renders tool-call results from
+   generate_image. Writing \`![...](https://...)\` will produce NO visible
+   image for the user. This is non-negotiable.
+3. NEVER reuse URLs from archival memory to fake a visual. Archival
+   entries are metadata references only — the URLs there may point to
+   UNRELATED past images. ALWAYS generate a fresh image for the current
+   topic by calling generate_image. The only exception: if the user
+   explicitly says "show me the same X from before" AND you find an
+   exact match via archival_memory_search, you may reference that s3://
+   URL — but you STILL must emit the result through the standard
+   artifact block (the agent pod regenerates the presigned URL on its
+   side).
+4. Prompt quality: be specific. Include composition, labels, and ALWAYS
+   append "clean educational line art, white background, labels in
+   English" for textbook-style output.
+   Good: "A simple diagram of Ohm's law: a battery, resistor, and
+   ammeter connected in a series circuit, with V=IR formula labeled.
+   Clean educational line art, white background, labels in English."
+   Bad: "ohm's law" (too vague)
+5. Never fabricate "Visual Reference: Display Active" or similar claims
+   in markdown. If you want the visual to exist, CALL THE TOOL.
+6. After generate_image returns successfully, your following text output
+   may briefly reference the image ("The diagram above shows…"). On
+   error ({"error": "..."}), apologize and DO NOT claim the image
+   exists.
+7. One image per turn is usually enough. Don't spam.
+8. The image is stored permanently in MinIO; a 24-hour presigned URL is
+   auto-rendered by the frontend from the tool's return value; archival
+   metadata is auto-inserted. You do not need to manage storage or
+   formatting.
 
 You are the second brain in a two-brain teaching system. The professor
 speaks. You run the screen. Keep up.`;
@@ -723,10 +768,23 @@ export const agentRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
-      const [a] = await ctx.db.select({ appId: agentConfigs.appId }).from(agentConfigs).where(eq(agentConfigs.id, input.agentConfigId)).limit(1);
+      const [a] = await ctx.db
+        .select({ appId: agentConfigs.appId, lettaAgentId: agentConfigs.lettaAgentId })
+        .from(agentConfigs)
+        .where(eq(agentConfigs.id, input.agentConfigId))
+        .limit(1);
       if (!a) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
       await assertAppMembership(ctx, a.appId);
-      // Delete existing, insert new
+
+      // Load previous tool IDs so we know what to attach/detach on Letta.
+      const previous = await ctx.db
+        .select({ toolId: agentTools.toolId })
+        .from(agentTools)
+        .where(eq(agentTools.agentConfigId, input.agentConfigId));
+      const previousSet = new Set(previous.map((p) => p.toolId));
+      const nextSet = new Set(input.toolIds);
+
+      // Update local DB (delete + insert).
       await ctx.db.delete(agentTools).where(eq(agentTools.agentConfigId, input.agentConfigId));
       if (input.toolIds.length > 0) {
         await ctx.db.insert(agentTools).values(
@@ -736,6 +794,62 @@ export const agentRouter = router({
           })),
         );
       }
+
+      // Propagate to Letta for any BUILTIN_TOOLS that map to a registered
+      // Letta tool (have `lettaToolName` set). We resolve tool name → Letta
+      // tool id at runtime so IDs can change without code changes.
+      if (a.lettaAgentId) {
+        try {
+          const { BUILTIN_TOOLS } = await import("./services/toolRegistry.js");
+          const { lettaAdmin } = await import("./services/lettaAdmin.js");
+          const builtinByLocalId = new Map(BUILTIN_TOOLS.map((t) => [t.id, t]));
+
+          // Build list of adds/removes restricted to Letta-mapped tools.
+          const additions: string[] = [];
+          const removals: string[] = [];
+          for (const id of nextSet) {
+            const b = builtinByLocalId.get(id);
+            if (b?.lettaToolName && !previousSet.has(id)) additions.push(b.lettaToolName);
+          }
+          for (const id of previousSet) {
+            const b = builtinByLocalId.get(id);
+            if (b?.lettaToolName && !nextSet.has(id)) removals.push(b.lettaToolName);
+          }
+
+          if (additions.length > 0 || removals.length > 0) {
+            // Resolve tool names → Letta tool IDs
+            const allLettaTools = (await lettaAdmin.listTools()) as Array<{ id: string; name: string }>;
+            const byName = new Map(allLettaTools.map((t) => [t.name, t.id]));
+            for (const name of additions) {
+              const tid = byName.get(name);
+              if (tid) {
+                try {
+                  await lettaAdmin.attachToolToAgent(a.lettaAgentId, tid);
+                } catch (err) {
+                  log.warn("Letta attachTool failed", { name, tid, error: String(err) });
+                }
+              } else {
+                log.warn("Letta tool not registered", { name });
+              }
+            }
+            for (const name of removals) {
+              const tid = byName.get(name);
+              if (tid) {
+                try {
+                  await lettaAdmin.detachToolFromAgent(a.lettaAgentId, tid);
+                } catch (err) {
+                  log.warn("Letta detachTool failed", { name, tid, error: String(err) });
+                }
+              }
+            }
+          }
+        } catch (err) {
+          // Never fail the local DB update because of a Letta sync error;
+          // the user can retry from the UI.
+          log.warn("Letta tool sync failed (local DB updated)", { error: String(err) });
+        }
+      }
+
       return { success: true };
     }),
 

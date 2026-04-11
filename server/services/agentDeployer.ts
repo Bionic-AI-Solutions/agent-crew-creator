@@ -114,6 +114,7 @@ export async function deployAgent(
     LETTA_AGENT_ID: agent.lettaAgentId || "",
     LETTA_LLM_MODEL: agent.lettaLlmModel || "openai-proxy/qwen3.5-27b-fp8",
     LETTA_SYSTEM_PROMPT: agent.lettaSystemPrompt || "",
+    LETTA_SERVER_PASSWORD: "",  // Populated below from shared Vault
 
     // ── Infrastructure URLs (internal cluster) ──────────────────
     LIVEKIT_URL: LIVEKIT_INTERNAL_URL,
@@ -235,7 +236,18 @@ export async function deployAgent(
     log.warn("Failed to resolve provider keys (non-fatal)", { error: String(err) });
   }
 
-  // 5b. BitHuman avatar keys — shared across all agents (one GPU server).
+  // 5b. Letta server password — shared infrastructure secret.
+  try {
+    const { readPlatformVaultPath } = await import("../vaultClient.js");
+    const infraData = (await readPlatformVaultPath("shared/infra")) || {};
+    if (infraData.letta_server_password) {
+      configData.LETTA_SERVER_PASSWORD = infraData.letta_server_password;
+    }
+  } catch (err) {
+    log.warn("Failed to read Letta server password from Vault (non-fatal)", { error: String(err) });
+  }
+
+  // 5c. BitHuman avatar keys — shared across all agents (one GPU server).
   // These live at secret/shared/bithuman, not per-app.
   if (agent.avatarEnabled) {
     try {

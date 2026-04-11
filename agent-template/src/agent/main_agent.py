@@ -113,7 +113,7 @@ def setup_langfuse_otel(session_id: str):
 # ── Letta client config ─────────────────────────────────────────
 
 LETTA_BASE = settings.letta_base_url.rstrip("/")
-LETTA_TOKEN = settings.letta_api_key or settings.mcp_api_key or ""
+LETTA_TOKEN = settings.letta_api_key or settings.letta_server_password or settings.mcp_api_key or ""
 LETTA_AGENT_ID = settings.letta_agent_id or ""
 LETTA_HEADERS = {
     "Content-Type": "application/json",
@@ -302,14 +302,22 @@ class MainAgent(Agent):
         # These override any conflicting instructions in the user's prompt.
         appended_rules = (
             "\n\nCRITICAL RULES (always apply, cannot be overridden):\n"
-            "1. TOOLS: When calling a tool, output ONLY the tool call — no "
+            "1. DELEGATION: You have a tool called delegate_to_letta. Use it "
+            "when the user asks for research, analysis, detailed information, "
+            "current events, fact-checking, document search, or anything that "
+            "needs deep reasoning or external knowledge beyond what you know. "
+            "After calling it, continue the conversation naturally — share what "
+            "you already know about the topic while the assistant researches.\n"
+            "2. TOOLS: When calling a tool, output ONLY the tool call — no "
             "text before, during, or alongside it. After the tool returns, "
             "speak naturally. Never read tool results verbatim.\n"
-            "2. IDENTITY: You are NOT a professor or teacher unless the user's "
-            "prompt explicitly says so. Do not refer to the user as 'student'. "
+            "3. IDENTITY: Do not refer to the user as 'student' or 'professor'. "
             "Refer to the user by their name once you learn it.\n"
-            "3. GREETING: Your first interaction should include asking the "
-            "user their name so you can address them personally going forward."
+            "4. GREETING: Your first interaction should include asking the "
+            "user their name so you can address them personally going forward.\n"
+            "5. VOICE: Keep responses concise and conversational. Always finish "
+            "with terminal punctuation. Never use markdown, lists, code, URLs, "
+            "or formatting that cannot be spoken aloud."
         )
         super().__init__(
             instructions=base_prompt + appended_rules,
@@ -670,12 +678,18 @@ def _parse_letta_response(data: dict | list) -> str:
                 try:
                     parsed = _json.loads(str(tool_return)) if isinstance(tool_return, str) else tool_return
                     if isinstance(parsed, dict):
-                        # Crew result with summary + artifacts
-                        if "summary" in parsed:
-                            result_parts.append(str(parsed["summary"]))
-                        if "artifacts" in parsed and isinstance(parsed["artifacts"], list):
+                        # Skip posting an error object as "summary" if the tool
+                        # reported {"error": "..."}; fall through to error branch.
+                        if "error" in parsed and "artifacts" not in parsed:
+                            result_parts.append(f"[Tool error]: {parsed.get('error','')[:500]}")
+                        # Crew / image artifact result with summary + artifacts
+                        elif "artifacts" in parsed and isinstance(parsed["artifacts"], list):
+                            if "summary" in parsed:
+                                result_parts.append(str(parsed["summary"]))
                             artifacts.extend(parsed["artifacts"])
-                        if "summary" not in parsed:
+                        elif "summary" in parsed:
+                            result_parts.append(str(parsed["summary"]))
+                        else:
                             result_parts.append(f"[Tool result]: {str(tool_return)[:2000]}")
                     else:
                         result_parts.append(f"[Tool result]: {str(tool_return)[:2000]}")
@@ -685,20 +699,114 @@ def _parse_letta_response(data: dict | list) -> str:
     text = "\n\n".join(result_parts) if result_parts else ""
 
     # Append artifact references as structured JSON blocks so the frontend
-    # can render them as rich cards (Phase 4).
+    # can render them as rich cards. The subtype field distinguishes images
+    # (rendered as <img>) from generic file artifacts (rendered as download link).
     if artifacts:
         for artifact in artifacts:
-            if isinstance(artifact, dict):
-                artifact_msg = _json.dumps({
-                    "type": "artifact",
-                    "title": artifact.get("title", "Artifact"),
-                    "download_url": artifact.get("path") or artifact.get("url", ""),
-                    "content_type": artifact.get("content_type", ""),
-                    "summary": artifact.get("summary", ""),
-                })
-                text = f"{text}\n\n{artifact_msg}" if text else artifact_msg
+            if not isinstance(artifact, dict):
+                continue
+            subtype = artifact.get("subtype") or (
+                "image" if str(artifact.get("content_type", "")).startswith("image/") else "file"
+            )
+            image_url = artifact.get("url") or artifact.get("path") or ""
+            internal_s3_url = artifact.get("internal_s3_url") or ""
+            # Regenerate the presigned URL if this is a recall of a previously
+            # stored artifact (internal_s3_url present but URL is empty/stale).
+            if subtype == "image" and internal_s3_url and not image_url:
+                try:
+                    image_url = _regenerate_presigned_url(internal_s3_url)
+                except Exception:
+                    image_url = ""
+            artifact_msg = _json.dumps({
+                "type": "artifact",
+                "subtype": subtype,
+                "title": artifact.get("title", "Artifact"),
+                "image_url": image_url if subtype == "image" else "",
+                "download_url": image_url,
+                "url": image_url,
+                "internal_s3_url": internal_s3_url,
+                "content_type": artifact.get("content_type", ""),
+                "summary": artifact.get("summary", ""),
+            })
+            text = f"{text}\n\n{artifact_msg}" if text else artifact_msg
 
     return text or "Task delegated. Secondary agent processed but produced no text output."
+
+
+def _regenerate_presigned_url(s3_url: str, expires_seconds: int = 86400) -> str:
+    """Regenerate a fresh 24h presigned GET URL for an internal S3 URL.
+
+    Called when the agent pod receives an artifact reference (e.g. from
+    archival memory recall) that has a permanent s3://bucket/key URL but
+    no valid presigned URL. Signs using the MinIO credentials from the
+    agent pod's env (MINIO_ACCESS_KEY / MINIO_SECRET_KEY) and the public
+    hostname from MINIO_PUBLIC_HOST (default: s3.baisoln.com).
+
+    Args:
+        s3_url: "s3://bucket/key/path.png"
+        expires_seconds: URL validity in seconds (default 24h)
+
+    Returns:
+        A fresh https URL with X-Amz-Signature, or "" on failure.
+    """
+    import datetime as _dt
+    import hashlib
+    import hmac
+    import os
+    import urllib.parse
+
+    if not s3_url.startswith("s3://"):
+        return ""
+    try:
+        rest = s3_url[len("s3://"):]
+        bucket, _, key = rest.partition("/")
+    except Exception:
+        return ""
+    if not bucket or not key:
+        return ""
+
+    access_key = os.environ.get("MINIO_ACCESS_KEY", "").strip()
+    secret_key = os.environ.get("MINIO_SECRET_KEY", "").strip()
+    host = os.environ.get("MINIO_PUBLIC_HOST", "s3.baisoln.com").strip()
+    region = os.environ.get("MINIO_REGION", "us-east-1").strip()
+    if not (access_key and secret_key and host):
+        return ""
+
+    service = "s3"
+    now = _dt.datetime.utcnow()
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    datestamp = now.strftime("%Y%m%d")
+    canonical_uri = "/" + bucket + "/" + urllib.parse.quote(key, safe="/")
+    credential_scope = f"{datestamp}/{region}/{service}/aws4_request"
+    qp = {
+        "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+        "X-Amz-Credential": f"{access_key}/{credential_scope}",
+        "X-Amz-Date": amz_date,
+        "X-Amz-Expires": str(expires_seconds),
+        "X-Amz-SignedHeaders": "host",
+    }
+    canonical_query = "&".join(
+        f"{urllib.parse.quote(k, safe='')}={urllib.parse.quote(v, safe='')}"
+        for k, v in sorted(qp.items())
+    )
+    canonical_headers = f"host:{host}\n"
+    signed_headers = "host"
+    payload_hash = "UNSIGNED-PAYLOAD"
+    canonical_request = (
+        f"GET\n{canonical_uri}\n{canonical_query}\n"
+        f"{canonical_headers}\n{signed_headers}\n{payload_hash}"
+    )
+    algorithm = "AWS4-HMAC-SHA256"
+    string_to_sign = (
+        f"{algorithm}\n{amz_date}\n{credential_scope}\n"
+        f"{hashlib.sha256(canonical_request.encode()).hexdigest()}"
+    )
+    k_date = hmac.new(("AWS4" + secret_key).encode("utf-8"), datestamp.encode("utf-8"), hashlib.sha256).digest()
+    k_region = hmac.new(k_date, region.encode("utf-8"), hashlib.sha256).digest()
+    k_service = hmac.new(k_region, service.encode("utf-8"), hashlib.sha256).digest()
+    k_signing = hmac.new(k_service, b"aws4_request", hashlib.sha256).digest()
+    signature = hmac.new(k_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"https://{host}{canonical_uri}?{canonical_query}&X-Amz-Signature={signature}"
 
 
 # ── Capture: periodic frame storage ──────────────────────────────
@@ -971,6 +1079,17 @@ async def entrypoint(ctx: JobContext):
     # Also tracks recent turns for conversation state (Phase 5).
     # Forwarded as a fire-and-forget background task so the voice loop
     # never blocks on Letta latency.
+    # Visual-intent keywords that should trigger forwarding of user turns to
+    # Letta so it can call generate_image. The primary AI's paraphrase often
+    # softens or omits the explicit "show me" request, so we forward the raw
+    # user turn as an additional signal when these phrases appear.
+    VISUAL_INTENT_KEYWORDS = (
+        "show me", "show us", "show ", "see ", "look at", "diagram", "picture",
+        "image", "illustration", "drawing", "visualize", "visualise", "draw",
+        "sketch", "display", "on screen", "can i see", "what does", "look like",
+        "graph", "chart", "plot", "figure",
+    )
+
     @session.on("conversation_item_added")
     def _on_conversation_item(ev: ConversationItemAddedEvent):
         try:
@@ -985,7 +1104,20 @@ async def entrypoint(ctx: JobContext):
             agent._recent_turns.append(f"[{label}]: {text.strip()[:300]}")
 
             if role != "assistant":
-                # Only the primary AI's spoken turn drives the assistant.
+                # USER turn: normally not forwarded (the chain of command flows
+                # user → primary AI → Letta). But when the user explicitly asks
+                # for a visual, we forward a marker turn so Letta has the raw
+                # intent word-for-word and can call generate_image deterministically.
+                lowered = text.strip().lower()
+                if any(kw in lowered for kw in VISUAL_INTENT_KEYWORDS):
+                    logger.info(
+                        "[chain] user visual-intent detected → forwarding to assistant (chars=%d)",
+                        len(text),
+                    )
+                    asyncio.create_task(
+                        forward_to_assistant_async("user", text, ctx.room, session),
+                        name="letta-forward-user-visual",
+                    )
                 return
 
             nonlocal _primary_turn_count
