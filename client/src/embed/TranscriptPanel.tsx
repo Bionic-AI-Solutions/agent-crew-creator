@@ -1,58 +1,30 @@
 import { useEffect, useRef, useMemo } from "react";
 import {
   type ReceivedChatMessage,
-  type TextStreamData,
   useChat,
   useRoomContext,
-  useTranscriptions,
 } from "@livekit/components-react";
-import type { Room } from "livekit-client";
 import { ChatMessage } from "./ChatMessage";
 import type { EmbedConfig } from "./types";
 
-function transcriptionToChatMessage(
-  textStream: TextStreamData,
-  room: Room,
-): ReceivedChatMessage {
-  return {
-    id: textStream.streamInfo.id,
-    timestamp: textStream.streamInfo.timestamp,
-    message: textStream.text,
-    from:
-      textStream.participantInfo.identity === room.localParticipant.identity
-        ? room.localParticipant
-        : Array.from(room.remoteParticipants.values()).find(
-            (p) => p.identity === textStream.participantInfo.identity,
-          ),
-  };
-}
-
 interface TranscriptPanelProps {
   config: EmbedConfig;
+  /** Platform origin for absolute S3 proxy image URLs (embed on third-party sites). */
+  platformOrigin?: string;
   onSendMessage?: (message: string) => Promise<void>;
 }
 
-export function TranscriptPanel({ config, onSendMessage }: TranscriptPanelProps) {
+export function TranscriptPanel({ config, platformOrigin, onSendMessage }: TranscriptPanelProps) {
   const room = useRoomContext();
-  const transcriptions: TextStreamData[] = useTranscriptions();
   const { chatMessages, send } = useChat();
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Only show explicit chat messages (lk.chat topic) — Letta output and
+  // user-typed messages. Transcriptions (agent TTS, user STT) are NOT
+  // mixed in: users hear the agent speak, they don't need a text duplicate.
   const messages = useMemo(() => {
-    const merged: ReceivedChatMessage[] = [];
-
-    // Add transcriptions only if showTranscription is enabled
-    if (config.showTranscription) {
-      merged.push(
-        ...transcriptions.map((t) => transcriptionToChatMessage(t, room)),
-      );
-    }
-
-    // Always add chat messages (Letta output)
-    merged.push(...chatMessages);
-
-    return merged.sort((a, b) => a.timestamp - b.timestamp);
-  }, [transcriptions, chatMessages, room, config.showTranscription]);
+    return [...chatMessages].sort((a, b) => a.timestamp - b.timestamp);
+  }, [chatMessages]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -85,6 +57,7 @@ export function TranscriptPanel({ config, onSendMessage }: TranscriptPanelProps)
                 message={msg.message}
                 isLocal={isLocal}
                 name={name}
+                platformOrigin={platformOrigin}
               />
             );
           })}

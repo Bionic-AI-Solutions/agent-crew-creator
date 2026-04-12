@@ -173,7 +173,20 @@ export async function deployAgent(
     }
   }
 
-  // 4. ConfigMap + ExternalSecret in the app's namespace
+  // 4. Resolve Vault secrets BEFORE applying ConfigMap so all values are populated.
+
+  // 4a. Letta server password — shared infrastructure secret.
+  try {
+    const { readPlatformVaultPath } = await import("../vaultClient.js");
+    const infraData = (await readPlatformVaultPath("shared/infra")) || {};
+    if (infraData.letta_server_password) {
+      configData.LETTA_SERVER_PASSWORD = infraData.letta_server_password;
+    }
+  } catch (err) {
+    log.warn("Failed to read Letta server password from Vault (non-fatal)", { error: String(err) });
+  }
+
+  // 4b. ConfigMap + ExternalSecret in the app's namespace
   await k8s.ensureConfigMap(namespace, configMapName, configData);
   await k8s.createExternalSecret(namespace);
 
@@ -234,17 +247,6 @@ export async function deployAgent(
     }
   } catch (err) {
     log.warn("Failed to resolve provider keys (non-fatal)", { error: String(err) });
-  }
-
-  // 5b. Letta server password — shared infrastructure secret.
-  try {
-    const { readPlatformVaultPath } = await import("../vaultClient.js");
-    const infraData = (await readPlatformVaultPath("shared/infra")) || {};
-    if (infraData.letta_server_password) {
-      configData.LETTA_SERVER_PASSWORD = infraData.letta_server_password;
-    }
-  } catch (err) {
-    log.warn("Failed to read Letta server password from Vault (non-fatal)", { error: String(err) });
   }
 
   // 5c. BitHuman avatar keys — shared across all agents (one GPU server).

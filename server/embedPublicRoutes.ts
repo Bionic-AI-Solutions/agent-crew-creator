@@ -223,6 +223,56 @@ export function registerEmbedRoutes(app: Express): void {
     }
   });
 
+  // ── GET /api/s3-proxy/:bucket/* ──────────────────────────────
+  // Proxies presigned MinIO URLs through the platform server so browsers
+  // don't need to reach the private MinIO IP directly (avoids Chrome's
+  // Private Network Access block on s3.baisoln.com → 192.168.0.x).
+  app.get("/api/s3-proxy/:bucket/*", embedCors, async (req: Request, res: Response) => {
+    try {
+      const bucket = req.params.bucket;
+      const objectKey = req.params[0]; // everything after /bucket/
+      if (!bucket || !objectKey) {
+        res.status(400).send("Missing bucket or key");
+        return;
+      }
+
+      // Only allow image content types
+      const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || "minio-tenant-hl.minio.svc.cluster.local:9000";
+      const internalUrl = `http://${MINIO_ENDPOINT}/${bucket}/${objectKey}`;
+
+      // Forward the S3 query params (signature, etc.) to MinIO
+      const qs = req.url.split("?")[1];
+      const fetchUrl = qs ? `${internalUrl}?${qs}` : internalUrl;
+
+      const upstream = await fetch(fetchUrl, {
+        headers: { Host: MINIO_ENDPOINT },
+      });
+
+      if (!upstream.ok) {
+        res.status(upstream.status).send(`Upstream: ${upstream.statusText}`);
+        return;
+      }
+
+      const contentType = upstream.headers.get("content-type") || "application/octet-stream";
+      // Only proxy image types for security
+      if (!contentType.startsWith("image/")) {
+        res.status(403).send("Only image content allowed via proxy");
+        return;
+      }
+
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      const contentLength = upstream.headers.get("content-length");
+      if (contentLength) res.setHeader("Content-Length", contentLength);
+
+      const body = await upstream.arrayBuffer();
+      res.send(Buffer.from(body));
+    } catch (err) {
+      log.error("S3 proxy error", { error: String(err) });
+      res.status(502).send("Proxy error");
+    }
+  });
+
   // ── GET /api/embed/widget.js ────────────────────────────────
   app.get("/api/embed/widget.js", embedCors, (_req: Request, res: Response) => {
     const widgetPath = path.resolve(__dirname, "..", "dist", "public", "embed-popup.js");
@@ -270,6 +320,8 @@ export function registerEmbedRoutes(app: Express): void {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Agent Embed</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" sizes="32x32" />
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body, #embed-root { width: 100%; height: 100%; overflow: hidden; }

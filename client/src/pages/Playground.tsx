@@ -11,7 +11,9 @@
 import { useMemo, useState } from "react";
 import { LiveKitRoom, VideoConference, useTranscriptions, useChat, RoomAudioRenderer } from "@livekit/components-react";
 import "@livekit/components-styles";
+import { marked } from "marked";
 import { trpc } from "@/lib/trpc";
+import { rewriteS3UrlsInHtml, toBrowserS3ProxyUrl } from "@/lib/s3ProxyUrl";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -53,28 +55,6 @@ function TranscriptionPanel() {
     <aside className="w-80 border-l bg-card overflow-y-auto p-3 text-sm flex flex-col gap-4">
       <section>
         <div className="font-semibold text-xs uppercase text-muted-foreground tracking-wide mb-2">
-          Live Transcription
-        </div>
-        {transcriptions.length === 0 ? (
-          <p className="text-muted-foreground text-xs italic">
-            Speak to see transcriptions appear here.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {transcriptions.map((t, i) => (
-              <div key={i} className="border-b pb-2 last:border-b-0">
-                <div className="text-[10px] uppercase text-muted-foreground tracking-wide">
-                  {t.participantInfo?.identity ?? "unknown"}
-                </div>
-                <div className="text-sm whitespace-pre-wrap">{t.text}</div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section>
-        <div className="font-semibold text-xs uppercase text-muted-foreground tracking-wide mb-2">
           Secondary Agent Output
         </div>
         {chatMessages.length === 0 ? (
@@ -82,19 +62,142 @@ function TranscriptionPanel() {
             Letta-delegated results will appear here.
           </p>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-3">
             {chatMessages.map((m, i) => (
-              <div key={i} className="border-b pb-2 last:border-b-0">
-                <div className="text-[10px] uppercase text-muted-foreground tracking-wide">
+              <div key={i} className="border-b pb-3 last:border-b-0">
+                <div className="text-[10px] uppercase text-muted-foreground tracking-wide mb-1">
                   {m.from?.identity ?? "agent"}
                 </div>
-                <div className="text-sm whitespace-pre-wrap">{m.message}</div>
+                <SecondaryAgentMessage message={m.message} />
               </div>
             ))}
           </div>
         )}
       </section>
     </aside>
+  );
+}
+
+/**
+ * Renders a Letta secondary-agent message. The message is a mix of plain
+ * markdown text and embedded JSON artifact blocks (one per line) of the form:
+ *   {"type":"artifact","subtype":"image","title":"...","image_url":"https://..."}
+ *
+ * We scan each line; if it parses to an artifact JSON, render it as a card
+ * (image for subtype=image, download link otherwise). Non-JSON text is
+ * rendered as markdown.
+ */
+
+function SecondaryAgentMessage({ message }: { message: string }) {
+  interface Artifact {
+    type: "artifact";
+    subtype?: "image" | "file" | string;
+    title?: string;
+    image_url?: string;
+    download_url?: string;
+    url?: string;
+    content_type?: string;
+    summary?: string;
+    internal_s3_url?: string;
+  }
+
+  // Split message into segments — plain text and artifact JSON objects.
+  // Artifacts are separated by blank lines in _parse_letta_response output.
+  const segments: Array<{ kind: "text"; value: string } | { kind: "artifact"; value: Artifact }> = [];
+  const blocks = message.split(/\n\n+/);
+  for (const block of blocks) {
+    const trimmed = block.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        const parsed = JSON.parse(trimmed) as Artifact;
+        if (parsed && parsed.type === "artifact") {
+          segments.push({ kind: "artifact", value: parsed });
+          continue;
+        }
+      } catch {
+        // fall through — treat as text
+      }
+    }
+    segments.push({ kind: "text", value: trimmed });
+  }
+
+  return (
+    <div className="space-y-2">
+      {segments.map((seg, idx) => {
+        if (seg.kind === "artifact") {
+          const a = seg.value;
+          const rawUrl = a.image_url || a.url || a.download_url || "";
+          const imageUrl = rawUrl ? toBrowserS3ProxyUrl(rawUrl) : "";
+          const isImage =
+            a.subtype === "image" ||
+            (a.content_type ?? "").startsWith("image/") ||
+            /\.(png|jpg|jpeg|gif|webp|svg)(\?|$)/i.test(imageUrl);
+          if (isImage && imageUrl) {
+            // Same-origin /api/s3-proxy or public https — not raw s3 (PNA) or internal K8s DNS
+            const isAccessible =
+              imageUrl.startsWith("/api/s3-proxy") ||
+              ((imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) &&
+                !imageUrl.includes(".svc.cluster.local"));
+            return (
+              <figure key={idx} className="rounded border bg-background overflow-hidden">
+                {isAccessible ? (
+                  <img
+                    src={imageUrl}
+                    alt={a.title || "Generated image"}
+                    className="w-full h-auto block"
+                    loading="lazy"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                  />
+                ) : (
+                  <div className="px-2 py-3 text-xs text-muted-foreground italic text-center">
+                    Image generated (not viewable in browser)
+                  </div>
+                )}
+                {a.title && (
+                  <figcaption className="px-2 py-1 text-[11px] text-muted-foreground italic">
+                    {a.title}
+                  </figcaption>
+                )}
+              </figure>
+            );
+          }
+          // Non-image artifact — render as a download card
+          return (
+            <a
+              key={idx}
+              href={imageUrl || "#"}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block rounded border bg-background px-2 py-1.5 text-xs hover:bg-muted"
+            >
+              <div className="font-medium">{a.title || "Artifact"}</div>
+              {a.summary && <div className="text-muted-foreground">{a.summary}</div>}
+              {a.content_type && (
+                <div className="text-[10px] text-muted-foreground">{a.content_type}</div>
+              )}
+            </a>
+          );
+        }
+        // Plain text segment — render as markdown for rich formatting.
+        return (
+          <div
+            key={idx}
+            className="text-sm prose prose-sm dark:prose-invert max-w-none"
+            dangerouslySetInnerHTML={{
+              __html: (() => {
+                try {
+                  const raw = marked.parse(seg.value, { breaks: true, gfm: true }) as string;
+                  return rewriteS3UrlsInHtml(raw);
+                } catch {
+                  return seg.value;
+                }
+              })(),
+            }}
+          />
+        );
+      })}
+    </div>
   );
 }
 

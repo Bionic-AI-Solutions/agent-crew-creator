@@ -41,13 +41,24 @@ if (iframeConfig && iframeConfig.mode === "iframe") {
   const embedToken = scriptTag?.dataset.bionicEmbedToken;
 
   if (embedToken && scriptTag?.src) {
-    // Derive platform origin from the script tag's src URL
+    // Platform API origin: explicit data-bionic-platform-origin if the script is mirrored on a CDN,
+    // otherwise the origin of the script URL (e.g. https://platform.baisoln.com).
     let platformOrigin: string;
-    try {
-      platformOrigin = new URL(scriptTag.src).origin;
-    } catch {
-      console.error("[Bionic Embed] Could not parse script src URL");
-      throw new Error("Invalid script src");
+    const override = scriptTag.dataset.bionicPlatformOrigin?.trim();
+    if (override) {
+      try {
+        platformOrigin = new URL(override).origin;
+      } catch {
+        console.error("[Bionic Embed] Invalid data-bionic-platform-origin");
+        throw new Error("Invalid data-bionic-platform-origin");
+      }
+    } else {
+      try {
+        platformOrigin = new URL(scriptTag.src).origin;
+      } catch {
+        console.error("[Bionic Embed] Could not parse script src URL");
+        throw new Error("Invalid script src");
+      }
     }
 
     // Create wrapper + Shadow DOM for CSS isolation

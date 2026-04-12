@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
@@ -308,7 +309,30 @@ app.use("/dify", createProxyMiddleware({
 // When running via tsx from /app/server/index.ts, __dirname is /app/server
 // The built frontend is at /app/dist/public
 const publicDir = path.resolve(__dirname, "..", "dist", "public");
+const clientPublicDir = path.resolve(__dirname, "..", "client", "public");
+
+function sendFavicon(res: express.Response, filename: string, contentType: string) {
+  const built = path.join(publicDir, filename);
+  const fallback = path.join(clientPublicDir, filename);
+  const file = fs.existsSync(built) ? built : fs.existsSync(fallback) ? fallback : null;
+  if (!file) {
+    res.status(404).send("Not found");
+    return;
+  }
+  res.setHeader("Content-Type", contentType);
+  res.sendFile(file, (err) => {
+    if (err) res.status(404).send("Not found");
+  });
+}
+
 app.use(express.static(publicDir));
+// After a fresh clone, dist/public may be missing; still serve favicons from client/public
+app.get("/favicon.ico", (_req, res) => {
+  sendFavicon(res, "favicon.ico", "image/x-icon");
+});
+app.get("/favicon.svg", (_req, res) => {
+  sendFavicon(res, "favicon.svg", "image/svg+xml");
+});
 app.get("*", (_req, res) => {
   const indexPath = path.join(publicDir, "index.html");
   res.sendFile(indexPath, (err) => {

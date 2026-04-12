@@ -30,12 +30,13 @@ function isAgentAvailable(state: AgentState) {
 
 interface PopupViewProps {
   config: EmbedConfig;
+  platformOrigin?: string;
   sessionStarted: boolean;
   onError: (err: EmbedErrorDetails) => void;
   onDisconnect: () => void;
 }
 
-export function PopupView({ config, sessionStarted, onError, onDisconnect }: PopupViewProps) {
+export function PopupView({ config, platformOrigin, sessionStarted, onError, onDisconnect }: PopupViewProps) {
   const room = useRoomContext();
   const {
     state: agentState,
@@ -72,7 +73,7 @@ export function PopupView({ config, sessionStarted, onError, onDisconnect }: Pop
         {/* Transcript panel (slides up when chat is open) */}
         {config.allowChat && (
           <div className={`bionic-transcript-container ${chatOpen ? "bionic-transcript-open" : ""}`}>
-            <TranscriptPanel config={config} />
+            <TranscriptPanel config={config} platformOrigin={platformOrigin} />
           </div>
         )}
 

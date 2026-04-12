@@ -518,8 +518,39 @@ export async function getDeploymentStatus(
     const dep = result?.body || result;
     const ready = dep?.status?.readyReplicas || 0;
     const desired = dep?.spec?.replicas || 1;
+    const unavailable = dep?.status?.unavailableReplicas;
+    const conds = (dep?.status?.conditions || []).map((c: any) => ({
+      t: c?.type,
+      st: c?.status,
+      reason: c?.reason,
+    }));
+    // #region agent log
+    const { emitDebugLog } = await import("./debugSessionLog.js");
+    emitDebugLog({
+      location: "k8sClient.ts:getDeploymentStatus",
+      message: "readNamespacedDeployment result",
+      hypothesisId: "H1",
+      data: {
+        namespace,
+        deployment: `agent-${agentName}`,
+        ready,
+        desired,
+        unavailable: unavailable ?? null,
+        conditionSummary: conds.slice(0, 4),
+      },
+    });
+    // #endregion
     return { status: ready >= desired ? "running" : "deploying", replicas: ready, message: `${ready}/${desired} replicas ready` };
   } catch (err: any) {
+    // #region agent log
+    const { emitDebugLog } = await import("./debugSessionLog.js");
+    emitDebugLog({
+      location: "k8sClient.ts:getDeploymentStatus",
+      message: is404(err) ? "deployment404" : "deployment read error",
+      hypothesisId: "H2",
+      data: { namespace, deployment: `agent-${agentName}`, errCode: err?.code, is404: is404(err) },
+    });
+    // #endregion
     if (is404(err)) return { status: "stopped", replicas: 0, message: "Not deployed" };
     return { status: "unknown", replicas: 0, message: String(err) };
   }

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { marked } from "marked";
+import { rewriteS3UrlsInHtml, toBrowserS3ProxyUrl } from "@/lib/s3ProxyUrl";
 
 // Configure marked for safe rendering
 marked.setOptions({ breaks: true, gfm: true });
@@ -25,8 +26,11 @@ function sanitizeHtml(html: string): string {
 
 interface StructuredArtifact {
   type: "artifact";
+  subtype?: "image" | "file" | string;
   title: string;
+  image_url?: string;
   download_url?: string;
+  url?: string;
   content_type?: string;
   summary?: string;
 }
@@ -61,18 +65,22 @@ function tryParseStructured(message: string): StructuredMessage | null {
   return null;
 }
 
-/** Sanitize a URL — only allow http/https schemes. */
-function safeUrl(url: string | undefined): string | undefined {
+/** Allow only http(s) artifact URLs; route our S3 hosts through /api/s3-proxy (absolute on third-party embeds). */
+function safeUrl(url: string | undefined, platformOrigin?: string): string | undefined {
   if (!url) return undefined;
-  const trimmed = url.trim().toLowerCase();
+  const trimmed = url.trim();
   if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) return undefined;
-  return url;
+  return toBrowserS3ProxyUrl(trimmed, platformOrigin);
 }
 
 /** Render an artifact card with optional download link and image preview. */
-function ArtifactCard({ data }: { data: StructuredArtifact }) {
-  const isImage = data.content_type?.startsWith("image/");
-  const url = safeUrl(data.download_url);
+function ArtifactCard({ data, platformOrigin }: { data: StructuredArtifact; platformOrigin?: string }) {
+  const imageUrl = safeUrl(data.image_url || data.url || data.download_url, platformOrigin);
+  const isImage =
+    data.subtype === "image" ||
+    (data.content_type ?? "").startsWith("image/") ||
+    (imageUrl ? /\.(png|jpg|jpeg|gif|webp|svg)(\?|$)/i.test(imageUrl) : false);
+  const isAccessible = imageUrl ? !imageUrl.includes(".svc.cluster.local") : false;
   return (
     <div className="bionic-artifact-card">
       <div className="bionic-artifact-header">
@@ -80,22 +88,28 @@ function ArtifactCard({ data }: { data: StructuredArtifact }) {
         <strong>{data.title}</strong>
       </div>
       {data.summary && <p className="bionic-artifact-summary">{data.summary}</p>}
-      {isImage && url && (
+      {isImage && imageUrl && isAccessible && (
         <img
-          src={url}
+          src={imageUrl}
           alt={data.title}
           loading="lazy"
           className="bionic-artifact-preview"
+          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
         />
       )}
-      {url && (
+      {isImage && imageUrl && !isAccessible && (
+        <div className="bionic-artifact-summary" style={{ textAlign: "center", fontStyle: "italic" }}>
+          Image generated (not viewable in browser)
+        </div>
+      )}
+      {imageUrl && (
         <a
-          href={url}
+          href={imageUrl}
           target="_blank"
           rel="noopener noreferrer"
           className="bionic-artifact-download"
         >
-          Download
+          {isImage ? "View full size" : "Download"}
         </a>
       )}
     </div>
@@ -116,15 +130,15 @@ function StatusIndicator({ data }: { data: StructuredStatus }) {
 }
 
 /** Render a summary card with optional citations. */
-function SummaryCard({ data }: { data: StructuredSummary }) {
+function SummaryCard({ data, platformOrigin }: { data: StructuredSummary; platformOrigin?: string }) {
   const renderedHtml = useMemo(() => {
     try {
       const raw = marked.parse(data.content, { async: false }) as string;
-      return sanitizeHtml(raw);
+      return rewriteS3UrlsInHtml(sanitizeHtml(raw), platformOrigin);
     } catch {
       return data.content;
     }
-  }, [data.content]);
+  }, [data.content, platformOrigin]);
 
   return (
     <div className="bionic-summary-card">
@@ -152,9 +166,11 @@ interface ChatMessageProps {
   message: string;
   isLocal: boolean;
   name?: string;
+  /** Platform base URL (e.g. https://platform.baisoln.com) — required for S3 proxy URLs when the widget runs on another origin. */
+  platformOrigin?: string;
 }
 
-export function ChatMessage({ message, isLocal, name }: ChatMessageProps) {
+export function ChatMessage({ message, isLocal, name, platformOrigin }: ChatMessageProps) {
   const [expandedImg, setExpandedImg] = useState<string | null>(null);
 
   // Check if the message (or any line in it) is a structured JSON payload
@@ -178,11 +194,11 @@ export function ChatMessage({ message, isLocal, name }: ChatMessageProps) {
     if (!plainParts.length) return "";
     try {
       const raw = marked.parse(plainParts.join("\n\n"), { async: false }) as string;
-      return sanitizeHtml(raw);
+      return rewriteS3UrlsInHtml(sanitizeHtml(raw), platformOrigin);
     } catch {
       return plainParts.join("\n\n");
     }
-  }, [plainParts]);
+  }, [plainParts, platformOrigin]);
 
   const handleClick = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
@@ -213,11 +229,11 @@ export function ChatMessage({ message, isLocal, name }: ChatMessageProps) {
         {structured.map((item, idx) => {
           switch (item.type) {
             case "artifact":
-              return <ArtifactCard key={`struct-${idx}`} data={item} />;
+              return <ArtifactCard key={`struct-${idx}`} data={item} platformOrigin={platformOrigin} />;
             case "status":
               return <StatusIndicator key={`struct-${idx}`} data={item} />;
             case "summary":
-              return <SummaryCard key={`struct-${idx}`} data={item} />;
+              return <SummaryCard key={`struct-${idx}`} data={item} platformOrigin={platformOrigin} />;
             default:
               return null;
           }

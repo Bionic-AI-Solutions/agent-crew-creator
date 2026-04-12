@@ -157,6 +157,23 @@ export const playgroundRouter = router({
         agents: [new RoomAgentDispatch({ agentName: dispatchName })],
       });
 
+      // #region agent log
+      const { emitDebugLog } = await import("./debugSessionLog.js");
+      emitDebugLog({
+        location: "playgroundRouter.ts:getToken",
+        message: "playground token roomConfig dispatch",
+        hypothesisId: "H3-H5",
+        data: {
+          agentId: agent.id,
+          dbAgentName: agent.name,
+          appSlug: app.slug,
+          dispatchName,
+          k8sDeploymentName: `agent-${agent.name}`,
+          roomName,
+        },
+      });
+      // #endregion
+
       const token = await at.toJwt();
       const expiresAt = new Date(Date.now() + TOKEN_TTL_SECONDS * 1000).toISOString();
 

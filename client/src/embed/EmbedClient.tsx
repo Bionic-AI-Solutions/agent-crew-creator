@@ -123,6 +123,7 @@ export function EmbedClient({ platformOrigin, embedToken }: EmbedClientProps) {
           ) : connectionDetails ? (
             <PopupView
               config={connectionDetails.config}
+              platformOrigin={platformOrigin}
               sessionStarted={popupOpen}
               onError={setError}
               onDisconnect={handleDisconnect}

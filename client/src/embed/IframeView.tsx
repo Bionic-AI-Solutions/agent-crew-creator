@@ -84,6 +84,7 @@ export function IframeView({ platformOrigin, embedToken }: IframeViewProps) {
         <StartAudio label="Start Audio" />
         <PopupView
           config={connectionDetails.config}
+          platformOrigin={platformOrigin}
           sessionStarted={connected}
           onError={setError}
           onDisconnect={handleDisconnect}
