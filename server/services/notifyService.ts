@@ -119,6 +119,33 @@ export async function handleNotifyWebhook(req: Request, res: Response): Promise<
         return;
       }
 
+      // Resolve hostname to IP and block private/link-local ranges
+      try {
+        const dns = await import("dns");
+        const { promisify } = await import("util");
+        const resolve4 = promisify(dns.resolve4);
+        const ips = await resolve4(webhookUrl.hostname);
+        for (const ip of ips) {
+          if (ip.startsWith("10.") || ip.startsWith("172.16.") || ip.startsWith("172.17.") ||
+              ip.startsWith("172.18.") || ip.startsWith("172.19.") || ip.startsWith("172.2") ||
+              ip.startsWith("172.3") || ip.startsWith("192.168.") || ip.startsWith("127.") ||
+              ip.startsWith("169.254.") || ip === "0.0.0.0") {
+            log.warn("Webhook rejected: resolved to private IP", { host: webhookUrl.hostname, ip });
+            res.status(400).json({ error: "Webhook URL resolves to private/internal IP" });
+            return;
+          }
+        }
+      } catch (dnsErr) {
+        log.warn("Webhook DNS resolution failed", { host: webhookUrl.hostname, error: String(dnsErr) });
+        // Allow the fetch to try (DNS might resolve differently from the fetch perspective)
+      }
+
+      // Only allow HTTPS in production
+      if (process.env.NODE_ENV === "production" && webhookUrl.protocol !== "https:") {
+        res.status(400).json({ error: "Webhook URL must use HTTPS in production" });
+        return;
+      }
+
       const r = await fetch(payload.to_webhook, {
         method: "POST",
         redirect: "error", // SSRF defense: reject any redirects

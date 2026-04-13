@@ -32,14 +32,15 @@ describe("1.1 Dify auto-login security", () => {
     // but the code sets it — verified via code review
   });
 
-  test("next parameter rejects open redirect", async () => {
+  test("dify-login requires platform session (rejects unauthenticated)", async () => {
     const res = await fetchPlatform("/dify-login?next=//evil.com");
-    assert.equal(res.status, 400, "Should reject double-slash next");
+    // Without a session cookie, should get 401 (auth gate) before next validation
+    assert.equal(res.status, 401, "Should require platform session");
   });
 
-  test("next parameter rejects protocol scheme", async () => {
-    const res = await fetchPlatform("/dify-login?next=https://evil.com");
-    assert.equal(res.status, 400, "Should reject protocol in next");
+  test("dify-exchange requires platform session", async () => {
+    const res = await fetchPlatform("/api/dify-exchange?code=test");
+    assert.equal(res.status, 401, "Should require platform session");
   });
 });
 

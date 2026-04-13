@@ -299,14 +299,16 @@ export function registerEmbedRoutes(app: Express): void {
         return;
       }
 
-      // Validate bucket is a known app slug (tenant isolation)
+      // Validate bucket is a known app slug (tenant isolation) — REQUIRED, not optional
       const db = await getDb();
-      if (db) {
-        const [appRow] = await db.select({ id: apps.id }).from(apps).where(eq(apps.slug, bucket)).limit(1);
-        if (!appRow) {
-          res.status(403).send("Unknown bucket");
-          return;
-        }
+      if (!db) {
+        res.status(503).send("Service unavailable");
+        return;
+      }
+      const [appRow] = await db.select({ id: apps.id }).from(apps).where(eq(apps.slug, bucket)).limit(1);
+      if (!appRow) {
+        res.status(403).send("Unknown bucket");
+        return;
       }
       if (objectKey.includes("..")) {
         res.status(400).send("Invalid object key");

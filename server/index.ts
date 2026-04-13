@@ -280,6 +280,14 @@ async function getDifyCode(code: string): Promise<{ accessToken: string; refresh
 }
 
 app.get("/dify-login", async (req, res) => {
+  // Require authenticated platform session — Dify admin login is privileged
+  const { getUserFromRequest } = await import("./_core/auth.js");
+  const user = await getUserFromRequest(req);
+  if (!user) {
+    res.status(401).send("Platform login required to access Dify editor");
+    return;
+  }
+
   try {
     // Validate redirect target FIRST to prevent open redirect regardless of auth state
     const next = String(req.query.next || "/apps");
@@ -333,6 +341,11 @@ app.get("/dify-login", async (req, res) => {
 
 // Exchange one-time code for Dify tokens — sets httpOnly cookies, never returns tokens to browser
 app.get("/api/dify-exchange", async (req, res) => {
+  // Require authenticated platform session
+  const { getUserFromRequest: getUser } = await import("./_core/auth.js");
+  const user = await getUser(req);
+  if (!user) { res.status(401).send("Platform login required"); return; }
+
   const code = String(req.query.code || "");
   if (!code) { res.status(400).send("code required"); return; }
   const entry = await getDifyCode(code);

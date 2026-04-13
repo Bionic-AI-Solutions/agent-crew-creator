@@ -193,6 +193,7 @@ export function createAuthRouter(): Router {
       try {
         const { payload: verified } = await jwtVerify(tokens.access_token, JWKS, {
           issuer: issuerUrl,
+          audience: CLIENT_ID, // Reject tokens not intended for this client
         });
         payload = verified;
       } catch (verifyErr) {
