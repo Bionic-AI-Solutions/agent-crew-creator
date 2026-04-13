@@ -184,15 +184,38 @@ async def swap_user_memory_block(user_id: str) -> None:
         return
 
     async with _swap_lock:
+        # Load user block mapping from platform DB (durable across pod restarts)
+        # Falls back to /tmp JSON if platform API is unavailable
         import json
-        registry_path = f"/tmp/user_blocks_{settings.agent_name}.json"
+        platform_url = os.environ.get("PLATFORM_API_URL", "")
+        internal_token = os.environ.get("PLAYER_UI_INTERNAL_TOKEN", "")
+        agent_config_id = os.environ.get("AGENT_CONFIG_ID", "")
 
-        # Load registry
-        try:
-            with open(registry_path) as f:
-                registry: dict = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            registry = {}
+        registry: dict = {}
+        registry_path = f"/tmp/user_blocks_{settings.agent_name}.json"
+        _use_db_registry = bool(platform_url and agent_config_id)
+
+        # Try platform DB first, fall back to /tmp
+        if _use_db_registry:
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as db_client:
+                    r = await db_client.get(
+                        f"{platform_url}/api/internal/user-memory/{agent_config_id}/{user_id}",
+                        headers={"X-Internal-Token": internal_token} if internal_token else {},
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        registry[user_id] = data.get("lettaBlockId", "")
+            except Exception as e:
+                logger.info("Platform DB registry unavailable, using /tmp fallback: %s", e)
+                _use_db_registry = False
+
+        if not registry.get(user_id):
+            try:
+                with open(registry_path) as f:
+                    registry = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                registry = {}
 
         # Letta returns 307 redirects on trailing-slash URLs in some
         # versions. follow_redirects=True handles both forms.
@@ -242,34 +265,72 @@ async def swap_user_memory_block(user_id: str) -> None:
                     logger.warning("Failed to create user block: %s", e)
                     return
 
-            # Detach current human block (if different)
-            if current_human_id and current_human_id != user_block_id:
+            # Detach + attach with retry (handles concurrent swap race)
+            for attempt in range(3):
+                # Re-read current state to handle concurrent changes
+                if attempt > 0:
+                    try:
+                        resp2 = await client.get(
+                            f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}",
+                            headers=LETTA_HEADERS,
+                        )
+                        resp2.raise_for_status()
+                        current_blocks = resp2.json().get("memory", {}).get("blocks", [])
+                        current_human = next((b for b in current_blocks if b.get("label") == "human"), None)
+                        current_human_id = current_human["id"] if current_human else None
+                        if current_human_id == user_block_id:
+                            logger.info("User block became active during retry: user=%s", user_id)
+                            break
+                    except Exception:
+                        pass
+
+                # Detach current human block (if different)
+                if current_human_id and current_human_id != user_block_id:
+                    try:
+                        await client.patch(
+                            f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/blocks/detach/{current_human_id}/",
+                            headers=LETTA_HEADERS,
+                        )
+                        logger.info("Detached previous human block: %s", current_human_id)
+                    except Exception as e:
+                        logger.warning("Failed to detach block %s (attempt %d): %s", current_human_id, attempt, e)
+
+                # Attach this user's block
                 try:
                     await client.patch(
-                        f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/blocks/detach/{current_human_id}/",
+                        f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/blocks/attach/{user_block_id}/",
                         headers=LETTA_HEADERS,
                     )
-                    logger.info("Detached previous human block: %s", current_human_id)
+                    logger.info("Attached user block: user=%s block=%s (attempt %d)", user_id, user_block_id, attempt)
+                    break
                 except Exception as e:
-                    logger.warning("Failed to detach block %s: %s", current_human_id, e)
+                    if attempt < 2:
+                        logger.warning("Failed to attach block, retrying (attempt %d): %s", attempt, e)
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                    else:
+                        logger.warning("Failed to attach user block after 3 attempts: %s", e)
+                        return
 
-            # Attach this user's block
+        # Persist registry — write to platform DB first, /tmp as backup
+        if _use_db_registry and user_block_id:
             try:
-                await client.patch(
-                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/blocks/attach/{user_block_id}/",
-                    headers=LETTA_HEADERS,
-                )
-                logger.info("Attached user block: user=%s block=%s", user_id, user_block_id)
+                async with httpx.AsyncClient(timeout=5.0) as db_client:
+                    await db_client.put(
+                        f"{platform_url}/api/internal/user-memory/{agent_config_id}/{user_id}",
+                        json={"lettaBlockId": user_block_id, "blockLabel": "human"},
+                        headers={"X-Internal-Token": internal_token, "Content-Type": "application/json"} if internal_token else {"Content-Type": "application/json"},
+                    )
+                    logger.info("Persisted user block to platform DB: user=%s block=%s", user_id, user_block_id)
             except Exception as e:
-                logger.warning("Failed to attach user block %s: %s", user_block_id, e)
-                return
+                logger.info("Failed to persist to platform DB (non-fatal): %s", e)
 
-        # Persist registry
+        # Always persist to /tmp as backup
+        registry[user_id] = user_block_id
         try:
             with open(registry_path, "w") as f:
                 json.dump(registry, f)
         except Exception:
-            pass  # Non-fatal — block is already attached
+            pass
 
 
 # ── Agent definition ─────────────────────────────────────────────
@@ -1011,9 +1072,12 @@ async def entrypoint(ctx: JobContext):
     """LiveKit agent entrypoint — two-brain architecture."""
     room_name = ctx.job.room.name if ctx.job and ctx.job.room else "unknown"
     try:
-        user_label = ctx.token_claims().identity or room_name
+        claims = ctx.token_claims()
+        user_label = claims.identity or room_name
+        user_display_name = claims.name or ""
     except Exception:
         user_label = room_name
+        user_display_name = ""
 
     # ── Langfuse OTEL tracing (always on) ────────────────────
     trace_provider = setup_langfuse_otel(session_id=room_name)
@@ -1194,14 +1258,56 @@ async def entrypoint(ctx: JobContext):
     )
 
     # ── Greeting — primary AI speaks first ────────────────────
-    # Uses session.say() which goes straight to TTS without an LLM call,
-    # avoiding the on_enter → generate_reply hang that blocked the pipeline.
+    # Reads the user's Letta memory block to personalize the greeting.
+    # If the user is known, greet by name. If new, ask for their name.
+    # Build personalized greeting and inject user context from Letta memory
+    is_returning_user = False
+    user_name = user_display_name or ""
+    user_context = ""
+
     try:
-        await session.say(
-            "Hello! Welcome. Before we get started, may I know your name?",
-            allow_interruptions=True,
-        )
-        logger.info("[chain] primary AI greeting spoken via session.say()")
+        if LETTA_AGENT_ID:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as hc:
+                resp = await hc.get(
+                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}",
+                    headers=LETTA_HEADERS,
+                )
+                if resp.status_code < 300:
+                    blocks = resp.json().get("memory", {}).get("blocks", [])
+                    human_block = next((b for b in blocks if b.get("label") == "human"), None)
+                    if human_block:
+                        block_text = human_block.get("value", "")
+                        if "Preferences:" in block_text and "(none yet)" not in block_text:
+                            is_returning_user = True
+                            user_context = block_text
+    except Exception as e:
+        logger.info("Could not read user block for greeting (non-fatal): %s", e)
+
+    # Inject user context into the primary AI's chat context so it knows
+    # the user's history, preferences, and prior topics without asking again.
+    if user_context or user_name:
+        context_msg = "[SYSTEM] User session context:\n"
+        if user_name:
+            context_msg += f"- User's name: {user_name}\n"
+        if user_context:
+            context_msg += f"- User memory from previous sessions:\n{user_context}\n"
+        context_msg += "Use this context naturally. Do NOT ask for information you already have."
+        try:
+            session.chat_ctx.add_message(role="system", content=context_msg)
+            logger.info("[chain] injected user context into primary AI (%d chars)", len(context_msg))
+        except Exception as e:
+            logger.info("Could not inject user context (non-fatal): %s", e)
+
+    if is_returning_user and user_name:
+        greeting = f"Welcome back, {user_name}! Great to see you again. What would you like to explore today?"
+    elif user_name:
+        greeting = f"Hello {user_name}! Welcome. How can I help you today?"
+    else:
+        greeting = "Hello! Welcome. How can I help you today?"
+
+    try:
+        await session.say(greeting, allow_interruptions=True)
+        logger.info("[chain] primary AI greeting: %s", greeting[:60])
     except Exception as e:
         logger.warning("Greeting failed (non-fatal): %s", e)
 

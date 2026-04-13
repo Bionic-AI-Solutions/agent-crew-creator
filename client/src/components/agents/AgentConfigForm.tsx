@@ -29,6 +29,9 @@ export default function AgentConfigForm({ agentId }: Props) {
   const [ttsVoice, setTtsVoice] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
   const [avatarEnabled, setAvatarEnabled] = useState(false);
+  const [visionEnabled, setVisionEnabled] = useState(false);
+  const [backgroundAudioEnabled, setBackgroundAudioEnabled] = useState(false);
+  const [busyAudioEnabled, setBusyAudioEnabled] = useState(false);
   const [lettaAgentName, setLettaAgentName] = useState("");
   const [lettaLlmModel, setLettaLlmModel] = useState("");
   const [lettaSystemPrompt, setLettaSystemPrompt] = useState("");
@@ -44,6 +47,9 @@ export default function AgentConfigForm({ agentId }: Props) {
       setTtsVoice(agent.ttsVoice || "");
       setSystemPrompt(agent.systemPrompt || "");
       setAvatarEnabled(agent.avatarEnabled);
+      setVisionEnabled(agent.visionEnabled);
+      setBackgroundAudioEnabled(agent.backgroundAudioEnabled);
+      setBusyAudioEnabled((agent as any).busyAudioEnabled ?? false);
       setLettaAgentName(agent.lettaAgentName || "");
       setLettaLlmModel(agent.lettaLlmModel || "");
       setLettaSystemPrompt(agent.lettaSystemPrompt || "");
@@ -88,6 +94,9 @@ export default function AgentConfigForm({ agentId }: Props) {
         ttsVoice: ttsVoice || null,
         systemPrompt: systemPrompt || null,
         avatarEnabled,
+        visionEnabled,
+        backgroundAudioEnabled,
+        busyAudioEnabled,
         lettaAgentName: lettaAgentName || null,
         lettaLlmModel: lettaLlmModel || null,
         lettaSystemPrompt: lettaSystemPrompt || null,
@@ -145,6 +154,12 @@ export default function AgentConfigForm({ agentId }: Props) {
             avatarEnabled={avatarEnabled}
             setAvatarEnabled={setAvatarEnabled}
             avatarImageUrl={agent?.avatarImageUrl || ""}
+            visionEnabled={visionEnabled}
+            setVisionEnabled={setVisionEnabled}
+            backgroundAudioEnabled={backgroundAudioEnabled}
+            setBackgroundAudioEnabled={setBackgroundAudioEnabled}
+            busyAudioEnabled={busyAudioEnabled}
+            setBusyAudioEnabled={setBusyAudioEnabled}
             agentId={agentId}
           />
         </TabsContent>

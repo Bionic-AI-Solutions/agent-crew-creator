@@ -317,6 +317,7 @@ export const agentRouter = router({
         avatarEnabled: z.boolean().optional(),
         avatarImageUrl: z.string().nullable().optional(),
         backgroundAudioEnabled: z.boolean().optional(),
+        busyAudioEnabled: z.boolean().optional(),
         captureMode: z.string().optional(),
         captureInterval: z.number().optional(),
         lettaAgentName: z.string().nullable().optional(),
@@ -477,9 +478,14 @@ export const agentRouter = router({
         }
       }
 
+      // Increment configVersion on every update for optimistic locking
       const [updated] = await ctx.db
         .update(agentConfigs)
-        .set({ ...updates, updatedAt: new Date() })
+        .set({
+          ...updates,
+          configVersion: (existing.configVersion || 1) + 1,
+          updatedAt: new Date(),
+        } as any)
         .where(eq(agentConfigs.id, id))
         .returning();
       return updated;
@@ -640,6 +646,55 @@ export const agentRouter = router({
 
       log.info("Uploaded avatar image", { agentId: input.agentId, key, size: buf.length });
       return { success: true, path: minioPath, previewUrl: url };
+    }),
+
+  // ── Upload audio file (ambient or thinking) to MinIO ──────────
+  uploadAudioFile: protectedProcedure
+    .input(
+      z.object({
+        agentId: z.number(),
+        audioBase64: z.string().min(1),
+        filename: z.string(),
+        audioType: z.enum(["ambient", "thinking"]),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (!ctx.db) throw new Error("DB not available");
+      const [agent] = await ctx.db
+        .select()
+        .from(agentConfigs)
+        .where(eq(agentConfigs.id, input.agentId))
+        .limit(1);
+      if (!agent) throw new Error("Agent not found");
+      await assertAppMembership(ctx, agent.appId);
+
+      const [app] = await ctx.db
+        .select()
+        .from(apps)
+        .where(eq(apps.id, agent.appId))
+        .limit(1);
+      if (!app) throw new Error("App not found");
+
+      const client = await getMinioClient();
+      const bucket = app.slug;
+      const exists = await client.bucketExists(bucket);
+      if (!exists) await client.makeBucket(bucket);
+
+      const buf = Buffer.from(input.audioBase64, "base64");
+      const ext = input.filename.split(".").pop() || "mp3";
+      const key = `audio/${agent.id}/${input.audioType}-${randomUUID()}.${ext}`;
+      const mime = ext === "mp3" ? "audio/mpeg" : ext === "wav" ? "audio/wav" : ext === "ogg" ? "audio/ogg" : "audio/mpeg";
+      await client.putObject(bucket, key, buf, buf.length, { "Content-Type": mime });
+
+      const minioPath = `${bucket}/${key}`;
+      const column = input.audioType === "ambient" ? "ambient_audio_url" : "thinking_audio_url";
+      await ctx.db
+        .update(agentConfigs)
+        .set({ [column]: minioPath, updatedAt: new Date() } as any)
+        .where(eq(agentConfigs.id, input.agentId));
+
+      log.info("Uploaded audio file", { agentId: input.agentId, type: input.audioType, key, size: buf.length });
+      return { success: true, path: minioPath };
     }),
 
   /**
@@ -928,11 +983,15 @@ export const agentRouter = router({
       z.object({
         appId: z.number(),
         name: z.string().min(1).max(100),
-        url: z.string().url(),
-        transport: z.enum(["streamable-http", "sse"]).default("streamable-http"),
+        url: z.string().optional(),
+        transport: z.enum(["streamable-http", "sse", "stdio"]).default("streamable-http"),
         authType: z.enum(["none", "api-key", "bearer"]).default("none"),
         description: z.string().optional(),
         apiKey: z.string().optional(),
+        command: z.string().optional(),
+        args: z.string().optional(),       // JSON array string
+        env: z.string().optional(),        // JSON object string
+        headers: z.string().optional(),    // JSON object string
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -942,8 +1001,16 @@ export const agentRouter = router({
       const [server] = await ctx.db
         .insert(mcpServers)
         .values({
-          ...serverData,
+          appId: serverData.appId,
+          name: serverData.name,
+          url: serverData.url || null,
+          transport: serverData.transport,
+          authType: serverData.authType,
           description: serverData.description || null,
+          command: serverData.command || null,
+          args: serverData.args || null,
+          env: serverData.env || null,
+          headers: serverData.headers || null,
         })
         .returning();
 

@@ -86,7 +86,16 @@ export async function deployAgent(
   const [tools, mcpLinks, agentCrewLinks, appCrews] = await Promise.all([
     db.select().from(agentTools).where(eq(agentTools.agentConfigId, agent.id)),
     db
-      .select({ name: mcpServers.name, url: mcpServers.url, transport: mcpServers.transport })
+      .select({
+        name: mcpServers.name,
+        url: mcpServers.url,
+        transport: mcpServers.transport,
+        command: mcpServers.command,
+        args: mcpServers.args,
+        env: mcpServers.env,
+        headers: mcpServers.headers,
+        authType: mcpServers.authType,
+      })
       .from(agentMcpServers)
       .innerJoin(mcpServers, eq(agentMcpServers.mcpServerId, mcpServers.id))
       .where(eq(agentMcpServers.agentConfigId, agent.id)),
@@ -99,6 +108,7 @@ export async function deployAgent(
     APP_SLUG: app.slug,
     APP_ENV: "production",
     AGENT_NAME: dispatchName,
+    AGENT_CONFIG_ID: String(agent.id),
 
     // ── Primary brain (fast, user-facing voice LLM) ─────────────
     LLM_PROVIDER: agent.llmProvider,
@@ -134,11 +144,22 @@ export async function deployAgent(
     VISION_ENABLED: String(agent.visionEnabled),
     AVATAR_ENABLED: String(agent.avatarEnabled),
     BACKGROUND_AUDIO_ENABLED: String(agent.backgroundAudioEnabled),
+    BUSY_AUDIO_ENABLED: String((agent as any).busyAudioEnabled ?? false),
+    AMBIENT_AUDIO_URL: "",  // Populated below with presigned URL if audio file exists
+    THINKING_AUDIO_URL: "",  // Populated below with presigned URL if audio file exists
     CAPTURE_MODE: agent.captureMode,
     CAPTURE_INTERVAL_SECONDS: String(agent.captureInterval || 5),
     BITHUMAN_AVATAR_IMAGE: "",  // Populated below with presigned URL if avatar image exists
     BITHUMAN_API_URL: "http://192.168.0.10:8089/launch",
-    MCP_SERVERS: JSON.stringify(mcpLinks.map((m) => ({ name: m.name, url: m.url, transport: m.transport }))),
+    MCP_SERVERS: JSON.stringify(mcpLinks.map((m) => {
+      const config: Record<string, any> = { name: m.name, transport: m.transport };
+      if (m.url) config.url = m.url;
+      if (m.command) config.command = m.command;
+      if (m.args) { try { config.args = JSON.parse(m.args); } catch { config.args = [m.args]; } }
+      if (m.env) { try { config.env = JSON.parse(m.env); } catch {} }
+      if (m.headers) { try { config.headers = JSON.parse(m.headers); } catch {} }
+      return config;
+    })),
     ENABLED_CREWS: JSON.stringify(agentCrewLinks.map((c) => c.crewName)),
     CREW_REGISTRY: JSON.stringify(
       appCrews
@@ -170,6 +191,66 @@ export async function deployAgent(
       log.info("Synced Letta run_crew tool", { agentId: agent.lettaAgentId, crews: assignedCrews.length });
     } catch (err) {
       log.warn("Failed to sync Letta run_crew tool (non-fatal)", { error: String(err) });
+    }
+  }
+
+  // 3b. Sync ALL enabled tools to Letta agent
+  if (agent.lettaAgentId) {
+    try {
+      const { lettaAdmin } = await import("./lettaAdmin.js");
+      const { BUILTIN_TOOLS } = await import("./toolRegistry.js");
+
+      // Get current Letta agent tools and all available Letta tools
+      const [agentLettaTools, allLettaTools] = await Promise.all([
+        lettaAdmin.getAgentTools(agent.lettaAgentId),
+        lettaAdmin.listTools(),
+      ]);
+      const currentToolNames = new Set((agentLettaTools as any[]).map((t: any) => t.name));
+
+      // Build set of desired Letta tool names from enabled agent_tools
+      const enabledToolIds = new Set(tools.filter((t) => t.enabled).map((t) => t.toolId));
+      const desiredLettaNames = new Set<string>();
+      for (const bt of BUILTIN_TOOLS) {
+        if (bt.lettaToolName && enabledToolIds.has(bt.id)) {
+          desiredLettaNames.add(bt.lettaToolName);
+        }
+      }
+
+      // Build lookup: Letta tool name → Letta tool ID
+      const lettaToolByName = new Map<string, string>();
+      for (const lt of allLettaTools as any[]) {
+        lettaToolByName.set(lt.name, lt.id);
+      }
+
+      // Attach missing tools
+      for (const name of desiredLettaNames) {
+        if (!currentToolNames.has(name)) {
+          const lettaId = lettaToolByName.get(name);
+          if (lettaId) {
+            await lettaAdmin.attachToolToAgent(agent.lettaAgentId, lettaId);
+            log.info("Attached tool to Letta agent", { tool: name, lettaId });
+          } else {
+            log.warn("Tool not found on Letta server", { tool: name });
+          }
+        }
+      }
+
+      // Detach tools that were removed (skip core Letta tools like memory_*)
+      const coreLettaTools = new Set(["memory_replace", "memory_insert", "conversation_search", "archival_memory_search", "archival_memory_insert"]);
+      for (const existing of agentLettaTools as any[]) {
+        if (!desiredLettaNames.has(existing.name) && !coreLettaTools.has(existing.name)) {
+          await lettaAdmin.detachToolFromAgent(agent.lettaAgentId, existing.id);
+          log.info("Detached tool from Letta agent", { tool: existing.name });
+        }
+      }
+
+      log.info("Letta tool sync complete", {
+        agentId: agent.lettaAgentId,
+        desired: [...desiredLettaNames],
+        current: [...currentToolNames],
+      });
+    } catch (err) {
+      log.warn("Failed to sync tools to Letta (non-fatal)", { error: String(err) });
     }
   }
 
@@ -279,6 +360,25 @@ export async function deployAgent(
         log.info("Generated presigned avatar URL", { agentId: agent.id, bucket, key });
       } catch (err) {
         log.warn("Failed to generate presigned avatar URL (non-fatal)", { error: String(err) });
+      }
+    }
+  }
+
+  // 5c. Generate presigned URLs for audio files (ambient/thinking sounds)
+  for (const audioField of ["ambientAudioUrl", "thinkingAudioUrl"] as const) {
+    const minioPath = (agent as any)[audioField];
+    if (minioPath) {
+      try {
+        const { getClient } = await import("./minioAdmin.js");
+        const client = await getClient();
+        const [bucket, ...keyParts] = minioPath.split("/");
+        const key = keyParts.join("/");
+        const presignedUrl = await client.presignedGetObject(bucket, key, 7 * 24 * 60 * 60);
+        const configKey = audioField === "ambientAudioUrl" ? "AMBIENT_AUDIO_URL" : "THINKING_AUDIO_URL";
+        configData[configKey] = presignedUrl;
+        log.info("Generated presigned audio URL", { agentId: agent.id, type: audioField, bucket, key });
+      } catch (err) {
+        log.warn("Failed to generate presigned audio URL (non-fatal)", { type: audioField, error: String(err) });
       }
     }
   }

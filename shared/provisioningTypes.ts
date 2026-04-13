@@ -9,6 +9,7 @@ export type ServiceKey =
   | "letta"
   | "dify"
   | "vault_policy"
+  | "player_ui"
   | "verification";
 
 export type StepStatus = "pending" | "running" | "success" | "failed" | "skipped";
@@ -33,6 +34,7 @@ export const SERVICE_LABELS: Record<ServiceKey, string> = {
   letta: "Letta Memory Tenant",
   dify: "Dify Crew Engine",
   vault_policy: "Vault Secrets & Policy",
+  player_ui: "Agent Player UI",
   verification: "Connectivity Verification",
 };
 

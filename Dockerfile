@@ -30,6 +30,8 @@ RUN npm ci
 COPY server/ ./server/
 COPY shared/ ./shared/
 COPY drizzle/ ./drizzle/
+# Agent player UI template — copied into temp build contexts during provisioning (player_ui)
+COPY player-ui/ ./player-ui/
 
 # Copy built frontend
 COPY --from=frontend-builder /app/dist/public ./dist/public

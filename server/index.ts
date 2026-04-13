@@ -19,7 +19,7 @@ const app = express();
 
 // ── Embed public routes (MUST be before global CORS — embed has its own CORS) ─
 import { registerEmbedRoutes } from "./embedPublicRoutes.js";
-app.use(express.json({ limit: "50mb" })); // needed by embed POST handler
+app.use(express.json({ limit: "1mb" })); // default 1MB; specific routes override
 registerEmbedRoutes(app);
 
 // ── Middleware ───────────────────────────────────────────────────
@@ -39,6 +39,10 @@ import { handleNotifyWebhook } from "./services/notifyService.js";
 app.post("/api/webhooks/notify", (req, res) => {
   void handleNotifyWebhook(req, res);
 });
+
+// ── Player-UI internal API (agent listing for per-app frontends) ──
+import { registerPlayerUiRoutes } from "./playerUiApi.js";
+registerPlayerUiRoutes(app);
 
 // ── Auth routes ─────────────────────────────────────────────────
 app.use("/api/auth", createAuthRouter());
@@ -89,7 +93,13 @@ app.post("/api/agents/:agentId/documents", upload.single("file"), async (req, re
     if (!appRecord) { res.status(404).json({ error: "App not found" }); return; }
 
     const docId = randomUUID().slice(0, 8);
-    const minioKey = `documents/${agent.name}/${docId}/${file.originalname}`;
+    // Sanitize filename: strip path separators, control chars, and collapse to safe chars
+    const safeName = file.originalname
+      .replace(/[\/\\]/g, "_")        // no path separators
+      .replace(/\.\./g, "_")          // no traversal
+      .replace(/[^\w.\-]/g, "_")      // only word chars, dots, hyphens
+      .slice(0, 200);                 // cap length
+    const minioKey = `documents/${agent.name}/${docId}/${safeName}`;
 
     // Insert document record (status: processing)
     const [doc] = await db.insert(agentDocuments).values({
@@ -228,12 +238,66 @@ app.use("/dify/v1", createProxyMiddleware({
 // ── Dify auto-login redirect ───────────────────────────────────
 // When platform users click "Open Dify Editor", this endpoint logs them
 // into Dify automatically and redirects to the Dify dashboard with tokens.
+// One-time code exchange — Redis-backed with in-memory fallback
+const _difyCodeMap = new Map<string, { accessToken: string; refreshToken: string; expiresAt: number }>();
+
+async function setDifyCode(code: string, data: { accessToken: string; refreshToken: string }): Promise<void> {
+  try {
+    const { getRedisClient } = await import("./redisClient.js");
+    const redis = await getRedisClient();
+    if (redis) {
+      await redis.set(`dify:code:${code}`, JSON.stringify(data), "EX", 60);
+      return;
+    }
+  } catch (err) {
+    log.warn("Redis error in setDifyCode — falling back to in-memory (multi-replica unsafe)", { error: String(err) });
+  }
+  _difyCodeMap.set(code, { ...data, expiresAt: Date.now() + 60_000 });
+}
+
+async function getDifyCode(code: string): Promise<{ accessToken: string; refreshToken: string } | null> {
+  try {
+    const { getRedisClient } = await import("./redisClient.js");
+    const redis = await getRedisClient();
+    if (redis) {
+      const raw = await redis.get(`dify:code:${code}`);
+      if (raw) {
+        await redis.del(`dify:code:${code}`); // Single-use
+        return JSON.parse(raw);
+      }
+      return null;
+    }
+  } catch (err) {
+    log.warn("Redis error in getDifyCode — falling back to in-memory", { error: String(err) });
+  }
+  const entry = _difyCodeMap.get(code);
+  if (entry && entry.expiresAt > Date.now()) {
+    _difyCodeMap.delete(code);
+    return { accessToken: entry.accessToken, refreshToken: entry.refreshToken };
+  }
+  _difyCodeMap.delete(code);
+  return null;
+}
+
 app.get("/dify-login", async (req, res) => {
   try {
+    // Validate redirect target FIRST to prevent open redirect regardless of auth state
+    const next = String(req.query.next || "/apps");
+    if (!next.startsWith("/") || next.startsWith("//") || next.includes("://") || next.includes("\\")) {
+      res.status(400).send("Invalid redirect target");
+      return;
+    }
+
     const difyApiUrl = `http://dify-api.${DIFY_NS}.svc.cluster.local:5001`;
     const difyEmail = process.env.DIFY_ADMIN_EMAIL || "admin@bionic.local";
-    const difyPassword = process.env.DIFY_ADMIN_PASSWORD || "B10n1cD1fy!2026";
+    const difyPassword = process.env.DIFY_ADMIN_PASSWORD;
     const externalDifyUrl = process.env.DIFY_EXTERNAL_BASE_URL || "https://dify.baisoln.com";
+
+    if (!difyPassword) {
+      log.error("DIFY_ADMIN_PASSWORD not configured — cannot auto-login");
+      res.redirect(`${externalDifyUrl}/signin`);
+      return;
+    }
 
     const loginRes = await fetch(`${difyApiUrl}/console/api/login`, {
       method: "POST",
@@ -248,12 +312,15 @@ app.get("/dify-login", async (req, res) => {
 
     const loginData = await loginRes.json() as any;
     const accessToken = loginData?.data?.access_token;
-    const refreshToken = loginData?.data?.refresh_token;
+    const refreshToken = loginData?.data?.refresh_token || "";
 
     if (accessToken) {
-      // Redirect to Dify with tokens in URL — Dify's frontend reads these and stores in localStorage
-      const target = req.query.next || "/apps";
-      res.redirect(`${externalDifyUrl}${target}?access_token=${accessToken}&refresh_token=${refreshToken || ""}`);
+      // Store tokens in a one-time code instead of passing via URL
+      const code = crypto.randomUUID();
+      await setDifyCode(code, { accessToken, refreshToken });
+      // Redirect through our exchange endpoint which sets httpOnly cookies
+      res.setHeader("Referrer-Policy", "no-referrer");
+      res.redirect(`/api/dify-exchange?code=${code}`);
     } else {
       res.redirect(`${externalDifyUrl}/signin`);
     }
@@ -262,6 +329,29 @@ app.get("/dify-login", async (req, res) => {
     const externalDifyUrl = process.env.DIFY_EXTERNAL_BASE_URL || "https://dify.baisoln.com";
     res.redirect(`${externalDifyUrl}/signin`);
   }
+});
+
+// Exchange one-time code for Dify tokens — sets httpOnly cookies, never returns tokens to browser
+app.get("/api/dify-exchange", async (req, res) => {
+  const code = String(req.query.code || "");
+  if (!code) { res.status(400).send("code required"); return; }
+  const entry = await getDifyCode(code);
+  if (!entry) {
+    res.status(401).send("invalid or expired code");
+    return;
+  }
+  // Set tokens as httpOnly cookies scoped to /dify/ — never exposed to JS
+  const cookieOpts = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+    path: "/dify/",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  };
+  res.cookie("dify_access_token", entry.accessToken, cookieOpts);
+  res.cookie("dify_refresh_token", entry.refreshToken, cookieOpts);
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.redirect("/dify/apps");
 });
 
 // Dify static assets — the Dify frontend references these paths without /dify prefix.
@@ -295,6 +385,9 @@ app.use("/dify", createProxyMiddleware({
   on: {
     proxyRes: (proxyRes) => {
       delete proxyRes.headers["x-frame-options"];
+      // Restrict Dify iframe to platform domains only
+      proxyRes.headers["content-security-policy"] =
+        "frame-ancestors 'self' https://platform.baisoln.com https://platform.bionicaisolutions.com";
     },
     error: (err, _req, res) => {
       log.warn("Dify web proxy error", { error: String(err) });
@@ -341,6 +434,13 @@ app.get("*", (_req, res) => {
 });
 
 // ── Start ───────────────────────────────────────────────────────
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, "0.0.0.0", async () => {
   log.info(`Server running on port ${PORT}`);
+  // Start provisioning watchdog to detect stuck jobs
+  try {
+    const { startProvisioningWatchdog } = await import("./services/provisioner.js");
+    startProvisioningWatchdog();
+  } catch (err) {
+    log.warn("Failed to start provisioning watchdog", { error: String(err) });
+  }
 });

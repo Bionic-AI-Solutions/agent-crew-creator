@@ -100,6 +100,9 @@ export const agentConfigs = pgTable(
     avatarEnabled: boolean("avatar_enabled").default(false).notNull(),
     avatarImageUrl: varchar("avatar_image_url", { length: 500 }),
     backgroundAudioEnabled: boolean("background_audio_enabled").default(false).notNull(),
+    busyAudioEnabled: boolean("busy_audio_enabled").default(false).notNull(),
+    ambientAudioUrl: varchar("ambient_audio_url", { length: 500 }),
+    thinkingAudioUrl: varchar("thinking_audio_url", { length: 500 }),
     captureMode: varchar("capture_mode", { length: 20 }).default("off").notNull(),
     captureInterval: integer("capture_interval").default(5),
 
@@ -114,6 +117,7 @@ export const agentConfigs = pgTable(
     imageTag: varchar("image_tag", { length: 100 }).default("latest"),
     deploymentStatus: varchar("deployment_status", { length: 50 }),
     lastDeployedAt: timestamp("last_deployed_at"),
+    configVersion: integer("config_version").default(1).notNull(),
 
     metadata: json("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -175,10 +179,16 @@ export const mcpServers = pgTable(
       .notNull()
       .references(() => apps.id, { onDelete: "cascade" }),
     name: varchar("name", { length: 100 }).notNull(),
-    url: varchar("url", { length: 500 }).notNull(),
+    url: varchar("url", { length: 500 }),
     transport: varchar("transport", { length: 20 }).default("streamable-http").notNull(),
     authType: varchar("auth_type", { length: 20 }).default("none").notNull(),
     description: text("description"),
+    // Stdio transport fields (command-based MCP servers)
+    command: varchar("command", { length: 500 }),
+    args: text("args"),  // JSON array of strings
+    env: text("env"),    // JSON object of env vars
+    // HTTP transport fields
+    headers: text("headers"),  // JSON object of HTTP headers
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => [

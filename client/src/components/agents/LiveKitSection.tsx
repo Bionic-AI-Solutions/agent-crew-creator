@@ -314,6 +314,12 @@ interface Props {
   avatarEnabled: boolean;
   setAvatarEnabled: (v: boolean) => void;
   avatarImageUrl: string;
+  visionEnabled: boolean;
+  setVisionEnabled: (v: boolean) => void;
+  backgroundAudioEnabled: boolean;
+  setBackgroundAudioEnabled: (v: boolean) => void;
+  busyAudioEnabled: boolean;
+  setBusyAudioEnabled: (v: boolean) => void;
   agentId: number;
 }
 
@@ -391,6 +397,45 @@ function AvatarUpload({ agentId, currentUrl }: { agentId: number; currentUrl: st
   );
 }
 
+function AudioUpload({ agentId, audioType, label }: { agentId: number; audioType: "ambient" | "thinking"; label: string }) {
+  const [uploading, setUploading] = useState(false);
+  const uploadMutation = trpc.agentsCrud.uploadAudioFile.useMutation({
+    onSuccess: () => {
+      toast.success(`${label} uploaded`);
+      setUploading(false);
+    },
+    onError: (err: any) => {
+      toast.error(err.message);
+      setUploading(false);
+    },
+  });
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) { toast.error("Max 10MB"); return; }
+    setUploading(true);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = (reader.result as string).split(",")[1];
+      uploadMutation.mutate({ agentId, audioBase64: base64, filename: file.name, audioType });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  return (
+    <div className="ml-6">
+      <Label className="text-[10px] text-muted-foreground">{label}</Label>
+      <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer px-3 py-1.5 border rounded-md hover:bg-muted transition-colors mt-1">
+        <Upload className="h-3 w-3" />
+        {uploading ? "Uploading..." : "Choose Audio File"}
+        <input type="file" accept="audio/*" className="hidden" onChange={handleFile} disabled={uploading} />
+      </label>
+      <p className="text-[10px] text-muted-foreground mt-1">MP3, WAV, or OGG (max 10MB). Stored in MinIO.</p>
+    </div>
+  );
+}
+
 export default function LiveKitSection(props: Props) {
   const trpcUtils = trpc.useUtils();
   return (
@@ -420,6 +465,64 @@ export default function LiveKitSection(props: Props) {
                 GPU Server: 192.168.0.10:8089 • When avatar is enabled, audio output is handled by the avatar video stream.
               </p>
             </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Media Capabilities */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Volume2 className="h-4 w-4" /> Media Capabilities
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="vision-toggle"
+              checked={props.visionEnabled}
+              onCheckedChange={(v) => props.setVisionEnabled(v === true)}
+            />
+            <Label htmlFor="vision-toggle" className="text-xs cursor-pointer">
+              Enable Vision (Camera)
+            </Label>
+          </div>
+          <p className="text-[10px] text-muted-foreground ml-6">
+            Allow the agent to see the user's camera feed and respond to visual input.
+          </p>
+
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="bg-audio-toggle"
+              checked={props.backgroundAudioEnabled}
+              onCheckedChange={(v) => props.setBackgroundAudioEnabled(v === true)}
+            />
+            <Label htmlFor="bg-audio-toggle" className="text-xs cursor-pointer">
+              Background Music
+            </Label>
+          </div>
+          <p className="text-[10px] text-muted-foreground ml-6">
+            Play ambient background music during the session.
+          </p>
+          {props.backgroundAudioEnabled && (
+            <AudioUpload agentId={props.agentId} audioType="ambient" label="Ambient Sound File" />
+          )}
+
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="busy-audio-toggle"
+              checked={props.busyAudioEnabled}
+              onCheckedChange={(v) => props.setBusyAudioEnabled(v === true)}
+            />
+            <Label htmlFor="busy-audio-toggle" className="text-xs cursor-pointer">
+              Busy Audio (Thinking)
+            </Label>
+          </div>
+          <p className="text-[10px] text-muted-foreground ml-6">
+            Play a subtle audio cue while the agent is thinking/processing.
+          </p>
+          {props.busyAudioEnabled && (
+            <AudioUpload agentId={props.agentId} audioType="thinking" label="Thinking Sound File" />
           )}
         </CardContent>
       </Card>

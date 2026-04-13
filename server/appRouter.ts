@@ -97,57 +97,60 @@ export const appRouter = router({
         description: z.string().optional(),
         livekitUrl: z.string().url(),
         roomPrefix: z.string().optional(),
-        enabledServices: z.array(z.string()).default(["livekit"]),
+        enabledServices: z.array(z.enum([
+          "livekit", "keycloak", "langfuse", "kubernetes", "postgres",
+          "redis", "minio", "letta", "dify", "player_ui",
+        ])).default(["livekit"]),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
 
-      // Insert app
-      const [app] = await ctx.db
-        .insert(apps)
-        .values({
-          name: input.name,
-          slug: input.slug,
-          description: input.description || null,
-          livekitUrl: input.livekitUrl,
-          roomPrefix: input.roomPrefix || null,
-          enabledServices: input.enabledServices,
-          provisioningStatus: "pending",
-        })
-        .returning();
-
-      // Seed creator as owner member (admins still bypass via role check,
-      // but recording the row keeps audit + future "my apps" lists honest).
-      await ctx.db.insert(appMembers).values({
-        appId: app.id,
-        userId: ctx.user!.sub,
-        role: "owner",
-      });
-
-      // Create provisioning job
+      // Insert app + member + provisioning job in a transaction
       const { SERVICE_LABELS } = await import("../shared/provisioningTypes.js");
       const PROVISION_ORDER: ServiceKey[] = [
         "livekit", "keycloak", "langfuse", "kubernetes",
         "postgres", "redis", "minio", "letta",
-        "vault_policy", "verification",
+        "vault_policy", "player_ui", "verification",
       ];
-
       const steps = PROVISION_ORDER.map((name) => ({
         name,
         label: SERVICE_LABELS[name],
         status: "pending" as const,
       }));
 
-      const [job] = await ctx.db
-        .insert(provisioningJobs)
-        .values({
+      const { app, job } = await ctx.db.transaction(async (tx) => {
+        const [app] = await tx
+          .insert(apps)
+          .values({
+            name: input.name,
+            slug: input.slug,
+            description: input.description || null,
+            livekitUrl: input.livekitUrl,
+            roomPrefix: input.roomPrefix || null,
+            enabledServices: input.enabledServices,
+            provisioningStatus: "pending",
+          })
+          .returning();
+
+        await tx.insert(appMembers).values({
           appId: app.id,
-          jobType: "provision",
-          status: "pending",
-          steps,
-        })
-        .returning();
+          userId: ctx.user!.sub,
+          role: "owner",
+        });
+
+        const [job] = await tx
+          .insert(provisioningJobs)
+          .values({
+            appId: app.id,
+            jobType: "provision",
+            status: "pending",
+            steps,
+          })
+          .returning();
+
+        return { app, job };
+      });
 
       // Fire-and-forget provisioning (import dynamically to avoid circular deps)
       const { runProvisioningJob } = await import("./services/provisioner.js");
@@ -197,6 +200,14 @@ export const appRouter = router({
       const rows = await ctx.db.select().from(apps).where(eq(apps.id, input.id)).limit(1);
       const app = rows[0];
       if (!app) throw new Error("App not found");
+
+      // Reject delete if provisioning is still in progress
+      if (app.provisioningStatus === "provisioning") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Cannot delete app while provisioning is in progress. Wait for provisioning to complete or fail, then retry.",
+        });
+      }
 
       // Create deletion job
       const { runDeletionJob } = await import("./services/provisioner.js");

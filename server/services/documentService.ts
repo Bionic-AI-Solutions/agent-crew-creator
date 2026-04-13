@@ -35,17 +35,32 @@ export async function extractText(buffer: Buffer, filename: string): Promise<str
       return buffer.toString("utf-8");
 
     case ".json":
-      return JSON.stringify(JSON.parse(buffer.toString("utf-8")), null, 2);
+      try {
+        return JSON.stringify(JSON.parse(buffer.toString("utf-8")), null, 2);
+      } catch {
+        log.warn("Invalid JSON file — returning raw text");
+        return buffer.toString("utf-8");
+      }
 
     case ".pdf":
-      // Would use pdf-parse in production
-      log.warn("PDF extraction requires pdf-parse package");
-      return buffer.toString("utf-8").replace(/[^\x20-\x7E\n]/g, " ");
+      try {
+        const pdfParse = (await import("pdf-parse")).default;
+        const pdfData = await pdfParse(buffer);
+        return pdfData.text;
+      } catch (err) {
+        log.warn("PDF extraction failed, falling back to raw text", { error: String(err) });
+        return buffer.toString("utf-8").replace(/[^\x20-\x7E\n]/g, " ");
+      }
 
     case ".docx":
-      // Would use mammoth in production
-      log.warn("DOCX extraction requires mammoth package");
-      return buffer.toString("utf-8").replace(/[^\x20-\x7E\n]/g, " ");
+      try {
+        const mammoth = await import("mammoth");
+        const result = await mammoth.extractRawText({ buffer });
+        return result.value;
+      } catch (err) {
+        log.warn("DOCX extraction failed, falling back to raw text", { error: String(err) });
+        return buffer.toString("utf-8").replace(/[^\x20-\x7E\n]/g, " ");
+      }
 
     default:
       return buffer.toString("utf-8");

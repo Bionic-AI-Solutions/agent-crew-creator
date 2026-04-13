@@ -84,6 +84,20 @@ export default function AppManagement({ slug, onDelete }: Props) {
               <div className="flex justify-between"><span className="text-muted-foreground">API Key</span><span className="font-mono text-xs">{app.apiKeyPrefix}</span></div>
               {app.roomPrefix && <div className="flex justify-between"><span className="text-muted-foreground">Room Prefix</span><span>{app.roomPrefix}</span></div>}
               <div className="flex justify-between"><span className="text-muted-foreground">Created</span><span>{new Date(app.createdAt).toLocaleDateString()}</span></div>
+              {(app.enabledServices as string[]).includes("player_ui") && (
+                <div className="flex justify-between items-center">
+                  <span className="text-muted-foreground">Web URL</span>
+                  <a
+                    href={`https://${app.slug}.baisoln.com`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-mono text-xs text-blue-400 hover:underline flex items-center gap-1"
+                  >
+                    {app.slug}.baisoln.com
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </div>
+              )}
               {app.description && <div className="pt-2"><span className="text-muted-foreground">Description:</span><p className="mt-1">{app.description}</p></div>}
             </CardContent>
           </Card>

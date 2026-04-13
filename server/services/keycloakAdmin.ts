@@ -73,11 +73,28 @@ async function adminRequest(method: string, path: string, body?: unknown): Promi
 }
 
 function defaultRedirectUris(slug: string): string[] {
-  return [
+  const uris = [
     `https://${slug}.bionicaisolutions.com/*`,
     `https://${slug}.baisoln.com/*`,
-    "http://localhost:*/*",
   ];
+  // Only allow localhost redirects in development
+  if (process.env.NODE_ENV !== "production") {
+    uris.push("http://localhost:*/*");
+  }
+  return uris;
+}
+
+function defaultWebOrigins(slug: string): string[] {
+  if (process.env.NODE_ENV === "production") {
+    // Explicit origins in production — no wildcard "+"
+    return [
+      `https://${slug}.bionicaisolutions.com`,
+      `https://${slug}.baisoln.com`,
+      "https://platform.baisoln.com",
+      "https://platform.bionicaisolutions.com",
+    ];
+  }
+  return ["+"]; // Allow all origins in development
 }
 
 export async function createPublicClient(slug: string) {
@@ -89,7 +106,7 @@ export async function createPublicClient(slug: string) {
     directAccessGrantsEnabled: true,
     standardFlowEnabled: true,
     redirectUris: defaultRedirectUris(slug),
-    webOrigins: ["+"],
+    webOrigins: defaultWebOrigins(slug),
   });
 
   if (result?.alreadyExists) {
@@ -114,7 +131,7 @@ export async function createConfidentialClient(slug: string) {
     serviceAccountsEnabled: true,
     directAccessGrantsEnabled: false,
     redirectUris: defaultRedirectUris(slug),
-    webOrigins: ["+"],
+    webOrigins: defaultWebOrigins(slug),
   });
 
   let keycloakId = "";

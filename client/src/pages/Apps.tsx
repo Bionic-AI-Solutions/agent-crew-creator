@@ -3,7 +3,7 @@ import { useRoute, useLocation } from "wouter";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Plus, ArrowLeft, Video, Shield, BarChart3, Server, Database, HardDrive, Brain } from "lucide-react";
+import { Plus, ArrowLeft, Video, Shield, BarChart3, Server, Database, HardDrive, Brain, Globe } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import AppWizard from "@/components/apps/AppWizard";
 import AppManagement from "@/components/apps/AppManagement";
@@ -17,6 +17,7 @@ const SERVICE_ICON_MAP: Record<string, React.ReactNode> = {
   redis: <Database className="h-3.5 w-3.5" />,
   minio: <HardDrive className="h-3.5 w-3.5" />,
   letta: <Brain className="h-3.5 w-3.5" />,
+  player_ui: <Globe className="h-3.5 w-3.5" />,
 };
 
 function StatusBadge({ status }: { status: string }) {

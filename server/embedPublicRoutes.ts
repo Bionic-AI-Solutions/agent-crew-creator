@@ -26,12 +26,58 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const EMBED_TOKEN_TTL_SECONDS = 15 * 60; // 15 minutes
 
-// ── In-memory rate limiter (single replica) ──────────────────────
-const rateLimitMap = new Map<string, number[]>();
-const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
-const RATE_LIMIT_MAX = 10; // max connections per token per window
+// ── Rate limiter (Redis-backed with in-memory fallback) ──────────
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX = 10;
+const RATE_LIMIT_MAX_ENTRIES = 100_000;
 
-function isRateLimited(token: string): boolean {
+// In-memory fallback
+const rateLimitMap = new Map<string, number[]>();
+
+// Redis client (lazy-init)
+let _redisClient: any = null;
+let _redisAvailable = false;
+
+async function getRedisClient() {
+  if (_redisClient) return _redisAvailable ? _redisClient : null;
+  const redisUrl = process.env.REDIS_URL || process.env.REDIS_RATE_LIMIT_URL;
+  if (!redisUrl) return null;
+  try {
+    const Redis = (await import("ioredis")).default;
+    _redisClient = new Redis(redisUrl, { maxRetriesPerRequest: 1, lazyConnect: true });
+    await _redisClient.connect();
+    _redisAvailable = true;
+    _redisClient.on("error", () => { _redisAvailable = false; });
+    _redisClient.on("connect", () => { _redisAvailable = true; });
+    return _redisClient;
+  } catch {
+    _redisAvailable = false;
+    return null;
+  }
+}
+
+async function isRateLimitedRedis(key: string): Promise<boolean> {
+  const redis = await getRedisClient();
+  if (!redis) return isRateLimitedMemory(key); // fallback
+
+  const now = Date.now();
+  const windowStart = now - RATE_LIMIT_WINDOW_MS;
+  const redisKey = `rl:${key}`;
+  try {
+    const pipeline = redis.pipeline();
+    pipeline.zremrangebyscore(redisKey, 0, windowStart);
+    pipeline.zadd(redisKey, now, `${now}-${Math.random()}`);
+    pipeline.zcard(redisKey);
+    pipeline.expire(redisKey, Math.ceil(RATE_LIMIT_WINDOW_MS / 1000) + 1);
+    const results = await pipeline.exec();
+    const count = results?.[2]?.[1] as number || 0;
+    return count > RATE_LIMIT_MAX;
+  } catch {
+    return isRateLimitedMemory(key); // fallback on error
+  }
+}
+
+function isRateLimitedMemory(token: string): boolean {
   const now = Date.now();
   const timestamps = rateLimitMap.get(token) ?? [];
   const recent = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
@@ -44,15 +90,24 @@ function isRateLimited(token: string): boolean {
   return false;
 }
 
-// Clean up stale entries every 5 minutes
+function isRateLimited(token: string): boolean {
+  // Synchronous check for backward compat — async Redis version used where possible
+  return isRateLimitedMemory(token);
+}
+
+// Clean up stale in-memory entries
 setInterval(() => {
   const now = Date.now();
   for (const [token, timestamps] of rateLimitMap) {
     const recent = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
-    if (recent.length === 0) {
-      rateLimitMap.delete(token);
-    } else {
-      rateLimitMap.set(token, recent);
+    if (recent.length === 0) rateLimitMap.delete(token);
+    else rateLimitMap.set(token, recent);
+  }
+  if (rateLimitMap.size > RATE_LIMIT_MAX_ENTRIES) {
+    const keys = rateLimitMap.keys();
+    for (let i = 0; i < rateLimitMap.size - RATE_LIMIT_MAX_ENTRIES; i++) {
+      const { value } = keys.next();
+      if (value) rateLimitMap.delete(value);
     }
   }
 }, 5 * 60_000);
@@ -93,8 +148,8 @@ export function registerEmbedRoutes(app: Express): void {
         return;
       }
 
-      // Rate limit
-      if (isRateLimited(embedToken)) {
+      // Rate limit (async — uses Redis when available, memory fallback)
+      if (await isRateLimitedRedis(embedToken)) {
         res.status(429).json({ error: "Rate limit exceeded. Try again later." });
         return;
       }
@@ -227,6 +282,8 @@ export function registerEmbedRoutes(app: Express): void {
   // Proxies presigned MinIO URLs through the platform server so browsers
   // don't need to reach the private MinIO IP directly (avoids Chrome's
   // Private Network Access block on s3.baisoln.com → 192.168.0.x).
+  const MAX_S3_PROXY_SIZE = 10 * 1024 * 1024; // 10MB cap
+
   app.get("/api/s3-proxy/:bucket/*", embedCors, async (req: Request, res: Response) => {
     try {
       const bucket = req.params.bucket;
@@ -236,12 +293,42 @@ export function registerEmbedRoutes(app: Express): void {
         return;
       }
 
-      // Only allow image content types
+      // Reject path traversal and injection in bucket/key
+      if (bucket.includes("..") || bucket.includes("/") || bucket.includes("%2f") || !bucket) {
+        res.status(400).send("Invalid bucket name");
+        return;
+      }
+
+      // Validate bucket is a known app slug (tenant isolation)
+      const db = await getDb();
+      if (db) {
+        const [appRow] = await db.select({ id: apps.id }).from(apps).where(eq(apps.slug, bucket)).limit(1);
+        if (!appRow) {
+          res.status(403).send("Unknown bucket");
+          return;
+        }
+      }
+      if (objectKey.includes("..")) {
+        res.status(400).send("Invalid object key");
+        return;
+      }
+
+      // Only allow known object key prefixes (defense in depth)
+      const allowedPrefixes = ["avatars/", "audio/", "images/", "documents/", "crew-outputs/"];
+      if (!allowedPrefixes.some((p) => objectKey.startsWith(p))) {
+        res.status(403).send("Object key prefix not allowed");
+        return;
+      }
+
+      // Cap query string length to prevent abuse
+      const qs = req.url.split("?")[1] || "";
+      if (qs.length > 2000) {
+        res.status(400).send("Query string too long");
+        return;
+      }
+
       const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || "minio-tenant-hl.minio.svc.cluster.local:9000";
       const internalUrl = `http://${MINIO_ENDPOINT}/${bucket}/${objectKey}`;
-
-      // Forward the S3 query params (signature, etc.) to MinIO
-      const qs = req.url.split("?")[1];
       const fetchUrl = qs ? `${internalUrl}?${qs}` : internalUrl;
 
       const upstream = await fetch(fetchUrl, {
@@ -254,19 +341,48 @@ export function registerEmbedRoutes(app: Express): void {
       }
 
       const contentType = upstream.headers.get("content-type") || "application/octet-stream";
-      // Only proxy image types for security
       if (!contentType.startsWith("image/")) {
         res.status(403).send("Only image content allowed via proxy");
         return;
       }
 
+      // Enforce size cap before streaming
+      const contentLength = parseInt(upstream.headers.get("content-length") || "0", 10);
+      if (contentLength > MAX_S3_PROXY_SIZE) {
+        res.status(413).send("Image too large");
+        return;
+      }
+
       res.setHeader("Content-Type", contentType);
       res.setHeader("Cache-Control", "public, max-age=3600");
-      const contentLength = upstream.headers.get("content-length");
-      if (contentLength) res.setHeader("Content-Length", contentLength);
+      if (contentLength) res.setHeader("Content-Length", String(contentLength));
 
-      const body = await upstream.arrayBuffer();
-      res.send(Buffer.from(body));
+      // Stream response instead of buffering entire body
+      if (upstream.body) {
+        const { Readable } = await import("stream");
+        const readable = Readable.fromWeb(upstream.body as any);
+        let streamed = 0;
+        readable.on("data", (chunk: Buffer) => {
+          streamed += chunk.length;
+          if (streamed > MAX_S3_PROXY_SIZE) {
+            readable.destroy();
+            if (!res.headersSent) res.status(413).send("Image too large");
+            return;
+          }
+          res.write(chunk);
+        });
+        readable.on("end", () => res.end());
+        readable.on("error", () => {
+          if (!res.headersSent) res.status(502).send("Proxy stream error");
+        });
+      } else {
+        const body = await upstream.arrayBuffer();
+        if (body.byteLength > MAX_S3_PROXY_SIZE) {
+          res.status(413).send("Image too large");
+          return;
+        }
+        res.send(Buffer.from(body));
+      }
     } catch (err) {
       log.error("S3 proxy error", { error: String(err) });
       res.status(502).send("Proxy error");
@@ -277,7 +393,7 @@ export function registerEmbedRoutes(app: Express): void {
   app.get("/api/embed/widget.js", embedCors, (_req: Request, res: Response) => {
     const widgetPath = path.resolve(__dirname, "..", "dist", "public", "embed-popup.js");
     res.setHeader("Content-Type", "application/javascript");
-    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.setHeader("Cache-Control", "no-cache");
     res.sendFile(widgetPath, (err) => {
       if (err) {
         log.warn("Widget file not found", { path: widgetPath });
@@ -312,7 +428,13 @@ export function registerEmbedRoutes(app: Express): void {
       const host = req.headers["x-forwarded-host"] || req.headers.host;
       const platformOrigin = `${proto}://${host}`;
 
-      res.setHeader("Content-Security-Policy", "frame-ancestors *");
+      // Build CSP frame-ancestors from token's allowedOrigins (validated origins only)
+      const originRegex = /^https?:\/\/[a-zA-Z0-9.-]+(:\d+)?$/;
+      const validOrigins = (tokenRow.allowedOrigins || []).filter((o: string) => originRegex.test(o));
+      const frameAncestors = validOrigins.length > 0
+        ? `'self' https://platform.baisoln.com https://platform.bionicaisolutions.com ${validOrigins.join(" ")}`
+        : "'self' https://platform.baisoln.com https://platform.bionicaisolutions.com";
+      res.setHeader("Content-Security-Policy", `frame-ancestors ${frameAncestors}`);
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.send(`<!DOCTYPE html>
 <html lang="en">

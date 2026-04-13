@@ -38,9 +38,17 @@ function is409(err: any): boolean {
 let _k8sApi: any = null;
 let _k8sAppsApi: any = null;
 let _k8sCustomApi: any = null;
+let _k8sNetworkingApi: any = null;
 
 async function getK8sApis() {
-  if (_k8sApi) return { coreApi: _k8sApi, appsApi: _k8sAppsApi, customApi: _k8sCustomApi };
+  if (_k8sApi) {
+    return {
+      coreApi: _k8sApi,
+      appsApi: _k8sAppsApi,
+      customApi: _k8sCustomApi,
+      networkingApi: _k8sNetworkingApi,
+    };
+  }
 
   const k8s = await import("@kubernetes/client-node");
   const kc = new k8s.KubeConfig();
@@ -54,7 +62,80 @@ async function getK8sApis() {
   _k8sApi = kc.makeApiClient(k8s.CoreV1Api);
   _k8sAppsApi = kc.makeApiClient(k8s.AppsV1Api);
   _k8sCustomApi = kc.makeApiClient(k8s.CustomObjectsApi);
-  return { coreApi: _k8sApi, appsApi: _k8sAppsApi, customApi: _k8sCustomApi };
+  _k8sNetworkingApi = kc.makeApiClient(k8s.NetworkingV1Api);
+  return {
+    coreApi: _k8sApi,
+    appsApi: _k8sAppsApi,
+    customApi: _k8sCustomApi,
+    networkingApi: _k8sNetworkingApi,
+  };
+}
+
+/**
+ * Send an application/merge-patch+json PATCH to the K8s API.
+ * The @kubernetes/client-node patchNamespacedCustomObject defaults to
+ * json-patch (array-of-ops) which K8s rejects for CRDs. This helper
+ * uses the in-cluster service account token and CA cert directly.
+ */
+async function k8sMergePatch(path: string, body: unknown): Promise<void> {
+  const fs = await import("fs");
+  const https = await import("https");
+  const SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token";
+  const SA_CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
+
+  let server: string;
+  let token: string;
+  let ca: Buffer | undefined;
+
+  // In-cluster
+  if (fs.existsSync(SA_TOKEN_PATH)) {
+    server = `https://${process.env.KUBERNETES_SERVICE_HOST || "kubernetes.default.svc"}:${process.env.KUBERNETES_SERVICE_PORT || "443"}`;
+    token = fs.readFileSync(SA_TOKEN_PATH, "utf8").trim();
+    ca = fs.existsSync(SA_CA_PATH) ? fs.readFileSync(SA_CA_PATH) : undefined;
+  } else {
+    // Fallback: use kubeconfig
+    const k8s = await import("@kubernetes/client-node");
+    const kc = new k8s.KubeConfig();
+    if (process.env.KUBECONFIG) { kc.loadFromFile(process.env.KUBECONFIG); }
+    else { kc.loadFromDefault(); }
+    const cluster = kc.getCurrentCluster();
+    const user = kc.getCurrentUser();
+    server = cluster?.server || "https://kubernetes.default.svc";
+    token = user?.token || "";
+  }
+
+  return new Promise((resolve, reject) => {
+    const url = new URL(path, server);
+    const payload = JSON.stringify(body);
+    const opts: import("https").RequestOptions = {
+      method: "PATCH",
+      hostname: url.hostname,
+      port: url.port || "443",
+      path: url.pathname,
+      headers: {
+        "Content-Type": "application/merge-patch+json",
+        "Authorization": `Bearer ${token}`,
+        "Content-Length": Buffer.byteLength(payload),
+      },
+      // Always verify TLS. In-cluster: CA cert is at /var/run/secrets/.../ca.crt.
+      // Out-of-cluster: rely on system CA bundle. Never disable verification.
+      ...(ca ? { ca } : {}),
+    };
+    const req = https.request(opts, (res) => {
+      let data = "";
+      res.on("data", (chunk: string) => { data += chunk; });
+      res.on("end", () => {
+        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+          resolve();
+        } else {
+          reject(new Error(`K8s merge-patch ${path} failed (${res.statusCode}): ${data.slice(0, 300)}`));
+        }
+      });
+    });
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
 }
 
 // ── Namespace Management ────────────────────────────────────────
@@ -145,29 +226,39 @@ export async function registerAppLivekitKey(slug: string, apiKey: string, apiSec
   const keyField = `${safeSlug}_api_key`;
   const secretField = `${safeSlug}_api_secret`;
 
-  // 1. Write to Vault, merging with existing fields.
-  const { readPlatformVaultPath, writePlatformVaultPath } = await import("./vaultClient.js");
-  const existing = (await readPlatformVaultPath(LIVEKIT_VAULT_PATH)) || {};
-  existing[keyField] = apiKey;
-  existing[secretField] = apiSecret;
-  await writePlatformVaultPath(LIVEKIT_VAULT_PATH, existing);
-  log.info("Wrote app LiveKit key to Vault", { slug, keyField });
+  // 1. Write to Vault with CAS (check-and-set) to prevent race conditions
+  //    when multiple apps are provisioned concurrently.
+  const { readPlatformVaultPathWithVersion, writePlatformVaultPath } = await import("./vaultClient.js");
+  const maxRetries = 3;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const result = await readPlatformVaultPathWithVersion(LIVEKIT_VAULT_PATH);
+    const existing = result?.data || {};
+    const version = result?.version ?? 0;
+    existing[keyField] = apiKey;
+    existing[secretField] = apiSecret;
+    try {
+      await writePlatformVaultPath(LIVEKIT_VAULT_PATH, existing, version);
+      log.info("Wrote app LiveKit key to Vault (CAS)", { slug, keyField, version, attempt });
+      break;
+    } catch (casErr: any) {
+      if (attempt < maxRetries - 1 && String(casErr).includes("check-and-set")) {
+        log.warn("Vault CAS conflict, retrying", { slug, attempt });
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+        continue;
+      }
+      throw casErr;
+    }
+  }
 
   // 2. Patch the ExternalSecret to add data refs + template line.
   await ensureLivekitEsoFields(slug, keyField, secretField);
 
-  // 3. Force-sync ESO.
+  // 3. Force-sync ESO via annotation.
   try {
-    const { customApi } = await getK8sApis();
-    await customApi.patchNamespacedCustomObject({
-      group: "external-secrets.io",
-      version: "v1beta1",
-      namespace: K8S_LIVEKIT_NAMESPACE,
-      plural: "externalsecrets",
-      name: LIVEKIT_ESO_NAME,
-      body: { metadata: { annotations: { "force-sync": String(Date.now()) } } },
-      headers: { "Content-Type": "application/merge-patch+json" } as any,
-    });
+    await k8sMergePatch(
+      `/apis/external-secrets.io/v1/namespaces/${K8S_LIVEKIT_NAMESPACE}/externalsecrets/${LIVEKIT_ESO_NAME}`,
+      { metadata: { annotations: { "force-sync": String(Date.now()) } } },
+    );
   } catch (err) {
     log.warn("Failed to force-sync ESO (will sync on next interval)", { error: String(err) });
   }
@@ -184,7 +275,7 @@ async function ensureLivekitEsoFields(slug: string, keyField: string, secretFiel
   try {
     const res = await customApi.getNamespacedCustomObject({
       group: "external-secrets.io",
-      version: "v1beta1",
+      version: "v1",
       namespace: K8S_LIVEKIT_NAMESPACE,
       plural: "externalsecrets",
       name: LIVEKIT_ESO_NAME,
@@ -232,15 +323,12 @@ async function ensureLivekitEsoFields(slug: string, keyField: string, secretFiel
       },
     },
   };
-  await customApi.patchNamespacedCustomObject({
-    group: "external-secrets.io",
-    version: "v1beta1",
-    namespace: K8S_LIVEKIT_NAMESPACE,
-    plural: "externalsecrets",
-    name: LIVEKIT_ESO_NAME,
-    body: patch,
-    headers: { "Content-Type": "application/merge-patch+json" } as any,
-  });
+  // Use raw https request with merge-patch content type — the K8s JS
+  // client's patchNamespacedCustomObject defaults to json-patch which fails.
+  await k8sMergePatch(
+    `/apis/external-secrets.io/v1/namespaces/${K8S_LIVEKIT_NAMESPACE}/externalsecrets/${LIVEKIT_ESO_NAME}`,
+    patch,
+  );
   log.info("Patched livekit-api-keys ExternalSecret", { slug });
 }
 
@@ -642,6 +730,424 @@ export async function getDifyStatus(
   }
 }
 
+// ── Agent Player UI (per-app Next.js voice client) ─────────────
+
+const PLAYER_UI_DEPLOYMENT = "player-ui";
+const PLAYER_UI_SERVICE = "player-ui";
+const PLAYER_UI_INGRESS = "player-ui";
+const PLAYER_UI_CONTAINER_PORT = 3000;
+
+function playerUiHost(slug: string): string {
+  const suffix = (process.env.PLAYER_UI_HOST_SUFFIX || "baisoln.com").replace(/^\.+/, "");
+  return `${slug}.${suffix}`;
+}
+
+/**
+ * Deploy player UI Deployment + Service + Ingress into the app namespace.
+ * Expects ExternalSecret `{namespace}-secrets` (after vault_policy) for LiveKit keys.
+ */
+export async function applyPlayerUi(
+  namespace: string,
+  image: string,
+  livekitPublicUrl: string,
+): Promise<{ host: string }> {
+  const { appsApi, coreApi, networkingApi } = await getK8sApis();
+  const host = playerUiHost(namespace);
+  const ingressClass = process.env.PLAYER_UI_INGRESS_CLASS || "kong";
+  const certIssuer = process.env.PLAYER_UI_CERT_ISSUER?.trim();
+  const tlsSecretName = process.env.PLAYER_UI_TLS_SECRET?.trim() || `${namespace}-player-ui-tls`;
+
+  const secretName = `${namespace}-secrets`;
+
+  const deploymentBody = {
+    metadata: {
+      name: PLAYER_UI_DEPLOYMENT,
+      namespace,
+      labels: { app: PLAYER_UI_DEPLOYMENT, "app.kubernetes.io/managed-by": "bionic-platform" },
+    },
+    spec: {
+      replicas: 1,
+      selector: { matchLabels: { app: PLAYER_UI_DEPLOYMENT } },
+      template: {
+        metadata: {
+          labels: { app: PLAYER_UI_DEPLOYMENT },
+          annotations: { "bionic/deployed-at": new Date().toISOString() },
+        },
+        spec: {
+          containers: [{
+            name: "player-ui",
+            image,
+            imagePullPolicy: process.env.PLAYER_UI_IMAGE_PULL_POLICY || "Always",
+            ports: [{ containerPort: PLAYER_UI_CONTAINER_PORT, name: "http" }],
+            env: [
+              { name: "NEXT_PUBLIC_LIVEKIT_URL", value: livekitPublicUrl },
+              { name: "PORT", value: String(PLAYER_UI_CONTAINER_PORT) },
+              { name: "HOSTNAME", value: "0.0.0.0" },
+              { name: "APP_SLUG", value: namespace },
+              { name: "NEXTAUTH_URL", value: `https://${host}` },
+              {
+                name: "NEXTAUTH_SECRET",
+                valueFrom: { secretKeyRef: { name: secretName, key: "keycloak_client_secret", optional: true } },
+              },
+              {
+                name: "KEYCLOAK_ISSUER",
+                value: `${process.env.KEYCLOAK_URL || "https://auth.bionicaisolutions.com"}/realms/${process.env.KEYCLOAK_REALM || "Bionic"}`,
+              },
+              {
+                name: "KEYCLOAK_CLIENT_ID",
+                valueFrom: { secretKeyRef: { name: secretName, key: "keycloak_confidential_client_id", optional: true } },
+              },
+              {
+                name: "KEYCLOAK_CLIENT_SECRET",
+                valueFrom: { secretKeyRef: { name: secretName, key: "keycloak_client_secret", optional: true } },
+              },
+              {
+                name: "PLATFORM_API_URL",
+                value: `http://bionic-platform.bionic-platform.svc.cluster.local:80`,
+              },
+              {
+                name: "LIVEKIT_URL",
+                valueFrom: { secretKeyRef: { name: secretName, key: "livekit_url" } },
+              },
+              {
+                name: "LIVEKIT_API_KEY",
+                valueFrom: { secretKeyRef: { name: secretName, key: "livekit_api_key" } },
+              },
+              {
+                name: "LIVEKIT_API_SECRET",
+                valueFrom: { secretKeyRef: { name: secretName, key: "livekit_api_secret" } },
+              },
+            ],
+            readinessProbe: {
+              httpGet: { path: "/api/health", port: PLAYER_UI_CONTAINER_PORT },
+              initialDelaySeconds: 5,
+              periodSeconds: 10,
+              timeoutSeconds: 5,
+              failureThreshold: 6,
+            },
+            livenessProbe: {
+              httpGet: { path: "/api/health", port: PLAYER_UI_CONTAINER_PORT },
+              initialDelaySeconds: 15,
+              periodSeconds: 20,
+              timeoutSeconds: 5,
+            },
+            resources: {
+              requests: { cpu: "100m", memory: "256Mi" },
+              limits: { cpu: "500m", memory: "512Mi" },
+            },
+          }],
+        },
+      },
+    },
+  };
+
+  try {
+    await appsApi.readNamespacedDeployment({ name: PLAYER_UI_DEPLOYMENT, namespace });
+    await appsApi.replaceNamespacedDeployment({ name: PLAYER_UI_DEPLOYMENT, namespace, body: deploymentBody });
+    log.info("Updated player-ui deployment", { namespace });
+  } catch (err: any) {
+    if (is404(err)) {
+      await appsApi.createNamespacedDeployment({ namespace, body: deploymentBody });
+      log.info("Created player-ui deployment", { namespace });
+    } else {
+      throw err;
+    }
+  }
+
+  const serviceBody = {
+    metadata: {
+      name: PLAYER_UI_SERVICE,
+      namespace,
+      labels: { app: PLAYER_UI_DEPLOYMENT, "app.kubernetes.io/managed-by": "bionic-platform" },
+    },
+    spec: {
+      selector: { app: PLAYER_UI_DEPLOYMENT },
+      ports: [{ port: 80, targetPort: PLAYER_UI_CONTAINER_PORT, name: "http" }],
+      type: "ClusterIP",
+    },
+  };
+
+  try {
+    await coreApi.readNamespacedService({ name: PLAYER_UI_SERVICE, namespace });
+    await coreApi.replaceNamespacedService({ name: PLAYER_UI_SERVICE, namespace, body: serviceBody });
+    log.info("Updated player-ui service", { namespace });
+  } catch (err: any) {
+    if (is404(err)) {
+      await coreApi.createNamespacedService({ namespace, body: serviceBody });
+      log.info("Created player-ui service", { namespace });
+    } else {
+      throw err;
+    }
+  }
+
+  const useTls = Boolean(certIssuer || process.env.PLAYER_UI_TLS_SECRET?.trim());
+
+  const annotations: Record<string, string> = {
+    "konghq.com/protocols": "http,https",
+    "konghq.com/preserve-host": "true",
+    "konghq.com/strip-path": "false",
+    "konghq.com/websocket-support": "true",
+  };
+  if (useTls) {
+    annotations["konghq.com/ssl-redirect"] = "true";
+  }
+  if (certIssuer) {
+    annotations["cert-manager.io/cluster-issuer"] = certIssuer;
+  }
+
+  const ingressSpec: any = {
+    ingressClassName: ingressClass,
+    rules: [{
+      host,
+      http: {
+        paths: [{
+          path: "/",
+          pathType: "Prefix",
+          backend: {
+            service: { name: PLAYER_UI_SERVICE, port: { number: 80 } },
+          },
+        }],
+      },
+    }],
+  };
+
+  if (useTls) {
+    ingressSpec.tls = [{ hosts: [host], secretName: tlsSecretName }];
+  }
+
+  const ingressBody = {
+    metadata: {
+      name: PLAYER_UI_INGRESS,
+      namespace,
+      labels: { app: PLAYER_UI_DEPLOYMENT, "app.kubernetes.io/managed-by": "bionic-platform" },
+      annotations,
+    },
+    spec: ingressSpec,
+  };
+
+  try {
+    await networkingApi.readNamespacedIngress({ name: PLAYER_UI_INGRESS, namespace });
+    await networkingApi.replaceNamespacedIngress({ name: PLAYER_UI_INGRESS, namespace, body: ingressBody });
+    log.info("Updated player-ui ingress", { namespace, host });
+  } catch (err: any) {
+    if (is404(err)) {
+      await networkingApi.createNamespacedIngress({ namespace, body: ingressBody });
+      log.info("Created player-ui ingress", { namespace, host });
+    } else {
+      throw err;
+    }
+  }
+
+  return { host };
+}
+
+export async function getPlayerUiDeploymentStatus(
+  namespace: string,
+): Promise<{ status: string; replicas: number; message: string }> {
+  try {
+    const { appsApi } = await getK8sApis();
+    const result = await appsApi.readNamespacedDeployment({ name: PLAYER_UI_DEPLOYMENT, namespace });
+    const dep = result?.body || result;
+    const ready = dep?.status?.readyReplicas || 0;
+    const desired = dep?.spec?.replicas || 1;
+    return {
+      status: ready >= desired ? "running" : "deploying",
+      replicas: ready,
+      message: `${ready}/${desired} player-ui replicas ready`,
+    };
+  } catch (err: any) {
+    if (is404(err)) return { status: "missing", replicas: 0, message: "player-ui deployment not found" };
+    return { status: "unknown", replicas: 0, message: String(err) };
+  }
+}
+
+export async function playerUiIngressExists(namespace: string): Promise<boolean> {
+  try {
+    const { networkingApi } = await getK8sApis();
+    await networkingApi.readNamespacedIngress({ name: PLAYER_UI_INGRESS, namespace });
+    return true;
+  } catch (err: any) {
+    if (is404(err)) return false;
+    log.warn("player-ui ingress read failed", { namespace, error: String(err) });
+    return false;
+  }
+}
+
+function playerUiHealthBodyLooksOk(body: unknown): boolean {
+  // @kubernetes/client-node deserializes JSON proxy bodies as objects even when the API types them as string.
+  if (body !== null && typeof body === "object" && !Array.isArray(body)) {
+    const ok = (body as { ok?: unknown }).ok;
+    if (ok === true) return true;
+  }
+  const text = typeof body === "string" ? body : JSON.stringify(body);
+  if (text.includes('"ok"') && text.includes("true")) return true;
+  try {
+    const j = JSON.parse(text) as { ok?: boolean };
+    return j?.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * GET /api/health via Kubernetes API service or pod proxy (in-cluster; no public ingress needed).
+ */
+export async function checkPlayerUiPodHealth(namespace: string): Promise<boolean> {
+  const { coreApi } = await getK8sApis();
+
+  const serviceProxyNames = [
+    `http:${PLAYER_UI_SERVICE}:80`,
+    `http:${PLAYER_UI_SERVICE}:http`,
+  ];
+
+  for (const svcName of serviceProxyNames) {
+    try {
+      const body = await coreApi.connectGetNamespacedServiceProxyWithPath({
+        namespace,
+        name: svcName,
+        path: "api/health",
+      });
+      if (playerUiHealthBodyLooksOk(body)) return true;
+    } catch (err: any) {
+      log.info("player-ui service proxy health attempt failed", { namespace, svcName, err: String(err?.body?.message || err) });
+    }
+  }
+
+  try {
+    const res = await coreApi.listNamespacedPod({
+      namespace,
+      labelSelector: `app=${PLAYER_UI_DEPLOYMENT}`,
+    });
+    const list = res?.body ?? res;
+    const items: any[] = list?.items ?? [];
+    const running = items.find((p) => p?.status?.phase === "Running");
+    const podName = running?.metadata?.name;
+    if (!podName) return false;
+
+    const body = await coreApi.connectGetNamespacedPodProxyWithPath({
+      namespace,
+      name: `${podName}:${PLAYER_UI_CONTAINER_PORT}`,
+      path: "api/health",
+    });
+    return playerUiHealthBodyLooksOk(body);
+  } catch (err: any) {
+    log.warn("player-ui /api/health via pod proxy failed", { namespace, error: String(err?.body?.message || err) });
+    return false;
+  }
+}
+
+/**
+ * Wait until player-ui Deployment + Ingress are ready and `/api/health` succeeds in-cluster.
+ */
+export async function waitPlayerUiReady(
+  namespace: string,
+  timeoutMs = 180_000,
+  intervalMs = 5_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const dep = await getPlayerUiDeploymentStatus(namespace);
+    const ing = await playerUiIngressExists(namespace);
+    if (dep.status === "running" && ing) {
+      const healthy = await checkPlayerUiPodHealth(namespace);
+      if (healthy) {
+        log.info("player-ui verified ready (deployment + ingress + /api/health)", { namespace });
+        return true;
+      }
+      log.info("player-ui deployment up but /api/health not OK yet", { namespace });
+    } else {
+      log.info("player-ui not ready yet", { namespace, dep: dep.message, ingress: ing });
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return false;
+}
+
+/**
+ * Ingress spec: Kong class, host = {slug}.{suffix}, backend Service player-ui:80.
+ */
+export async function verifyPlayerUiIngressKongRouting(namespace: string): Promise<void> {
+  const expectedHost = playerUiHost(namespace);
+  const expectedClass = process.env.PLAYER_UI_INGRESS_CLASS || "kong";
+  const { networkingApi } = await getK8sApis();
+  const res = await networkingApi.readNamespacedIngress({ name: PLAYER_UI_INGRESS, namespace });
+  const ing = (res as { body?: unknown })?.body ?? res;
+  const spec = (ing as { spec?: Record<string, unknown> })?.spec as
+    | {
+        ingressClassName?: string;
+        rules?: Array<{
+          host?: string;
+          http?: { paths?: Array<{ backend?: { service?: { name?: string; port?: { number?: number } } } }> };
+        }>;
+      }
+    | undefined;
+  if (!spec) throw new Error("verifyPlayerUiIngressKongRouting: player-ui ingress has no spec");
+  if (spec.ingressClassName !== expectedClass) {
+    throw new Error(
+      `verifyPlayerUiIngressKongRouting: ingressClassName want "${expectedClass}" got "${spec.ingressClassName}"`,
+    );
+  }
+  const rule = spec.rules?.[0];
+  if (!rule?.host || rule.host !== expectedHost) {
+    throw new Error(`verifyPlayerUiIngressKongRouting: rule host want ${expectedHost} got ${rule?.host}`);
+  }
+  const path = rule.http?.paths?.[0];
+  const svcName = path?.backend?.service?.name;
+  const portNum = path?.backend?.service?.port?.number;
+  if (svcName !== PLAYER_UI_SERVICE) {
+    throw new Error(`verifyPlayerUiIngressKongRouting: backend service want ${PLAYER_UI_SERVICE} got ${svcName}`);
+  }
+  if (portNum !== 80) {
+    throw new Error(`verifyPlayerUiIngressKongRouting: backend port want 80 got ${portNum}`);
+  }
+  log.info("player-ui ingress spec verified (Kong → player-ui:80)", { namespace, host: expectedHost });
+}
+
+/**
+ * Hit Kong's proxy with the app's public Host header (in-cluster). Confirms Kong → Ingress → Service chain.
+ * Set PLAYER_UI_KONG_VERIFY_URL if your Kong proxy base URL differs (default: http://kong-kong-proxy.kong.svc.cluster.local:80).
+ */
+export async function verifyPlayerUiKongHostRoute(namespace: string): Promise<void> {
+  const publicHost = playerUiHost(namespace);
+  const baseRaw =
+    process.env.PLAYER_UI_KONG_VERIFY_URL?.trim() || "http://kong-kong-proxy.kong.svc.cluster.local:80";
+  const base = baseRaw.replace(/\/$/, "");
+  const url = `${base}/api/health`;
+  const attempts = 24;
+  const pauseMs = 10_000;
+  let lastErr = "";
+  // Kong ingress controller takes 1-3 minutes to reconcile new Ingress resources
+  log.info("Waiting for Kong ingress controller to reconcile (30s initial delay)", { namespace, publicHost });
+  await new Promise((r) => setTimeout(r, 30_000));
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        headers: { Host: publicHost, Accept: "application/json" },
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!res.ok) {
+        lastErr = `HTTP ${res.status}`;
+      } else {
+        const body = await res.json();
+        const ok = body !== null && typeof body === "object" && (body as { ok?: boolean }).ok === true;
+        if (ok) {
+          log.info("Verified player UI /api/health via Kong with app Host header", { namespace, publicHost });
+          return;
+        }
+        lastErr = "health body not ok";
+      }
+    } catch (e) {
+      lastErr = String(e);
+    }
+    if (i < attempts - 1) {
+      log.info("Kong route verify retry", { namespace, publicHost, attempt: i + 1, lastErr });
+      await new Promise((r) => setTimeout(r, pauseMs));
+    }
+  }
+  throw new Error(`Kong route verify failed after ${attempts} attempts: GET ${url} Host ${publicHost} — ${lastErr}`);
+}
+
 export const k8s = {
   createNamespace,
   deleteNamespace,
@@ -659,4 +1165,11 @@ export const k8s = {
   applyDifyDeployment,
   deleteDifyDeployment,
   getDifyStatus,
+  applyPlayerUi,
+  waitPlayerUiReady,
+  getPlayerUiDeploymentStatus,
+  playerUiIngressExists,
+  checkPlayerUiPodHealth,
+  verifyPlayerUiIngressKongRouting,
+  verifyPlayerUiKongHostRoute,
 };
