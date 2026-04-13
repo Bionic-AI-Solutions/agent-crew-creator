@@ -193,8 +193,13 @@ export function createAuthRouter(): Router {
       try {
         const { payload: verified } = await jwtVerify(tokens.access_token, JWKS, {
           issuer: issuerUrl,
-          audience: CLIENT_ID, // Reject tokens not intended for this client
+          // Note: KC access tokens typically have aud:"account", not the client ID.
+          // The azp (authorized party) claim contains the client ID instead.
         });
+        // Validate azp matches our client (Keycloak's equivalent of audience for access tokens)
+        if (verified.azp && verified.azp !== CLIENT_ID) {
+          throw new Error(`Token azp "${verified.azp}" does not match expected client "${CLIENT_ID}"`);
+        }
         payload = verified;
       } catch (verifyErr) {
         if (process.env.NODE_ENV === "production") {
