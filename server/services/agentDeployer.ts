@@ -426,22 +426,37 @@ export async function deployAgent(
     }
 
     // Generate a presigned URL for the avatar image. BitHuman is external
-    // (192.168.0.10), so the URL must use the external MinIO endpoint.
+    // (192.168.0.10), so the URL must be generated with the external MinIO endpoint.
     if (agent.avatarImageUrl) {
       try {
+        const Minio = await import("minio");
+        const externalHost = process.env.MINIO_EXTERNAL_ENDPOINT || "s3.baisoln.com";
+        const [extHostname, extPort] = externalHost.split(":");
+        // Create a MinIO client pointing to the external endpoint for presigned URL generation
         const { getClient } = await import("./minioAdmin.js");
-        const client = await getClient();
+        const internalClient = await getClient();
+        const externalClient = new Minio.Client({
+          endPoint: extHostname,
+          port: extPort ? parseInt(extPort) : 443,
+          useSSL: true,
+          accessKey: (internalClient as any).accessKey || process.env.MINIO_ROOT_USER || "",
+          secretKey: (internalClient as any).secretKey || process.env.MINIO_ROOT_PASSWORD || "",
+        });
         const [bucket, ...keyParts] = agent.avatarImageUrl.split("/");
         const key = keyParts.join("/");
-        let presignedUrl = await client.presignedGetObject(bucket, key, 7 * 24 * 60 * 60);
-        // Replace internal MinIO hostname with external endpoint for BitHuman access
-        const externalMinio = process.env.MINIO_EXTERNAL_ENDPOINT || "s3.baisoln.com";
-        const internalMinio = process.env.MINIO_ENDPOINT || "minio-tenant-hl.minio.svc.cluster.local:9000";
-        presignedUrl = presignedUrl.replace(`http://${internalMinio}`, `https://${externalMinio}`);
+        const presignedUrl = await externalClient.presignedGetObject(bucket, key, 7 * 24 * 60 * 60);
         configData.BITHUMAN_AVATAR_IMAGE = presignedUrl;
-        log.info("Generated presigned avatar URL (external)", { agentId: agent.id, bucket, key });
+        log.info("Generated presigned avatar URL (external)", { agentId: agent.id, bucket, key, host: externalHost });
       } catch (err) {
-        log.warn("Failed to generate presigned avatar URL (non-fatal)", { error: String(err) });
+        log.warn("Failed to generate external presigned avatar URL (non-fatal)", { error: String(err) });
+        // Fallback: use internal presigned URL (works for in-cluster access, not BitHuman)
+        try {
+          const { getClient } = await import("./minioAdmin.js");
+          const client = await getClient();
+          const [bucket, ...keyParts] = agent.avatarImageUrl.split("/");
+          const key = keyParts.join("/");
+          configData.BITHUMAN_AVATAR_IMAGE = await client.presignedGetObject(bucket, key, 7 * 24 * 60 * 60);
+        } catch {}
       }
     }
   }

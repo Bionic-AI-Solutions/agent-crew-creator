@@ -1351,15 +1351,29 @@ async def entrypoint(ctx: JobContext):
 
         bg_kwargs: dict = {}
 
-        # Ambient sound: custom URL or None
+        # Ambient sound: download custom URL to temp file, or None
         if settings.ambient_audio_url:
-            bg_kwargs["ambient_sound"] = settings.ambient_audio_url
-            logger.info("Using custom ambient audio: %s", settings.ambient_audio_url[:60])
+            try:
+                import tempfile
+                import urllib.request
+                ambient_tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+                urllib.request.urlretrieve(settings.ambient_audio_url, ambient_tmp.name)
+                bg_kwargs["ambient_sound"] = ambient_tmp.name
+                logger.info("Downloaded custom ambient audio to %s", ambient_tmp.name)
+            except Exception as dl_err:
+                logger.warning("Failed to download ambient audio: %s", dl_err)
 
-        # Thinking sound: custom URL or built-in keyboard typing
+        # Thinking sound: download custom URL to temp file, or built-in keyboard typing
         if settings.thinking_audio_url:
-            bg_kwargs["thinking_sound"] = settings.thinking_audio_url
-            logger.info("Using custom thinking audio: %s", settings.thinking_audio_url[:60])
+            try:
+                import tempfile
+                import urllib.request
+                thinking_tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+                urllib.request.urlretrieve(settings.thinking_audio_url, thinking_tmp.name)
+                bg_kwargs["thinking_sound"] = thinking_tmp.name
+                logger.info("Downloaded custom thinking audio to %s", thinking_tmp.name)
+            except Exception as dl_err:
+                logger.warning("Failed to download thinking audio, using builtin: %s", dl_err)
         else:
             bg_kwargs["thinking_sound"] = [
                 AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING, volume=0.4),
