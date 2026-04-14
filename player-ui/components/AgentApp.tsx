@@ -263,48 +263,70 @@ function parseMessageContent(raw: string): { type: "text" | "image" | "artifact"
     // Not pure JSON — check for embedded JSON within text
   }
 
-  // Split message: find JSON blocks embedded in text
-  // Pattern: text before JSON + JSON object + text after
-  const jsonRegex = /\{[^{}]*"(?:type|url|download_url|image_url|content_type)"[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g;
-  let lastIndex = 0;
-  let match;
+  // Split message line by line — check each line for JSON artifacts
+  const lines = raw.split("\n");
+  let textBuffer = "";
 
-  while ((match = jsonRegex.exec(raw)) !== null) {
-    // Add text before the JSON block
-    const textBefore = raw.slice(lastIndex, match.index).trim();
-    if (textBefore) {
-      const html = marked.parse(textBefore, { breaks: true, gfm: true }) as string;
-      if (html.trim()) results.push({ type: "text", html });
-    }
-
-    // Parse the JSON block
-    try {
-      const parsed = JSON.parse(match[0]);
-      const url = parsed.url || parsed.download_url || parsed.image_url;
-      if (url && (parsed.content_type?.startsWith("image/") || url.match(/\.(png|jpg|jpeg|gif|webp)/i))) {
-        results.push({ type: "image", html: "", imageUrl: url, title: parsed.summary || parsed.title || "" });
-      } else if (url) {
-        results.push({ type: "artifact", html: `<a href="${url}" target="_blank" style="color:var(--accent)">📎 ${parsed.filename || "Download"}</a>` });
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Try to parse as JSON if it starts with {
+    if (trimmed.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        // Flush text buffer first
+        if (textBuffer.trim()) {
+          const html = marked.parse(textBuffer, { breaks: true, gfm: true }) as string;
+          if (html.trim()) results.push({ type: "text", html });
+          textBuffer = "";
+        }
+        // Handle artifact
+        const url = parsed.url || parsed.download_url || parsed.image_url;
+        if (url && (parsed.content_type?.startsWith("image/") || url.match(/\.(png|jpg|jpeg|gif|webp)/i))) {
+          results.push({ type: "image", html: "", imageUrl: url, title: parsed.summary || parsed.title || "" });
+        } else if (parsed.error) {
+          results.push({ type: "text", html: `<span style="color:var(--error)">⚠️ ${parsed.error}</span>` });
+        } else if (url) {
+          results.push({ type: "artifact", html: `<a href="${url}" target="_blank" style="color:var(--accent)">📎 ${parsed.filename || "Download"}</a>` });
+        } else {
+          textBuffer += line + "\n"; // Not a recognized artifact, treat as text
+        }
+        continue;
+      } catch {
+        // Not valid JSON — check if it's an inline artifact like {"type":"artifact",...}
       }
-    } catch {
-      // Invalid JSON — render as text
-      const html = marked.parse(match[0], { breaks: true, gfm: true }) as string;
-      results.push({ type: "text", html });
     }
 
-    lastIndex = match.index + match[0].length;
+    // Also check for inline JSON within text (e.g., "here is an image: {json}")
+    const jsonMatch = trimmed.match(/\{[^{}]*"(?:url|image_url|download_url)"[^}]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        const url = parsed.url || parsed.download_url || parsed.image_url;
+        if (url && url.match(/\.(png|jpg|jpeg|gif|webp|pdf)/i)) {
+          // Flush text before the JSON
+          const beforeJson = trimmed.slice(0, trimmed.indexOf(jsonMatch[0])).trim();
+          if (beforeJson) textBuffer += beforeJson + "\n";
+          if (textBuffer.trim()) {
+            const html = marked.parse(textBuffer, { breaks: true, gfm: true }) as string;
+            if (html.trim()) results.push({ type: "text", html });
+            textBuffer = "";
+          }
+          if (url.match(/\.(png|jpg|jpeg|gif|webp)/i)) {
+            results.push({ type: "image", html: "", imageUrl: url, title: parsed.summary || parsed.title || "" });
+          } else {
+            results.push({ type: "artifact", html: `<a href="${url}" target="_blank" style="color:var(--accent)">📎 ${parsed.filename || "Download"}</a>` });
+          }
+          continue;
+        }
+      } catch {}
+    }
+
+    textBuffer += line + "\n";
   }
 
-  // Add remaining text after last JSON block
-  const remaining = raw.slice(lastIndex).trim();
-  if (remaining) {
-    const html = marked.parse(remaining, { breaks: true, gfm: true }) as string;
-    if (html.trim()) results.push({ type: "text", html });
-  }
-
-  // If no JSON blocks were found, just render the whole thing as markdown
-  if (results.length === 0) {
-    const html = marked.parse(raw, { breaks: true, gfm: true }) as string;
+  // Flush remaining text
+  if (textBuffer.trim()) {
+    const html = marked.parse(textBuffer, { breaks: true, gfm: true }) as string;
     if (html.trim()) results.push({ type: "text", html });
   }
 

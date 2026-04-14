@@ -246,31 +246,47 @@ export async function deployAgent(
         lettaToolByName.set(lt.name, lt.id);
       }
 
-      // Attach missing tools — auto-create from source code if not on Letta server
+      // Attach missing tools — prefer our source code over Letta built-ins
       for (const name of desiredLettaNames) {
         if (!currentToolNames.has(name)) {
           let lettaId = lettaToolByName.get(name);
 
-          // Auto-create tool if source code is available
-          if (!lettaId) {
-            const sourceCode = await loadToolSourceCode(name);
-            if (sourceCode) {
-              try {
-                const bt = BUILTIN_TOOLS.find((b) => b.lettaToolName === name);
-                const created = await lettaAdmin.createTool(sourceCode, {
-                  description: bt?.description,
-                  tags: ["builtin", name],
-                  pipRequirements: getToolPipRequirements(name),
-                });
-                lettaId = created.id;
-                lettaToolByName.set(name, lettaId);
-                log.info("Auto-created Letta tool from source", { tool: name, lettaId });
-              } catch (createErr) {
-                log.warn("Failed to create Letta tool", { tool: name, error: String(createErr) });
+          // Always prefer our custom source code over Letta built-in tools
+          // This ensures web_search uses local GPU search, not EXA
+          const sourceCode = await loadToolSourceCode(name);
+          if (sourceCode && lettaId) {
+            // Detach the existing (possibly built-in) version first
+            try {
+              const existingOnAgent = (agentLettaTools as any[]).find((t: any) => t.name === name);
+              if (existingOnAgent) {
+                await lettaAdmin.detachToolFromAgent(agent.lettaAgentId, existingOnAgent.id);
               }
-            } else {
-              log.warn("Tool not found on Letta server and no source code available", { tool: name });
+              // Delete the old tool and create fresh from our source
+              await lettaAdmin.deleteTool(lettaId);
+              lettaId = undefined; // Force recreation below
+              log.info("Replaced built-in tool with custom version", { tool: name });
+            } catch (replaceErr) {
+              log.warn("Could not replace built-in tool", { tool: name, error: String(replaceErr) });
             }
+          }
+
+          // Auto-create tool from source code if available
+          if (!lettaId && sourceCode) {
+            try {
+              const bt = BUILTIN_TOOLS.find((b) => b.lettaToolName === name);
+              const created = await lettaAdmin.createTool(sourceCode, {
+                description: bt?.description,
+                tags: ["builtin", name],
+                pipRequirements: getToolPipRequirements(name),
+              });
+              lettaId = created.id;
+              lettaToolByName.set(name, lettaId);
+              log.info("Auto-created Letta tool from source", { tool: name, lettaId });
+            } catch (createErr) {
+              log.warn("Failed to create Letta tool", { tool: name, error: String(createErr) });
+            }
+          } else if (!lettaId) {
+            log.warn("Tool not found on Letta server and no source code available", { tool: name });
           }
 
           if (lettaId) {
@@ -318,6 +334,10 @@ export async function deployAgent(
         if (appSecrets.letta_api_key) toolEnv.LETTA_API_KEY = appSecrets.letta_api_key;
         toolEnv.LETTA_BASE_URL = process.env.LETTA_BASE_URL || "http://letta-server.letta.svc.cluster.local:8283";
         toolEnv.LETTA_AGENT_ID = agent.lettaAgentId;
+        // Search API for web_search tool (use local GPU-AI search, not EXA)
+        toolEnv.SEARCH_API_URL = "https://mcp.baisoln.com/search/search";
+        const searchKey = (await readPlatformVaultPath("t6-apps/mcp/config"))?.apikey_mcp_admin_key;
+        if (searchKey) toolEnv.SEARCH_API_KEY = searchKey;
 
         if (Object.keys(toolEnv).length > 0) {
           await lettaAdmin.updateAgent(agent.lettaAgentId, {
