@@ -299,12 +299,15 @@ export async function deployAgent(
       // These are needed by generate_image, generate_pdf, code_interpreter etc.
       try {
         const { readPlatformVaultPath } = await import("../vaultClient.js");
-        const appSecrets = (await vault.readAppSecret(app.slug)) || {};
+        const { readAppSecret } = await import("../vaultClient.js");
+        const appSecrets = (await readAppSecret(app.slug)) || {};
+        const sharedApiKeys = (await readPlatformVaultPath("shared/api-keys")) || {};
         const sharedInfra = (await readPlatformVaultPath("shared/infra")) || {};
 
         const toolEnv: Record<string, string> = {};
-        // Gemini API key for generate_image
-        if (sharedInfra.gemini_api_key) toolEnv.GEMINI_API_KEY = sharedInfra.gemini_api_key;
+        // Gemini API key for generate_image (check api-keys first, then infra)
+        const geminiKey = sharedApiKeys.gemini_api_key || sharedInfra.gemini_api_key;
+        if (geminiKey) toolEnv.GEMINI_API_KEY = geminiKey;
         // MinIO credentials for file storage (generate_image, generate_pdf)
         if (appSecrets.minio_access_key) toolEnv.MINIO_ACCESS_KEY = appSecrets.minio_access_key;
         if (appSecrets.minio_secret_key) toolEnv.MINIO_SECRET_KEY = appSecrets.minio_secret_key;
@@ -317,9 +320,8 @@ export async function deployAgent(
         toolEnv.LETTA_AGENT_ID = agent.lettaAgentId;
 
         if (Object.keys(toolEnv).length > 0) {
-          const envVars = Object.entries(toolEnv).map(([key, value]) => ({ key, value }));
           await lettaAdmin.updateAgent(agent.lettaAgentId, {
-            tool_exec_environment_variables: envVars,
+            tool_exec_environment_variables: toolEnv,
           });
           log.info("Set Letta tool exec env vars", { agentId: agent.lettaAgentId, keys: Object.keys(toolEnv) });
         }

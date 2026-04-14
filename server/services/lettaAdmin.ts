@@ -133,13 +133,7 @@ export async function deleteAgent(agentId: string): Promise<void> {
  * Letta exposes this as PATCH /v1/agents/{id}/ — fields not in the payload
  * are left unchanged.
  */
-export async function updateAgent(
-  agentId: string,
-  updates: { system?: string; model?: string; name?: string },
-): Promise<void> {
-  await lettaRequest("PATCH", `/v1/agents/${agentId}/`, updates);
-  log.info("Updated Letta agent", { agentId, fields: Object.keys(updates) });
-}
+// Note: updateAgent with full Record<string, any> support is defined at line 111
 
 // ── Memory / Passages ───────────────────────────────────────────
 
@@ -477,7 +471,6 @@ export const lettaAdmin = {
   createAgent,
   updateAgent,
   getAgent,
-  updateAgent,
   getAgentByName,
   deleteAgent,
   createPassage,
