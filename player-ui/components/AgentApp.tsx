@@ -9,10 +9,13 @@ import {
   useConnectionState,
   useVoiceAssistant,
   useLocalParticipant,
+  useRemoteParticipants,
   BarVisualizer,
+  VideoTrack,
 } from "@livekit/components-react";
 import "@livekit/components-styles";
-import { ConnectionState } from "livekit-client";
+import { ConnectionState, Track } from "livekit-client";
+import { marked } from "marked";
 
 interface AgentInfo {
   id: number;
@@ -232,6 +235,41 @@ function AuthenticatedApp({ session }: { session: any }) {
   );
 }
 
+/** Parse a chat message — detect JSON artifacts (images, PDFs) and render accordingly */
+function parseMessageContent(raw: string): { type: "text" | "image" | "artifact"; html: string; imageUrl?: string; title?: string } {
+  // Try parsing as JSON artifact
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed.url && parsed.content_type?.startsWith("image/")) {
+      return { type: "image", html: "", imageUrl: parsed.url || parsed.download_url, title: parsed.summary || parsed.title || "Image" };
+    }
+    if (parsed.url && parsed.filename?.endsWith(".pdf")) {
+      return { type: "artifact", html: `<a href="${parsed.url}" target="_blank" style="color:var(--accent)">📄 ${parsed.filename}</a> (${parsed.pages || "?"} pages)` };
+    }
+    if (parsed.error) {
+      return { type: "text", html: `<span style="color:var(--error)">⚠ ${parsed.error}</span>` };
+    }
+    // Other JSON — try to extract meaningful content
+    if (parsed.download_url || parsed.url) {
+      const url = parsed.download_url || parsed.url;
+      if (url.match(/\.(png|jpg|jpeg|gif|webp)/i)) {
+        return { type: "image", html: "", imageUrl: url, title: parsed.summary || parsed.title || "" };
+      }
+    }
+  } catch {
+    // Not JSON — render as markdown
+  }
+
+  // Filter out internal Letta noise
+  if (raw.startsWith("*(No output") || raw.startsWith("*(Waiting")) {
+    return { type: "text", html: "" }; // Skip noise
+  }
+
+  // Render as markdown
+  const html = marked.parse(raw, { breaks: true, gfm: true }) as string;
+  return { type: "text", html };
+}
+
 function ActiveSession({
   agentName,
   userName,
@@ -247,34 +285,25 @@ function ActiveSession({
   const voiceAssistant = useVoiceAssistant();
   const { chatMessages, send: sendChat } = useChat();
   const { localParticipant } = useLocalParticipant();
+  const remoteParticipants = useRemoteParticipants();
   const [chatInput, setChatInput] = useState("");
-  const transcriptRef = useRef<HTMLDivElement>(null);
+  const presentationRef = useRef<HTMLDivElement>(null);
   const [micEnabled, setMicEnabled] = useState(true);
   const [camEnabled, setCamEnabled] = useState(false);
   const [screenEnabled, setScreenEnabled] = useState(false);
+  const [fileUploading, setFileUploading] = useState(false);
 
-  const toggleMic = async () => {
-    await localParticipant.setMicrophoneEnabled(!micEnabled);
-    setMicEnabled(!micEnabled);
-  };
-  const toggleCam = async () => {
-    await localParticipant.setCameraEnabled(!camEnabled);
-    setCamEnabled(!camEnabled);
-  };
+  const toggleMic = async () => { await localParticipant.setMicrophoneEnabled(!micEnabled); setMicEnabled(!micEnabled); };
+  const toggleCam = async () => { await localParticipant.setCameraEnabled(!camEnabled); setCamEnabled(!camEnabled); };
   const toggleScreen = async () => {
-    if (screenEnabled) {
-      // Can't programmatically stop screen share — disconnect and reconnect
-      setScreenEnabled(false);
-    } else {
-      await localParticipant.setScreenShareEnabled(true);
-      setScreenEnabled(true);
-    }
+    if (screenEnabled) { setScreenEnabled(false); }
+    else { await localParticipant.setScreenShareEnabled(true); setScreenEnabled(true); }
   };
 
-  // Auto-scroll transcript
+  // Auto-scroll presentation area
   useEffect(() => {
-    if (transcriptRef.current) {
-      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+    if (presentationRef.current) {
+      presentationRef.current.scrollTop = presentationRef.current.scrollHeight;
     }
   }, [chatMessages]);
 
@@ -285,126 +314,174 @@ function ActiveSession({
     setChatInput("");
   };
 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileUploading(true);
+    try {
+      // Send file name as chat message to trigger document processing
+      sendChat(`[Uploading document: ${file.name}]`);
+      // TODO: actual file upload via platform API
+    } finally {
+      setFileUploading(false);
+    }
+  };
+
+  // Find agent's video track (avatar)
+  const agentParticipant = remoteParticipants.find((p) => p.identity.startsWith("agent-"));
+  const agentVideoTrack = agentParticipant?.getTrackPublication(Track.Source.Camera);
+
+  // Parse agent messages for the presentation screen
+  const agentMessages = chatMessages
+    .filter((msg) => msg.from?.identity !== localParticipant.identity)
+    .map((msg) => parseMessageContent(msg.message))
+    .filter((m) => m.html || m.imageUrl); // Skip empty
+
   if (connectionState === ConnectionState.Connecting) {
     return <LoadingScreen message="Connecting to agent..." />;
   }
 
   return (
-    <div style={styles.sessionContainer}>
-      {/* Header */}
-      <header style={styles.header}>
-        <div>
+    <div style={cls.root}>
+      {/* ── Header ── */}
+      <header style={cls.header}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 15, fontWeight: 600 }}>{agentName}</span>
-          <span style={{ color: "var(--text-muted)", fontSize: 12, marginLeft: 8 }}>
+          <span style={{ color: "var(--text-muted)", fontSize: 11 }}>
             {connectionState === ConnectionState.Connected ? "Connected" : connectionState}
           </span>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{userName}</span>
-          <button onClick={onDisconnect} style={styles.disconnectBtn}>
-            End
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {/* Media controls */}
+          <button onClick={toggleMic} style={{ ...cls.ctrlBtn, background: micEnabled ? "var(--accent)" : "var(--bg-hover)" }}>
+            {micEnabled ? "🎙️ Mic On" : "🔇 Mic Off"}
           </button>
+          {supportsVision && (
+            <button onClick={toggleCam} style={{ ...cls.ctrlBtn, background: camEnabled ? "var(--accent)" : "var(--bg-hover)" }}>
+              {camEnabled ? "📷 Cam On" : "🚫 Cam Off"}
+            </button>
+          )}
+          {supportsVision && (
+            <button onClick={toggleScreen} style={{ ...cls.ctrlBtn, background: screenEnabled ? "var(--accent)" : "var(--bg-hover)" }}>
+              🖥️ Share
+            </button>
+          )}
+          {/* Document upload */}
+          <label style={{ ...cls.ctrlBtn, background: "var(--bg-hover)", cursor: "pointer" }}>
+            📎 {fileUploading ? "..." : "Upload"}
+            <input type="file" accept=".pdf,.docx,.txt,.md,.csv" style={{ display: "none" }} onChange={handleFileUpload} />
+          </label>
+
+          <span style={{ color: "var(--text-muted)", fontSize: 11, marginLeft: 8 }}>{userName}</span>
+          <button onClick={onDisconnect} style={cls.endBtn}>End</button>
         </div>
       </header>
 
-      {/* Media Controls */}
-      <div style={styles.controlBar}>
-        <button onClick={toggleMic} style={{ ...styles.controlBtn, background: micEnabled ? "var(--accent)" : "var(--bg-hover)" }}>
-          {micEnabled ? "\uD83C\uDF99\uFE0F Mic On" : "\uD83D\uDD07 Mic Off"}
-        </button>
-        {supportsVision && (
-          <button onClick={toggleCam} style={{ ...styles.controlBtn, background: camEnabled ? "var(--accent)" : "var(--bg-hover)" }}>
-            {camEnabled ? "\uD83D\uDCF7 Cam On" : "\uD83D\uDEAB Cam Off"}
-          </button>
-        )}
-        {supportsVision && (
-          <button onClick={toggleScreen} style={{ ...styles.controlBtn, background: screenEnabled ? "var(--accent)" : "var(--bg-hover)" }}>
-            {screenEnabled ? "\uD83D\uDDA5\uFE0F Sharing" : "\uD83D\uDDA5\uFE0F Share Screen"}
-          </button>
-        )}
+      {/* ── Main classroom area ── */}
+      <div style={cls.classroom}>
+
+        {/* ── Left: Avatar + Agent State ── */}
+        <div style={cls.leftPanel}>
+          {/* Avatar video */}
+          <div style={cls.avatarBox}>
+            {agentVideoTrack?.track && agentParticipant ? (
+              <VideoTrack trackRef={{ participant: agentParticipant, publication: agentVideoTrack, source: Track.Source.Camera }}
+                style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 8 }} />
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%" }}>
+                {voiceAssistant.audioTrack && (
+                  <BarVisualizer state={voiceAssistant.state} barCount={5} trackRef={voiceAssistant.audioTrack}
+                    style={{ width: 100, height: 60 }} />
+                )}
+                <div style={{ color: "var(--text-muted)", fontSize: 11, marginTop: 8 }}>
+                  {voiceAssistant.state === "speaking" ? "Speaking" : voiceAssistant.state === "thinking" ? "Thinking..." : voiceAssistant.state === "listening" ? "Listening" : "Connecting..."}
+                </div>
+              </div>
+            )}
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 600, textAlign: "center", marginTop: 6 }}>{agentName}</div>
+        </div>
+
+        {/* ── Center: Presentation Screen ── */}
+        <div style={cls.presentationArea}>
+          <div ref={presentationRef} style={cls.presentationScroll}>
+            {agentMessages.length === 0 && (
+              <div style={{ color: "var(--text-muted)", fontSize: 14, textAlign: "center", marginTop: 60 }}>
+                Session started. Ask a question or start a topic.
+              </div>
+            )}
+            {agentMessages.map((msg, i) => (
+              <div key={i} style={cls.slide}>
+                {msg.type === "image" && msg.imageUrl && (
+                  <div style={{ marginBottom: 12 }}>
+                    <img src={msg.imageUrl} alt={msg.title || "Generated image"} style={cls.slideImage} />
+                    {msg.title && <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4, textAlign: "center" }}>{msg.title}</p>}
+                  </div>
+                )}
+                {msg.html && (
+                  <div
+                    className="slide-content"
+                    dangerouslySetInnerHTML={{ __html: msg.html }}
+                    style={cls.slideText}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
 
-      {/* Main content */}
-      <div style={styles.mainContent}>
-        {/* Audio visualizer */}
-        <div style={styles.visualizerArea}>
-          {voiceAssistant.audioTrack && (
-            <BarVisualizer
-              state={voiceAssistant.state}
-              barCount={7}
-              trackRef={voiceAssistant.audioTrack}
-              style={{ width: 200, height: 100 }}
-            />
-          )}
-          {!voiceAssistant.audioTrack && (
-            <div style={{ color: "var(--text-muted)", fontSize: 14 }}>
-              {voiceAssistant.state === "connecting"
-                ? "Agent connecting..."
-                : voiceAssistant.state === "listening"
-                  ? "Listening..."
-                  : "Waiting for agent..."}
-            </div>
-          )}
-          <div style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 8 }}>
-            {voiceAssistant.state === "speaking"
-              ? "Agent speaking"
-              : voiceAssistant.state === "thinking"
-                ? "Agent thinking..."
-                : voiceAssistant.state === "listening"
-                  ? "Listening"
-                  : ""}
-          </div>
-        </div>
-
-        {/* Chat transcript */}
-        <div style={styles.chatPanel}>
-          <div style={styles.chatHeader}>Chat</div>
-          <div ref={transcriptRef} style={styles.chatMessages}>
-            {chatMessages.length === 0 && (
-              <p style={{ color: "var(--text-muted)", fontSize: 13, textAlign: "center", marginTop: 32 }}>
-                Start speaking or type a message below
-              </p>
-            )}
-            {chatMessages.map((msg, i) => {
-              const isAgent = msg.from?.identity !== userName;
-              return (
-                <div
-                  key={i}
-                  style={{
-                    ...styles.chatBubble,
-                    background: isAgent ? "var(--agent-bubble)" : "var(--user-bubble)",
-                    alignSelf: isAgent ? "flex-start" : "flex-end",
-                  }}
-                >
-                  <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 4 }}>
-                    {isAgent ? agentName : "You"}
-                  </div>
-                  <div style={{ fontSize: 14, lineHeight: 1.5 }}>{msg.message}</div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Chat input */}
-          <div style={styles.chatInputArea}>
-            <input
-              type="text"
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSendChat()}
-              placeholder="Type a message..."
-              style={styles.chatInput}
-            />
-            <button onClick={handleSendChat} style={styles.sendBtn}>
-              Send
-            </button>
-          </div>
-        </div>
+      {/* ── Bottom: Chat input bar ── */}
+      <div style={cls.chatBar}>
+        <input
+          type="text"
+          value={chatInput}
+          onChange={(e) => setChatInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleSendChat()}
+          placeholder="Ask a question..."
+          style={cls.chatInput}
+        />
+        <button onClick={handleSendChat} style={cls.sendBtn}>Send</button>
       </div>
     </div>
   );
 }
 
+// ── Classroom layout styles ──────────────────────────────────
+const cls: Record<string, React.CSSProperties> = {
+  root: { display: "flex", flexDirection: "column", height: "100vh", background: "var(--bg)" },
+  header: {
+    display: "flex", justifyContent: "space-between", alignItems: "center",
+    padding: "8px 16px", borderBottom: "1px solid var(--border)", background: "var(--bg-card)",
+  },
+  ctrlBtn: { color: "white", padding: "5px 10px", borderRadius: 6, fontSize: 11, fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 4 },
+  endBtn: { background: "var(--error)", color: "white", padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 500 },
+  classroom: { display: "flex", flex: 1, overflow: "hidden" },
+  leftPanel: {
+    width: 200, padding: 16, borderRight: "1px solid var(--border)", background: "var(--bg-card)",
+    display: "flex", flexDirection: "column", alignItems: "center",
+  },
+  avatarBox: {
+    width: 168, height: 168, borderRadius: 12, overflow: "hidden",
+    background: "var(--bg)", border: "2px solid var(--border)",
+  },
+  presentationArea: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },
+  presentationScroll: { flex: 1, overflowY: "auto" as const, padding: "24px 32px" },
+  slide: { marginBottom: 24, paddingBottom: 20, borderBottom: "1px solid var(--border)" },
+  slideImage: { maxWidth: "100%", maxHeight: 400, borderRadius: 8, border: "1px solid var(--border)" },
+  slideText: { fontSize: 15, lineHeight: 1.7, color: "var(--text)" },
+  chatBar: {
+    display: "flex", gap: 8, padding: "10px 16px",
+    borderTop: "1px solid var(--border)", background: "var(--bg-card)",
+  },
+  chatInput: {
+    flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border)",
+    background: "var(--bg)", color: "var(--text)", fontSize: 13, outline: "none",
+  },
+  sendBtn: { background: "var(--accent)", color: "white", padding: "8px 16px", borderRadius: 8, fontSize: 12, fontWeight: 500 },
+};
+
+// Keep old styles for the login/welcome screens
 const styles: Record<string, React.CSSProperties> = {
   center: {
     display: "flex",
