@@ -28,7 +28,7 @@ const AGENT_FULL = "full-agent";
 const AGENT_BASIC = "basic-agent";
 const PG_URL = "postgresql://bionic_platform_user:B10n1cPl4tf0rm!S3cur3@192.168.0.212:5432/bionic_platform";
 const PG_ADMIN = "postgresql://postgres:1rJlrTbsgL1YaqDVors6HGK8KnaHom1n6sUFccQNTadpkpzZCN9r0s2llroTy9Tu@192.168.0.212:5432/postgres";
-const SCREENSHOTS = "/tmp/release-test";
+const SCREENSHOTS = process.env.SCREENSHOTS_DIR || __dirname + "/screenshots/release";
 
 // ── Test Framework ──────────────────────────────────────────────
 const results = [];
