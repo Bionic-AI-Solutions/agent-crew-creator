@@ -1233,7 +1233,19 @@ async def entrypoint(ctx: JobContext):
             if settings.bithuman_api_url:
                 avatar_kwargs["api_url"] = settings.bithuman_api_url
             if settings.bithuman_avatar_image:
-                avatar_kwargs["avatar_image"] = settings.bithuman_avatar_image
+                # Download avatar image to a local file (BitHuman self-hosted may not
+                # be able to fetch presigned URLs due to network/hairpin NAT issues)
+                try:
+                    import tempfile
+                    import urllib.request
+                    avatar_tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+                    urllib.request.urlretrieve(settings.bithuman_avatar_image, avatar_tmp.name)
+                    from PIL import Image
+                    avatar_kwargs["avatar_image"] = Image.open(avatar_tmp.name).convert("RGB")
+                    logger.info("Downloaded avatar image to %s", avatar_tmp.name)
+                except Exception as dl_err:
+                    logger.warning("Failed to download avatar image, passing URL: %s", dl_err)
+                    avatar_kwargs["avatar_image"] = settings.bithuman_avatar_image
             avatar = bithuman.AvatarSession(**avatar_kwargs)
             await avatar.start(session, room=ctx.room)
             avatar_active = True
