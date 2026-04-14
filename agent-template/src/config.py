@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     bithuman_api_key: str = ""
     bithuman_api_secret: str = ""
     bithuman_api_url: str = "http://192.168.0.10:8089/launch"
+    bithuman_livekit_url: str = ""  # External LiveKit URL for BitHuman (set from Vault shared/bithuman)
     bithuman_avatar_image: str = ""
 
     # Vision (feed camera/screen frames to the primary LLM)

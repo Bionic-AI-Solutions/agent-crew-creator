@@ -447,6 +447,10 @@ export async function deployAgent(
       if (bhData.bithuman_api_secret) {
         extraEnv.push({ name: "BITHUMAN_API_SECRET", value: bhData.bithuman_api_secret });
       }
+      // External LiveKit URL for BitHuman (BitHuman is outside K8s, can't use internal URL)
+      if (bhData.bithuman_livekit_url) {
+        extraEnv.push({ name: "BITHUMAN_LIVEKIT_URL", value: bhData.bithuman_livekit_url });
+      }
       log.info("Injected BitHuman keys from shared Vault", { agentId: agent.id });
     } catch (err) {
       log.warn("Failed to read BitHuman keys from shared Vault (non-fatal)", { error: String(err) });

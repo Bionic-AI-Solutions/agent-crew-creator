@@ -1246,26 +1246,56 @@ async def entrypoint(ctx: JobContext):
                 except Exception as dl_err:
                     logger.warning("Failed to download avatar image, passing URL: %s", dl_err)
                     avatar_kwargs["avatar_image"] = settings.bithuman_avatar_image
-            avatar = bithuman.AvatarSession(**avatar_kwargs)
-            await avatar.start(session, room=ctx.room)
-            # Wait for the BitHuman avatar worker to actually join the room
-            # If it doesn't join within 15s, fall back to audio output
-            avatar_joined = False
-            for _ in range(30):  # 15 seconds
-                for p in ctx.room.remote_participants.values():
-                    if "bithuman" in p.identity.lower() or "avatar" in p.identity.lower():
-                        avatar_joined = True
-                        break
-                if avatar_joined:
-                    break
-                await asyncio.sleep(0.5)
+            # Check BitHuman health before starting
+            health_ok = False
+            try:
+                import urllib.request
+                health_url = (settings.bithuman_api_url or "").replace("/launch", "/ready")
+                with urllib.request.urlopen(health_url, timeout=5) as r:
+                    import json as _json
+                    health = _json.loads(r.read())
+                    health_ok = health.get("status") == "ready" and health.get("model_ready", False)
+                    logger.info("BitHuman health: %s", health)
+            except Exception as he:
+                logger.warning("BitHuman health check failed: %s", he)
 
-            if avatar_joined:
-                avatar_active = True
-                logger.info("BitHuman avatar joined room (url=%s)",
-                            settings.bithuman_api_url or "default")
+            if health_ok:
+                # Temporarily set LIVEKIT_URL to external URL for BitHuman
+                # (BitHuman is outside K8s and can't resolve internal service names)
+                original_lk_url = os.environ.get("LIVEKIT_URL", "")
+                if settings.bithuman_livekit_url:
+                    os.environ["LIVEKIT_URL"] = settings.bithuman_livekit_url
+                    logger.info("Set LIVEKIT_URL to external for BitHuman: %s", settings.bithuman_livekit_url)
+
+                avatar = bithuman.AvatarSession(**avatar_kwargs)
+                await avatar.start(session, room=ctx.room)
+
+                # Restore original LIVEKIT_URL
+                if original_lk_url:
+                    os.environ["LIVEKIT_URL"] = original_lk_url
+                # Wait for the BitHuman avatar worker to actually join the room
+                avatar_joined = False
+                for _ in range(30):  # 15 seconds
+                    for p in ctx.room.remote_participants.values():
+                        if "bithuman" in p.identity.lower() or "avatar" in p.identity.lower():
+                            avatar_joined = True
+                            break
+                    if avatar_joined:
+                        break
+                    await asyncio.sleep(0.5)
+
+                if avatar_joined:
+                    avatar_active = True
+                    logger.info("BitHuman avatar joined room successfully")
+                else:
+                    # Avatar didn't join — clean up to avoid broken audio pipeline
+                    logger.warning("BitHuman avatar worker did not join room within 15s — disabling avatar")
+                    try:
+                        await avatar.close()
+                    except Exception:
+                        pass
             else:
-                logger.warning("BitHuman avatar worker did not join room within 15s — falling back to audio")
+                logger.warning("BitHuman not ready — skipping avatar, audio mode ON")
         except ImportError:
             logger.warning("livekit-plugins-bithuman not installed — avatar disabled, audio fallback ON")
         except Exception as e:
