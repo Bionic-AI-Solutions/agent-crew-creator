@@ -1248,10 +1248,24 @@ async def entrypoint(ctx: JobContext):
                     avatar_kwargs["avatar_image"] = settings.bithuman_avatar_image
             avatar = bithuman.AvatarSession(**avatar_kwargs)
             await avatar.start(session, room=ctx.room)
-            avatar_active = True
-            logger.info("BitHuman avatar started (url=%s, image=%s)",
-                        settings.bithuman_api_url or "default",
-                        settings.bithuman_avatar_image[:50] if settings.bithuman_avatar_image else "none")
+            # Wait for the BitHuman avatar worker to actually join the room
+            # If it doesn't join within 15s, fall back to audio output
+            avatar_joined = False
+            for _ in range(30):  # 15 seconds
+                for p in ctx.room.remote_participants.values():
+                    if "bithuman" in p.identity.lower() or "avatar" in p.identity.lower():
+                        avatar_joined = True
+                        break
+                if avatar_joined:
+                    break
+                await asyncio.sleep(0.5)
+
+            if avatar_joined:
+                avatar_active = True
+                logger.info("BitHuman avatar joined room (url=%s)",
+                            settings.bithuman_api_url or "default")
+            else:
+                logger.warning("BitHuman avatar worker did not join room within 15s — falling back to audio")
         except ImportError:
             logger.warning("livekit-plugins-bithuman not installed — avatar disabled, audio fallback ON")
         except Exception as e:
