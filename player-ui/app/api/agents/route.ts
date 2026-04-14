@@ -35,7 +35,7 @@ export async function GET() {
     // Call platform internal API for agent list
     const url = `${platformUrl}/api/player-ui/agents?slug=${encodeURIComponent(appSlug)}`;
     const res = await fetch(url, {
-      headers: { "X-Internal-Token": process.env.PLATFORM_INTERNAL_TOKEN || "" },
+      headers: { "X-Internal-Token": process.env.PLAYER_UI_INTERNAL_TOKEN || process.env.PLATFORM_INTERNAL_TOKEN || "" },
       next: { revalidate: 30 }, // cache for 30s
     });
 

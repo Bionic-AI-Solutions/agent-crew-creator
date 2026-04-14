@@ -806,6 +806,10 @@ export async function applyPlayerUi(
                 value: `http://bionic-platform.bionic-platform.svc.cluster.local:80`,
               },
               {
+                name: "PLAYER_UI_INTERNAL_TOKEN",
+                value: process.env.PLAYER_UI_INTERNAL_TOKEN || "",
+              },
+              {
                 name: "LIVEKIT_URL",
                 valueFrom: { secretKeyRef: { name: secretName, key: "livekit_url" } },
               },
