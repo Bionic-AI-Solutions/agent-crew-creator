@@ -312,8 +312,7 @@ export async function deployAgent(
     log.warn("Failed to read Letta server password from Vault (non-fatal)", { error: String(err) });
   }
 
-  // 4b. ConfigMap + ExternalSecret in the app's namespace
-  await k8s.ensureConfigMap(namespace, configMapName, configData);
+  // 4b. ExternalSecret (ConfigMap written AFTER presigned URLs are generated below)
   await k8s.createExternalSecret(namespace);
 
   // 5. Resolve per-agent provider API keys from Vault — for ALL three
@@ -428,7 +427,11 @@ export async function deployAgent(
     }
   }
 
-  // 6. Apply Deployment — just agent-{name} since namespace provides isolation
+  // 6. Write ConfigMap with ALL finalized values (presigned URLs, API keys, etc.)
+  await k8s.ensureConfigMap(namespace, configMapName, configData);
+  log.info("ConfigMap written with all resolved values", { namespace, configMapName, keys: Object.keys(configData).length });
+
+  // 7. Apply Deployment — just agent-{name} since namespace provides isolation
   await k8s.applyAgentDeployment(namespace, agentName, image, configMapName, secretName, extraEnv);
 
   // 6. Update status to deploying
