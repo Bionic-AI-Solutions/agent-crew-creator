@@ -1262,12 +1262,17 @@ async def entrypoint(ctx: JobContext):
 
     # ── Greeting — primary AI speaks first ────────────────────
     # Try to get user's display name from room participants (more reliable than claims)
+    # Wait briefly for user to join the room
     if not user_display_name:
-        for p in ctx.room.remote_participants.values():
-            if p.name and not p.identity.startswith("agent-"):
-                user_display_name = p.name
-                logger.info("Got user name from room participant: %s", user_display_name)
+        for _ in range(5):  # Wait up to 2.5s
+            for p in ctx.room.remote_participants.values():
+                if p.name and not p.identity.startswith("agent-"):
+                    user_display_name = p.name
+                    logger.info("Got user name from room participant: %s", user_display_name)
+                    break
+            if user_display_name:
                 break
+            await asyncio.sleep(0.5)
 
     is_returning_user = False
     user_name = user_display_name or ""
@@ -1366,8 +1371,8 @@ async def entrypoint(ctx: JobContext):
                 import urllib.request
                 ambient_tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
                 urllib.request.urlretrieve(settings.ambient_audio_url, ambient_tmp.name)
-                bg_kwargs["ambient_sound"] = ambient_tmp.name
-                logger.info("Downloaded custom ambient audio to %s", ambient_tmp.name)
+                bg_kwargs["ambient_sound"] = AudioConfig(ambient_tmp.name, volume=0.3)
+                logger.info("Downloaded custom ambient audio to %s (volume=0.3)", ambient_tmp.name)
             except Exception as dl_err:
                 logger.warning("Failed to download ambient audio: %s", dl_err)
 

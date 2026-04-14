@@ -246,29 +246,36 @@ export async function deployAgent(
         lettaToolByName.set(lt.name, lt.id);
       }
 
-      // Attach missing tools — prefer our source code over Letta built-ins
+      // Sync tools — replace built-ins with our custom versions, attach missing
       for (const name of desiredLettaNames) {
-        if (!currentToolNames.has(name)) {
-          let lettaId = lettaToolByName.get(name);
+        const sourceCode = await loadToolSourceCode(name);
 
-          // Always prefer our custom source code over Letta built-in tools
-          // This ensures web_search uses local GPU search, not EXA
-          const sourceCode = await loadToolSourceCode(name);
-          if (sourceCode && lettaId) {
-            // Detach the existing (possibly built-in) version first
+        // If tool is already attached but we have custom source code, check if it needs replacing
+        if (currentToolNames.has(name) && sourceCode) {
+          const existingTool = (agentLettaTools as any[]).find((t: any) => t.name === name);
+          // Replace if existing tool has no source_code (built-in) or different source
+          if (existingTool && (!existingTool.source_code || !existingTool.source_code.includes("mcp.baisoln.com"))) {
             try {
-              const existingOnAgent = (agentLettaTools as any[]).find((t: any) => t.name === name);
-              if (existingOnAgent) {
-                await lettaAdmin.detachToolFromAgent(agent.lettaAgentId, existingOnAgent.id);
-              }
-              // Delete the old tool and create fresh from our source
-              await lettaAdmin.deleteTool(lettaId);
-              lettaId = undefined; // Force recreation below
-              log.info("Replaced built-in tool with custom version", { tool: name });
+              await lettaAdmin.detachToolFromAgent(agent.lettaAgentId, existingTool.id);
+              // Don't delete shared tools (they may be used by other agents)
+              // Create our custom version with a unique name if needed
+              const bt = BUILTIN_TOOLS.find((b) => b.lettaToolName === name);
+              const created = await lettaAdmin.createTool(sourceCode, {
+                description: bt?.description,
+                tags: ["custom", name],
+                pipRequirements: getToolPipRequirements(name),
+              });
+              await lettaAdmin.attachToolToAgent(agent.lettaAgentId, created.id);
+              log.info("Replaced built-in tool with custom version", { tool: name, newId: created.id });
             } catch (replaceErr) {
               log.warn("Could not replace built-in tool", { tool: name, error: String(replaceErr) });
             }
           }
+          continue; // Already handled
+        }
+
+        if (!currentToolNames.has(name)) {
+          let lettaId = lettaToolByName.get(name);
 
           // Auto-create tool from source code if available
           if (!lettaId && sourceCode) {
