@@ -72,8 +72,11 @@ class Settings(BaseSettings):
     # Vision (feed camera/screen frames to the primary LLM)
     vision_enabled: bool = False
 
-    # Background audio (thinking sounds)
+    # Background audio
     background_audio_enabled: bool = False
+    busy_audio_enabled: bool = False
+    ambient_audio_url: str = ""    # Custom ambient sound (loop) — presigned MinIO URL
+    thinking_audio_url: str = ""   # Custom thinking sound — presigned MinIO URL
 
     # Capture (periodic frame storage to MinIO, separate from vision)
     capture_mode: str = "off"

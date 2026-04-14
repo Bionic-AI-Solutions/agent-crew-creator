@@ -1345,18 +1345,31 @@ async def entrypoint(ctx: JobContext):
     if settings.vision_enabled:
         logger.info("Vision enabled — primary LLM receives video frames from user")
 
-    # ── Background audio (always on) ────────────────────────
-    # Plays subtle typing sounds during LLM processing so the user
-    # knows the system is working. Always enabled — critical UX signal.
+    # ── Background audio ────────────────────────────────────
     try:
         from livekit.agents import BackgroundAudioPlayer, AudioConfig, BuiltinAudioClip
-        bg_audio = BackgroundAudioPlayer(
-            thinking_sound=[
+
+        bg_kwargs: dict = {}
+
+        # Ambient sound: custom URL or None
+        if settings.ambient_audio_url:
+            bg_kwargs["ambient_sound"] = settings.ambient_audio_url
+            logger.info("Using custom ambient audio: %s", settings.ambient_audio_url[:60])
+
+        # Thinking sound: custom URL or built-in keyboard typing
+        if settings.thinking_audio_url:
+            bg_kwargs["thinking_sound"] = settings.thinking_audio_url
+            logger.info("Using custom thinking audio: %s", settings.thinking_audio_url[:60])
+        else:
+            bg_kwargs["thinking_sound"] = [
                 AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING, volume=0.4),
-            ],
-        )
+            ]
+
+        bg_audio = BackgroundAudioPlayer(**bg_kwargs)
         await bg_audio.start(room=ctx.room, agent_session=session)
-        logger.info("Background audio enabled (thinking sounds)")
+        logger.info("Background audio started (ambient=%s, thinking=%s)",
+                     "custom" if settings.ambient_audio_url else "none",
+                     "custom" if settings.thinking_audio_url else "builtin")
     except Exception as e:
         logger.warning("Background audio failed: %s", e)
 

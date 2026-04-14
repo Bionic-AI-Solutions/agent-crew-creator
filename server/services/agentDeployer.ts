@@ -391,17 +391,21 @@ export async function deployAgent(
       log.warn("Failed to read BitHuman keys from shared Vault (non-fatal)", { error: String(err) });
     }
 
-    // Generate a presigned URL for the avatar image so the agent pod can
-    // fetch it over HTTP. The MinIO path is stored in DB as "bucket/key".
+    // Generate a presigned URL for the avatar image. BitHuman is external
+    // (192.168.0.10), so the URL must use the external MinIO endpoint.
     if (agent.avatarImageUrl) {
       try {
         const { getClient } = await import("./minioAdmin.js");
         const client = await getClient();
         const [bucket, ...keyParts] = agent.avatarImageUrl.split("/");
         const key = keyParts.join("/");
-        const presignedUrl = await client.presignedGetObject(bucket, key, 7 * 24 * 60 * 60);
+        let presignedUrl = await client.presignedGetObject(bucket, key, 7 * 24 * 60 * 60);
+        // Replace internal MinIO hostname with external endpoint for BitHuman access
+        const externalMinio = process.env.MINIO_EXTERNAL_ENDPOINT || "s3.baisoln.com";
+        const internalMinio = process.env.MINIO_ENDPOINT || "minio-tenant-hl.minio.svc.cluster.local:9000";
+        presignedUrl = presignedUrl.replace(`http://${internalMinio}`, `https://${externalMinio}`);
         configData.BITHUMAN_AVATAR_IMAGE = presignedUrl;
-        log.info("Generated presigned avatar URL", { agentId: agent.id, bucket, key });
+        log.info("Generated presigned avatar URL (external)", { agentId: agent.id, bucket, key });
       } catch (err) {
         log.warn("Failed to generate presigned avatar URL (non-fatal)", { error: String(err) });
       }
