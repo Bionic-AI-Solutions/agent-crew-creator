@@ -324,16 +324,13 @@ interface Props {
 }
 
 function AvatarUpload({ agentId, currentUrl }: { agentId: number; currentUrl: string }) {
-  // Preview uses a local data URL (browser-side), not the MinIO presigned URL
-  // (which points to an internal K8s service unreachable from the browser).
   const [preview, setPreview] = useState<string>("");
   const [uploading, setUploading] = useState(false);
-  const [uploaded, setUploaded] = useState(!!currentUrl);
+  const [fileName, setFileName] = useState<string>(currentUrl ? currentUrl.split("/").pop() || "" : "");
   const uploadMutation = trpc.agentsCrud.uploadAvatarImage.useMutation({
     onSuccess: () => {
-      toast.success("Avatar image uploaded");
+      toast.success("Avatar image saved (replaces previous)");
       setUploading(false);
-      setUploaded(true);
     },
     onError: (err: any) => {
       toast.error(err.message);
@@ -353,12 +350,11 @@ function AvatarUpload({ agentId, currentUrl }: { agentId: number; currentUrl: st
       return;
     }
     setUploading(true);
+    setFileName(file.name);
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result as string;
-      // Show local preview immediately
       setPreview(dataUrl);
-      // Upload the base64 payload (strip data URL prefix)
       const base64 = dataUrl.split(",")[1];
       uploadMutation.mutate({
         agentId,
@@ -374,22 +370,25 @@ function AvatarUpload({ agentId, currentUrl }: { agentId: number; currentUrl: st
       <div className="w-20 h-20 rounded-lg border-2 border-dashed border-muted-foreground/30 flex items-center justify-center overflow-hidden bg-muted/30 shrink-0">
         {preview ? (
           <img src={preview} alt="Avatar" className="w-full h-full object-cover rounded-lg" />
-        ) : uploaded ? (
+        ) : currentUrl ? (
           <div className="text-center">
             <User className="h-6 w-6 text-green-500 mx-auto" />
-            <span className="text-[9px] text-green-500">Uploaded</span>
+            <span className="text-[9px] text-green-500">Saved</span>
           </div>
         ) : (
           <User className="h-8 w-8 text-muted-foreground/40" />
         )}
       </div>
       <div className="space-y-2">
+        {fileName && (
+          <p className="text-xs text-green-500">✓ {fileName.length > 30 ? fileName.slice(0, 27) + "..." : fileName}</p>
+        )}
         <p className="text-xs text-muted-foreground">
-          Upload a face image for the avatar. The image should be a clear, front-facing photo.
+          {currentUrl ? "Upload a new image to replace." : "Upload a clear, front-facing face image."}
         </p>
         <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer px-3 py-1.5 border rounded-md hover:bg-muted transition-colors">
           <Upload className="h-3 w-3" />
-          {uploading ? "Uploading..." : "Choose Image"}
+          {uploading ? "Uploading..." : currentUrl ? "Replace Image" : "Choose Image"}
           <input type="file" accept="image/*" className="hidden" onChange={handleFile} disabled={uploading} />
         </label>
       </div>
@@ -399,14 +398,16 @@ function AvatarUpload({ agentId, currentUrl }: { agentId: number; currentUrl: st
 
 function AudioUpload({ agentId, audioType, label }: { agentId: number; audioType: "ambient" | "thinking"; label: string }) {
   const [uploading, setUploading] = useState(false);
+  const [fileName, setFileName] = useState<string>("");
   const uploadMutation = trpc.agentsCrud.uploadAudioFile.useMutation({
     onSuccess: () => {
-      toast.success(`${label} uploaded`);
+      toast.success(`${label} saved (replaces previous)`);
       setUploading(false);
     },
     onError: (err: any) => {
       toast.error(err.message);
       setUploading(false);
+      setFileName("");
     },
   });
 
@@ -415,6 +416,7 @@ function AudioUpload({ agentId, audioType, label }: { agentId: number; audioType
     if (!file) return;
     if (file.size > 10 * 1024 * 1024) { toast.error("Max 10MB"); return; }
     setUploading(true);
+    setFileName(file.name);
     const reader = new FileReader();
     reader.onload = () => {
       const base64 = (reader.result as string).split(",")[1];
@@ -426,12 +428,15 @@ function AudioUpload({ agentId, audioType, label }: { agentId: number; audioType
   return (
     <div className="ml-6">
       <Label className="text-[10px] text-muted-foreground">{label}</Label>
+      {fileName && (
+        <p className="text-[10px] text-green-500 mt-1">✓ {fileName.length > 35 ? fileName.slice(0, 32) + "..." : fileName}</p>
+      )}
       <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer px-3 py-1.5 border rounded-md hover:bg-muted transition-colors mt-1">
         <Upload className="h-3 w-3" />
-        {uploading ? "Uploading..." : "Choose Audio File"}
+        {uploading ? "Uploading..." : fileName ? "Replace Audio File" : "Choose Audio File"}
         <input type="file" accept="audio/*" className="hidden" onChange={handleFile} disabled={uploading} />
       </label>
-      <p className="text-[10px] text-muted-foreground mt-1">MP3, WAV, or OGG (max 10MB). Stored in MinIO.</p>
+      <p className="text-[10px] text-muted-foreground mt-1">MP3, WAV, or OGG (max 10MB). Replaces previous file.</p>
     </div>
   );
 }
