@@ -47,9 +47,10 @@ registerPlayerUiRoutes(app);
 // ── Auth routes ─────────────────────────────────────────────────
 app.use("/api/auth", createAuthRouter());
 
-// ── tRPC ────────────────────────────────────────────────────────
+// ── tRPC (with higher body limit for file uploads like audio/avatar) ──
 app.use(
   "/trpc",
+  express.json({ limit: "20mb" }), // Override 1MB default for tRPC mutations with base64 payloads
   createExpressMiddleware({
     router: appTrpcRouter,
     createContext: ({ req, res }) => createContext({ req, res }),

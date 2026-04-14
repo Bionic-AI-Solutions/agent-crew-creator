@@ -140,12 +140,14 @@ export async function updateAgent(
 // ── Memory / Passages ───────────────────────────────────────────
 
 export async function createPassage(agentId: string, text: string): Promise<string> {
-  const result = await lettaRequest("POST", `/v1/agents/${agentId}/archival/`, { text });
+  // Letta API renamed: /archival/ → /archival-memory
+  const result = await lettaRequest("POST", `/v1/agents/${agentId}/archival-memory`, { text });
+  if (Array.isArray(result)) return result[0]?.id || "";
   return result?.id || "";
 }
 
 export async function deletePassage(agentId: string, passageId: string): Promise<void> {
-  await lettaRequest("DELETE", `/v1/agents/${agentId}/archival/${passageId}/`);
+  await lettaRequest("DELETE", `/v1/agents/${agentId}/archival-memory/${passageId}`);
 }
 
 // ── Memory Blocks ───────────────────────────────────────────────
