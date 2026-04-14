@@ -687,10 +687,13 @@ export const agentRouter = router({
       await client.putObject(bucket, key, buf, buf.length, { "Content-Type": mime });
 
       const minioPath = `${bucket}/${key}`;
-      const column = input.audioType === "ambient" ? "ambient_audio_url" : "thinking_audio_url";
+      // Drizzle uses camelCase column names, not snake_case
+      const updateData = input.audioType === "ambient"
+        ? { ambientAudioUrl: minioPath, updatedAt: new Date() }
+        : { thinkingAudioUrl: minioPath, updatedAt: new Date() };
       await ctx.db
         .update(agentConfigs)
-        .set({ [column]: minioPath, updatedAt: new Date() } as any)
+        .set(updateData as any)
         .where(eq(agentConfigs.id, input.agentId));
 
       log.info("Uploaded audio file", { agentId: input.agentId, type: input.audioType, key, size: buf.length });
