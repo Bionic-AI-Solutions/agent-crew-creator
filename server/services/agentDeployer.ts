@@ -294,6 +294,38 @@ export async function deployAgent(
         desired: [...desiredLettaNames],
         current: [...currentToolNames],
       });
+
+      // Set tool execution environment variables on the Letta agent
+      // These are needed by generate_image, generate_pdf, code_interpreter etc.
+      try {
+        const { readPlatformVaultPath } = await import("../vaultClient.js");
+        const appSecrets = (await vault.readAppSecret(app.slug)) || {};
+        const sharedInfra = (await readPlatformVaultPath("shared/infra")) || {};
+
+        const toolEnv: Record<string, string> = {};
+        // Gemini API key for generate_image
+        if (sharedInfra.gemini_api_key) toolEnv.GEMINI_API_KEY = sharedInfra.gemini_api_key;
+        // MinIO credentials for file storage (generate_image, generate_pdf)
+        if (appSecrets.minio_access_key) toolEnv.MINIO_ACCESS_KEY = appSecrets.minio_access_key;
+        if (appSecrets.minio_secret_key) toolEnv.MINIO_SECRET_KEY = appSecrets.minio_secret_key;
+        toolEnv.MINIO_BUCKET = app.slug;
+        toolEnv.MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || "minio-tenant-hl.minio.svc.cluster.local:9000";
+        toolEnv.MINIO_PUBLIC_HOST = process.env.MINIO_EXTERNAL_ENDPOINT || "s3.baisoln.com";
+        // Letta self-reference for archival memory inserts
+        if (appSecrets.letta_api_key) toolEnv.LETTA_API_KEY = appSecrets.letta_api_key;
+        toolEnv.LETTA_BASE_URL = process.env.LETTA_BASE_URL || "http://letta-server.letta.svc.cluster.local:8283";
+        toolEnv.LETTA_AGENT_ID = agent.lettaAgentId;
+
+        if (Object.keys(toolEnv).length > 0) {
+          const envVars = Object.entries(toolEnv).map(([key, value]) => ({ key, value }));
+          await lettaAdmin.updateAgent(agent.lettaAgentId, {
+            tool_exec_environment_variables: envVars,
+          });
+          log.info("Set Letta tool exec env vars", { agentId: agent.lettaAgentId, keys: Object.keys(toolEnv) });
+        }
+      } catch (envErr) {
+        log.warn("Failed to set Letta tool exec env vars (non-fatal)", { error: String(envErr) });
+      }
     } catch (err) {
       log.warn("Failed to sync tools to Letta (non-fatal)", { error: String(err) });
     }

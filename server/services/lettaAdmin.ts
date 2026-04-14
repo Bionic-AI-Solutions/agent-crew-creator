@@ -108,6 +108,10 @@ export async function getAgent(agentId: string): Promise<any> {
   return lettaRequest("GET", `/v1/agents/${agentId}/`);
 }
 
+export async function updateAgent(agentId: string, updates: Record<string, any>): Promise<any> {
+  return lettaRequest("PATCH", `/v1/agents/${agentId}/`, updates);
+}
+
 export async function getAgentByName(name: string): Promise<any | null> {
   const agents = await lettaRequest("GET", `/v1/agents/?name=${encodeURIComponent(name)}`);
   if (Array.isArray(agents) && agents.length > 0) {
@@ -473,6 +477,7 @@ export const lettaAdmin = {
   createAgent,
   updateAgent,
   getAgent,
+  updateAgent,
   getAgentByName,
   deleteAgent,
   createPassage,
