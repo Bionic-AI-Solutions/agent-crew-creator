@@ -549,6 +549,39 @@ export async function runDeletionJob(appId: number): Promise<void> {
         log.warn("Failed to remove LiveKit key from Vault (non-fatal)", { error: String(err) });
       }
 
+      // Remove from ESO template (prevents stale refs that break ALL apps' key sync)
+      try {
+        const k8sLib = await import("@kubernetes/client-node");
+        const kc = new k8sLib.KubeConfig();
+        if (process.env.KUBECONFIG) { kc.loadFromFile(process.env.KUBECONFIG); }
+        else { try { kc.loadFromCluster(); } catch { kc.loadFromDefault(); } }
+        const customApi = kc.makeApiClient(k8sLib.CustomObjectsApi);
+        const esoRes = await customApi.getNamespacedCustomObject({
+          group: "external-secrets.io", version: "v1",
+          namespace: "livekit", plural: "externalsecrets", name: "livekit-api-keys",
+        });
+        const eso = (esoRes?.body || esoRes) as any;
+        // Remove data refs for this slug
+        eso.spec.data = (eso.spec.data || []).filter(
+          (d: any) => !d.secretKey?.startsWith(safeSlug),
+        );
+        // Remove template lines for this slug
+        const tpl = eso.spec?.target?.template?.data?.LIVEKIT_KEYS || "";
+        eso.spec.target.template.data.LIVEKIT_KEYS = tpl
+          .split("\n")
+          .filter((l: string) => !l.includes(safeSlug))
+          .join("\n");
+        // Replace the entire ESO (PUT, not PATCH — avoids merge-patch array issues)
+        await customApi.replaceNamespacedCustomObject({
+          group: "external-secrets.io", version: "v1",
+          namespace: "livekit", plural: "externalsecrets", name: "livekit-api-keys",
+          body: eso,
+        });
+        log.info("Removed LiveKit key from ESO template", { slug: app.slug });
+      } catch (esoErr) {
+        log.warn("Failed to clean ESO template (non-fatal)", { error: String(esoErr) });
+      }
+
       // Remove from K8s secret directly (immediate effect)
       await k8s.removeLivekitKey(secrets.livekit_api_key);
       await k8s.restartLivekitServer();
