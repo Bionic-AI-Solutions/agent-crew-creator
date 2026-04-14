@@ -1074,8 +1074,11 @@ async def entrypoint(ctx: JobContext):
     try:
         claims = ctx.token_claims()
         user_label = claims.identity or room_name
-        user_display_name = claims.name or ""
-    except Exception:
+        # LiveKit SDK exposes 'name' on claims for the participant display name
+        user_display_name = getattr(claims, 'name', '') or getattr(claims, 'metadata', '') or ""
+        logger.info("Session user: identity=%s, display_name=%s", user_label, user_display_name)
+    except Exception as e:
+        logger.info("Could not read token claims: %s", e)
         user_label = room_name
         user_display_name = ""
 
@@ -1258,9 +1261,14 @@ async def entrypoint(ctx: JobContext):
     )
 
     # ── Greeting — primary AI speaks first ────────────────────
-    # Reads the user's Letta memory block to personalize the greeting.
-    # If the user is known, greet by name. If new, ask for their name.
-    # Build personalized greeting and inject user context from Letta memory
+    # Try to get user's display name from room participants (more reliable than claims)
+    if not user_display_name:
+        for p in ctx.room.remote_participants.values():
+            if p.name and not p.identity.startswith("agent-"):
+                user_display_name = p.name
+                logger.info("Got user name from room participant: %s", user_display_name)
+                break
+
     is_returning_user = False
     user_name = user_display_name or ""
     user_context = ""

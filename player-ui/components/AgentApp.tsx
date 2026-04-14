@@ -235,39 +235,80 @@ function AuthenticatedApp({ session }: { session: any }) {
   );
 }
 
-/** Parse a chat message — detect JSON artifacts (images, PDFs) and render accordingly */
-function parseMessageContent(raw: string): { type: "text" | "image" | "artifact"; html: string; imageUrl?: string; title?: string } {
-  // Try parsing as JSON artifact
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed.url && parsed.content_type?.startsWith("image/")) {
-      return { type: "image", html: "", imageUrl: parsed.url || parsed.download_url, title: parsed.summary || parsed.title || "Image" };
-    }
-    if (parsed.url && parsed.filename?.endsWith(".pdf")) {
-      return { type: "artifact", html: `<a href="${parsed.url}" target="_blank" style="color:var(--accent)">📄 ${parsed.filename}</a> (${parsed.pages || "?"} pages)` };
-    }
-    if (parsed.error) {
-      return { type: "text", html: `<span style="color:var(--error)">⚠ ${parsed.error}</span>` };
-    }
-    // Other JSON — try to extract meaningful content
-    if (parsed.download_url || parsed.url) {
-      const url = parsed.download_url || parsed.url;
-      if (url.match(/\.(png|jpg|jpeg|gif|webp)/i)) {
-        return { type: "image", html: "", imageUrl: url, title: parsed.summary || parsed.title || "" };
-      }
-    }
-  } catch {
-    // Not JSON — render as markdown
-  }
+/** Parse a chat message — detect JSON artifacts (images, PDFs) embedded in text */
+function parseMessageContent(raw: string): { type: "text" | "image" | "artifact"; html: string; imageUrl?: string; title?: string }[] {
+  const results: { type: "text" | "image" | "artifact"; html: string; imageUrl?: string; title?: string }[] = [];
 
   // Filter out internal Letta noise
   if (raw.startsWith("*(No output") || raw.startsWith("*(Waiting")) {
-    return { type: "text", html: "" }; // Skip noise
+    return [];
   }
 
-  // Render as markdown
-  const html = marked.parse(raw, { breaks: true, gfm: true }) as string;
-  return { type: "text", html };
+  // Try parsing entire message as JSON artifact
+  try {
+    const parsed = JSON.parse(raw.trim());
+    if (parsed.url || parsed.download_url || parsed.image_url) {
+      const url = parsed.url || parsed.download_url || parsed.image_url;
+      if (parsed.content_type?.startsWith("image/") || url.match(/\.(png|jpg|jpeg|gif|webp)/i)) {
+        return [{ type: "image", html: "", imageUrl: url, title: parsed.summary || parsed.title || "" }];
+      }
+      if (parsed.filename?.endsWith(".pdf")) {
+        return [{ type: "artifact", html: `<a href="${url}" target="_blank" style="color:var(--accent)">📄 ${parsed.filename}</a> (${parsed.pages || "?"} pages)` }];
+      }
+    }
+    if (parsed.error) {
+      return [{ type: "text", html: `<span style="color:var(--error)">⚠️ ${parsed.error}</span>` }];
+    }
+  } catch {
+    // Not pure JSON — check for embedded JSON within text
+  }
+
+  // Split message: find JSON blocks embedded in text
+  // Pattern: text before JSON + JSON object + text after
+  const jsonRegex = /\{[^{}]*"(?:type|url|download_url|image_url|content_type)"[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = jsonRegex.exec(raw)) !== null) {
+    // Add text before the JSON block
+    const textBefore = raw.slice(lastIndex, match.index).trim();
+    if (textBefore) {
+      const html = marked.parse(textBefore, { breaks: true, gfm: true }) as string;
+      if (html.trim()) results.push({ type: "text", html });
+    }
+
+    // Parse the JSON block
+    try {
+      const parsed = JSON.parse(match[0]);
+      const url = parsed.url || parsed.download_url || parsed.image_url;
+      if (url && (parsed.content_type?.startsWith("image/") || url.match(/\.(png|jpg|jpeg|gif|webp)/i))) {
+        results.push({ type: "image", html: "", imageUrl: url, title: parsed.summary || parsed.title || "" });
+      } else if (url) {
+        results.push({ type: "artifact", html: `<a href="${url}" target="_blank" style="color:var(--accent)">📎 ${parsed.filename || "Download"}</a>` });
+      }
+    } catch {
+      // Invalid JSON — render as text
+      const html = marked.parse(match[0], { breaks: true, gfm: true }) as string;
+      results.push({ type: "text", html });
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Add remaining text after last JSON block
+  const remaining = raw.slice(lastIndex).trim();
+  if (remaining) {
+    const html = marked.parse(remaining, { breaks: true, gfm: true }) as string;
+    if (html.trim()) results.push({ type: "text", html });
+  }
+
+  // If no JSON blocks were found, just render the whole thing as markdown
+  if (results.length === 0) {
+    const html = marked.parse(raw, { breaks: true, gfm: true }) as string;
+    if (html.trim()) results.push({ type: "text", html });
+  }
+
+  return results;
 }
 
 function ActiveSession({
@@ -334,7 +375,7 @@ function ActiveSession({
   // Parse agent messages for the presentation screen
   const agentMessages = chatMessages
     .filter((msg) => msg.from?.identity !== localParticipant.identity)
-    .map((msg) => parseMessageContent(msg.message))
+    .flatMap((msg) => parseMessageContent(msg.message))
     .filter((m) => m.html || m.imageUrl); // Skip empty
 
   if (connectionState === ConnectionState.Connecting) {
