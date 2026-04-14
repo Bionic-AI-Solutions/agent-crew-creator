@@ -23,6 +23,30 @@ import type { App, AgentConfig } from "../../drizzle/platformSchema.js";
 
 const log = createLogger("AgentDeployer");
 
+// ── Letta tool source code loader ────────────────────────────────
+const TOOL_SOURCE_DIR = new URL("../letta-tools/", import.meta.url).pathname;
+
+async function loadToolSourceCode(toolName: string): Promise<string | null> {
+  try {
+    const fs = await import("fs/promises");
+    const path = `${TOOL_SOURCE_DIR}${toolName}.py`;
+    return await fs.readFile(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function getToolPipRequirements(toolName: string): { name: string }[] {
+  const reqs: Record<string, { name: string }[]> = {
+    code_interpreter: [],
+    generate_pdf: [{ name: "reportlab" }, { name: "minio" }],
+    generate_image: [],
+    web_search: [],
+    run_crew: [{ name: "requests" }],
+  };
+  return reqs[toolName] || [];
+}
+
 /**
  * Map an llmProvider value (lowercase) to the conventional SDK env var.
  * Used to inject the per-agent API key from Vault into the worker pod.
@@ -222,15 +246,36 @@ export async function deployAgent(
         lettaToolByName.set(lt.name, lt.id);
       }
 
-      // Attach missing tools
+      // Attach missing tools — auto-create from source code if not on Letta server
       for (const name of desiredLettaNames) {
         if (!currentToolNames.has(name)) {
-          const lettaId = lettaToolByName.get(name);
+          let lettaId = lettaToolByName.get(name);
+
+          // Auto-create tool if source code is available
+          if (!lettaId) {
+            const sourceCode = await loadToolSourceCode(name);
+            if (sourceCode) {
+              try {
+                const bt = BUILTIN_TOOLS.find((b) => b.lettaToolName === name);
+                const created = await lettaAdmin.createTool(sourceCode, {
+                  description: bt?.description,
+                  tags: ["builtin", name],
+                  pipRequirements: getToolPipRequirements(name),
+                });
+                lettaId = created.id;
+                lettaToolByName.set(name, lettaId);
+                log.info("Auto-created Letta tool from source", { tool: name, lettaId });
+              } catch (createErr) {
+                log.warn("Failed to create Letta tool", { tool: name, error: String(createErr) });
+              }
+            } else {
+              log.warn("Tool not found on Letta server and no source code available", { tool: name });
+            }
+          }
+
           if (lettaId) {
             await lettaAdmin.attachToolToAgent(agent.lettaAgentId, lettaId);
             log.info("Attached tool to Letta agent", { tool: name, lettaId });
-          } else {
-            log.warn("Tool not found on Letta server", { tool: name });
           }
         }
       }
