@@ -21,7 +21,7 @@ export async function POST(req: Request) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { agentName } = (await req.json()) as { agentName?: string };
+  const { agentName, clientId } = (await req.json()) as { agentName?: string; clientId?: string };
   if (!agentName) {
     return Response.json({ error: "agentName required" }, { status: 400 });
   }
@@ -46,6 +46,7 @@ export async function POST(req: Request) {
       identity,
       name: displayName,
       ttl: TTL,
+      metadata: clientId ? JSON.stringify({ client_id: clientId }) : undefined,
     });
     at.addGrant({
       roomJoin: true,
@@ -70,6 +71,7 @@ export async function POST(req: Request) {
       roomName,
       identity,
       displayName,
+      clientId: clientId || undefined,
     });
   } catch (err: any) {
     console.error("Token generation error:", err);

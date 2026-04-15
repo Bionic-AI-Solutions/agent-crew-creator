@@ -36,6 +36,7 @@ interface ConnectionBundle {
   roomName: string;
   identity: string;
   displayName: string;
+  clientId?: string;
 }
 
 export function AgentApp() {
@@ -84,6 +85,14 @@ function AuthenticatedApp({ session }: { session: any }) {
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<NodeJS.Timeout | null>(null);
+  const [clientId, setClientId] = useState("");
+
+  // Pre-fill clientId from URL param (e.g., ?clientId=LOAN-123)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const urlClientId = params.get("clientId");
+    if (urlClientId) setClientId(urlClientId);
+  }, []);
 
   // Poll for agents
   useEffect(() => {
@@ -118,7 +127,7 @@ function AuthenticatedApp({ session }: { session: any }) {
       const res = await fetch("/api/livekit/token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentName: selectedAgent.dispatchName }),
+        body: JSON.stringify({ agentName: selectedAgent.dispatchName, clientId: clientId.trim() || undefined }),
       });
       if (!res.ok) {
         const data = await res.json();
@@ -214,6 +223,23 @@ function AuthenticatedApp({ session }: { session: any }) {
             <span style={{ fontSize: 14 }}>{selectedAgent.displayName}</span>
           </div>
         )}
+
+        {/* Client reference (optional — for session continuity) */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 6 }}>
+            Client Reference (optional)
+          </label>
+          <input
+            type="text"
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+            placeholder="e.g., LOAN-2026-4821"
+            style={styles.chatInput || { width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", fontSize: 13, outline: "none" }}
+          />
+          <p style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4, opacity: 0.7 }}>
+            Enter a client ID to continue a previous session
+          </p>
+        </div>
 
         {error && (
           <p style={{ color: "var(--error)", fontSize: 13, marginBottom: 12 }}>{error}</p>
@@ -390,9 +416,14 @@ function ActiveSession({
     }
   };
 
-  // Find agent's video track (avatar)
-  const agentParticipant = remoteParticipants.find((p) => p.identity.startsWith("agent-"));
-  const agentVideoTrack = agentParticipant?.getTrackPublication(Track.Source.Camera);
+  // Find avatar video track — BitHuman avatar joins as "bithuman-avatar-agent"
+  const avatarParticipant = remoteParticipants.find((p) => p.identity === "bithuman-avatar-agent");
+  const avatarVideoTrack = avatarParticipant?.getTrackPublication(Track.Source.Camera);
+  // Fallback: any remote participant with a camera (for non-BitHuman avatars)
+  const agentParticipant = avatarParticipant ?? remoteParticipants.find((p) =>
+    p.identity.startsWith("agent-") && p.getTrackPublication(Track.Source.Camera)
+  );
+  const agentVideoTrack = avatarVideoTrack ?? agentParticipant?.getTrackPublication(Track.Source.Camera);
 
   // Parse agent messages for the presentation screen
   const agentMessages = chatMessages

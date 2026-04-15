@@ -1104,7 +1104,7 @@ async def entrypoint(ctx: JobContext):
         vad=silero.VAD.load(),
         turn_detection=MultilingualModel(),
         preemptive_generation=True,
-        min_endpointing_delay=0.4,
+        min_endpointing_delay=0.8,
     )
 
     # ── Metrics logging ──────────────────────────────────────
@@ -1217,10 +1217,38 @@ async def entrypoint(ctx: JobContext):
 
     await ctx.connect(auto_subscribe=auto_sub)
 
-    # ── Per-user memory isolation ────────────────────────────
-    # Swap the Letta agent's "human" block to this user's block
-    # so each user gets isolated memory within the shared agent.
-    await swap_user_memory_block(user_label)
+    # ── Interview mode: extract client_id from participant metadata ──
+    client_id = ""
+    if settings.interview_mode:
+        # Wait for user participant to appear so we can read metadata
+        for attempt in range(10):  # 5 seconds
+            for p in ctx.room.remote_participants.values():
+                if not p.identity.startswith("agent-") and not p.identity.startswith("bithuman"):
+                    p_metadata = getattr(p, 'metadata', '') or ''
+                    if p_metadata:
+                        try:
+                            import json as _json
+                            meta = _json.loads(p_metadata)
+                            client_id = meta.get("client_id", "")
+                        except Exception:
+                            pass
+                    if client_id:
+                        logger.info("Interview mode: client_id=%s (from participant %s)", client_id, p.identity)
+                    else:
+                        logger.info("Interview mode: participant %s has no client_id (metadata=%s)", p.identity, p_metadata[:80])
+                    break
+            if client_id:
+                break
+            await asyncio.sleep(0.5)
+
+        if not client_id:
+            logger.info("Interview mode: no client_id found — using default memory key")
+
+    # ── Per-user/client memory isolation ─────────────────────
+    # In interview mode with a client_id, swap to client-specific block.
+    # Otherwise, swap to user-specific block (default behavior).
+    memory_key = client_id if client_id else user_label
+    await swap_user_memory_block(memory_key)
 
     # ── Avatar (BitHuman, configurable) ──────────────────────
     avatar_active = False
@@ -1333,6 +1361,7 @@ async def entrypoint(ctx: JobContext):
     is_returning_user = False
     user_name = user_display_name or ""
     user_context = ""
+    prior_session_summary = ""
 
     try:
         if LETTA_AGENT_ID:
@@ -1349,17 +1378,49 @@ async def entrypoint(ctx: JobContext):
                         if "Preferences:" in block_text and "(none yet)" not in block_text:
                             is_returning_user = True
                             user_context = block_text
-    except Exception as e:
-        logger.info("Could not read user block for greeting (non-fatal): %s", e)
 
-    # Inject user context into the primary AI's chat context so it knows
-    # the user's history, preferences, and prior topics without asking again.
-    if user_context or user_name:
+                # Interview mode: search archival for prior session summary
+                if client_id:
+                    search_resp = await hc.post(
+                        f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/archival-memory/search",
+                        headers=LETTA_HEADERS,
+                        json={"query": f"client:{client_id}", "count": 5},
+                    )
+                    if search_resp.status_code < 300:
+                        passages = search_resp.json()
+                        # Find the most recent structured summary, or fall back to quick summary
+                        for p in passages:
+                            text = p.get("text", "")
+                            if f"[source:client:{client_id}:structured]" in text:
+                                prior_session_summary = text
+                                break
+                        if not prior_session_summary:
+                            for p in passages:
+                                text = p.get("text", "")
+                                if f"[source:client:{client_id}]" in text:
+                                    prior_session_summary = text
+                                    break
+                        if prior_session_summary:
+                            is_returning_user = True
+                            logger.info("Found prior session summary for client %s (%d chars)", client_id, len(prior_session_summary))
+    except Exception as e:
+        logger.info("Could not read user/client context for greeting (non-fatal): %s", e)
+
+    # Inject context into the primary AI's chat context
+    if user_context or user_name or prior_session_summary:
         context_msg = "[SYSTEM] User session context:\n"
         if user_name:
             context_msg += f"- User's name: {user_name}\n"
+        if client_id:
+            context_msg += f"- Client reference: {client_id}\n"
         if user_context:
             context_msg += f"- User memory from previous sessions:\n{user_context}\n"
+        if prior_session_summary:
+            context_msg += (
+                f"\n[CONTINUING SESSION] This is a follow-up session for client {client_id}.\n"
+                f"Previous session summary:\n{prior_session_summary}\n"
+                f"Resume naturally from where you left off. Do not repeat questions already covered.\n"
+            )
         context_msg += "Use this context naturally. Do NOT ask for information you already have."
         try:
             session.chat_ctx.add_message(role="system", content=context_msg)
@@ -1367,7 +1428,11 @@ async def entrypoint(ctx: JobContext):
         except Exception as e:
             logger.info("Could not inject user context (non-fatal): %s", e)
 
-    if is_returning_user and user_name:
+    if client_id and prior_session_summary:
+        greeting = f"Welcome back! Let's continue where we left off with {client_id}."
+    elif client_id:
+        greeting = f"Hello{' ' + user_name if user_name else ''}! Starting a new session for client {client_id}. How can I help?"
+    elif is_returning_user and user_name:
         greeting = f"Welcome back, {user_name}! Great to see you again. What would you like to explore today?"
     elif user_name:
         greeting = f"Hello {user_name}! Welcome. How can I help you today?"
@@ -1415,46 +1480,47 @@ async def entrypoint(ctx: JobContext):
         logger.info("Vision enabled — primary LLM receives video frames from user")
 
     # ── Background audio ────────────────────────────────────
-    try:
-        from livekit.agents import BackgroundAudioPlayer, AudioConfig, BuiltinAudioClip
+    if settings.background_audio_enabled:
+        try:
+            from livekit.agents import BackgroundAudioPlayer, AudioConfig, BuiltinAudioClip
 
-        bg_kwargs: dict = {}
+            bg_kwargs: dict = {}
 
-        # Ambient sound: download custom URL to temp file, or None
-        if settings.ambient_audio_url:
-            try:
-                import tempfile
-                import urllib.request
-                ambient_tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-                urllib.request.urlretrieve(settings.ambient_audio_url, ambient_tmp.name)
-                bg_kwargs["ambient_sound"] = AudioConfig(ambient_tmp.name, volume=0.3)
-                logger.info("Downloaded custom ambient audio to %s (volume=0.3)", ambient_tmp.name)
-            except Exception as dl_err:
-                logger.warning("Failed to download ambient audio: %s", dl_err)
+            # Ambient sound: download custom URL to temp file, or None
+            if settings.ambient_audio_url:
+                try:
+                    import tempfile
+                    import urllib.request
+                    ambient_tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+                    urllib.request.urlretrieve(settings.ambient_audio_url, ambient_tmp.name)
+                    bg_kwargs["ambient_sound"] = AudioConfig(ambient_tmp.name, volume=0.3)
+                    logger.info("Downloaded custom ambient audio to %s (volume=0.3)", ambient_tmp.name)
+                except Exception as dl_err:
+                    logger.warning("Failed to download ambient audio: %s", dl_err)
 
-        # Thinking sound: download custom URL to temp file, or built-in keyboard typing
-        if settings.thinking_audio_url:
-            try:
-                import tempfile
-                import urllib.request
-                thinking_tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-                urllib.request.urlretrieve(settings.thinking_audio_url, thinking_tmp.name)
-                bg_kwargs["thinking_sound"] = thinking_tmp.name
-                logger.info("Downloaded custom thinking audio to %s", thinking_tmp.name)
-            except Exception as dl_err:
-                logger.warning("Failed to download thinking audio, using builtin: %s", dl_err)
-        else:
-            bg_kwargs["thinking_sound"] = [
-                AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING, volume=0.4),
-            ]
+            # Thinking sound: download custom URL to temp file, or built-in keyboard typing
+            if settings.thinking_audio_url:
+                try:
+                    import tempfile
+                    import urllib.request
+                    thinking_tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+                    urllib.request.urlretrieve(settings.thinking_audio_url, thinking_tmp.name)
+                    bg_kwargs["thinking_sound"] = thinking_tmp.name
+                    logger.info("Downloaded custom thinking audio to %s", thinking_tmp.name)
+                except Exception as dl_err:
+                    logger.warning("Failed to download thinking audio, using builtin: %s", dl_err)
+            else:
+                bg_kwargs["thinking_sound"] = [
+                    AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING, volume=0.4),
+                ]
 
-        bg_audio = BackgroundAudioPlayer(**bg_kwargs)
-        await bg_audio.start(room=ctx.room, agent_session=session)
-        logger.info("Background audio started (ambient=%s, thinking=%s)",
-                     "custom" if settings.ambient_audio_url else "none",
-                     "custom" if settings.thinking_audio_url else "builtin")
-    except Exception as e:
-        logger.warning("Background audio failed: %s", e)
+            bg_audio = BackgroundAudioPlayer(**bg_kwargs)
+            await bg_audio.start(room=ctx.room, agent_session=session)
+            logger.info("Background audio started (ambient=%s, thinking=%s)",
+                         "custom" if settings.ambient_audio_url else "none",
+                         "custom" if settings.thinking_audio_url else "builtin")
+        except Exception as e:
+            logger.warning("Background audio failed: %s", e)
 
     # ── Capture & document upload ────────────────────────────
     capture_mgr = CaptureManager(ctx.room, user_label)
@@ -1465,6 +1531,98 @@ async def entrypoint(ctx: JobContext):
     # ── Shutdown cleanup ─────────────────────────────────────
     async def _shutdown(_reason: str = ""):
         await capture_mgr.stop()
+
+        # Interview mode: persist conversation summary on disconnect
+        if client_id and settings.auto_summarize_on_disconnect and LETTA_AGENT_ID:
+            try:
+                # Collect conversation from primary LLM context
+                messages = []
+                try:
+                    for msg in session.chat_ctx.items:
+                        role = getattr(msg, 'role', 'unknown')
+                        content = getattr(msg, 'content', '')
+                        if content and role in ('user', 'assistant'):
+                            messages.append(f"{role}: {content}")
+                except Exception:
+                    pass
+
+                if messages:
+                    conversation_text = "\n".join(messages[-30:])  # last 30 turns max
+
+                    # Layer 1: Quick summary via primary LLM
+                    try:
+                        from livekit.agents import llm as _llm
+                        summary_ctx = _llm.ChatContext()
+                        summary_ctx.add_message(role="system", content="Summarize this conversation in 2-3 sentences. Focus on: what was discussed, key decisions, and what remains pending.")
+                        summary_ctx.add_message(role="user", content=conversation_text)
+                        summary_stream = session.llm.chat(chat_ctx=summary_ctx)
+                        quick_summary_parts = []
+                        async for chunk in summary_stream:
+                            if hasattr(chunk, 'content') and chunk.content:
+                                quick_summary_parts.append(chunk.content)
+                            elif hasattr(chunk, 'choices'):
+                                for c in chunk.choices:
+                                    if hasattr(c, 'delta') and hasattr(c.delta, 'content') and c.delta.content:
+                                        quick_summary_parts.append(c.delta.content)
+                        quick_summary = "".join(quick_summary_parts)
+
+                        if quick_summary:
+                            # Store in Letta archival
+                            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as hc:
+                                await hc.post(
+                                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/archival-memory",
+                                    headers=LETTA_HEADERS,
+                                    json={"text": f"[source:client:{client_id}] {quick_summary}"},
+                                )
+                            logger.info("[interview] Quick summary stored for client %s (%d chars)", client_id, len(quick_summary))
+                    except Exception as e:
+                        logger.warning("[interview] Quick summary failed: %s", e)
+
+                    # Layer 2: Structured summary via Letta (async, fire-and-forget)
+                    async def _structured_summary():
+                        try:
+                            structured_prompt = (
+                                f"Analyze this interview conversation for client {client_id}. "
+                                f"Provide a structured summary with these sections:\n"
+                                f"1. Facts gathered (name, income, employment, etc.)\n"
+                                f"2. Documents requested or provided\n"
+                                f"3. Decisions made\n"
+                                f"4. Pending items / next steps\n\n"
+                                f"Conversation:\n{conversation_text}"
+                            )
+                            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as hc:
+                                resp = await hc.post(
+                                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages",
+                                    headers=LETTA_HEADERS,
+                                    json={"role": "user", "content": structured_prompt},
+                                )
+                                if resp.status_code < 300:
+                                    # Extract assistant reply
+                                    result_messages = resp.json().get("messages", [])
+                                    assistant_text = ""
+                                    for m in result_messages:
+                                        if m.get("role") == "assistant" and m.get("content"):
+                                            assistant_text = m["content"]
+                                    if not assistant_text:
+                                        # Try message_type format
+                                        for m in result_messages:
+                                            if m.get("message_type") == "assistant_message":
+                                                assistant_text = m.get("content", "")
+                                    if assistant_text:
+                                        await hc.post(
+                                            f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/archival-memory",
+                                            headers=LETTA_HEADERS,
+                                            json={"text": f"[source:client:{client_id}:structured] {assistant_text}"},
+                                        )
+                                        logger.info("[interview] Structured summary stored for client %s", client_id)
+                        except Exception as e:
+                            logger.warning("[interview] Structured summary failed (non-fatal): %s", e)
+
+                    asyncio.create_task(_structured_summary(), name="structured-summary")
+
+            except Exception as e:
+                logger.warning("[interview] Summary persistence failed: %s", e)
+
         if trace_provider and hasattr(trace_provider, 'force_flush'):
             trace_provider.force_flush()
         flush_langfuse()

@@ -341,10 +341,8 @@ export async function deployAgent(
         if (appSecrets.letta_api_key) toolEnv.LETTA_API_KEY = appSecrets.letta_api_key;
         toolEnv.LETTA_BASE_URL = process.env.LETTA_BASE_URL || "http://letta-server.letta.svc.cluster.local:8283";
         toolEnv.LETTA_AGENT_ID = agent.lettaAgentId;
-        // Search API for web_search tool (use local GPU-AI search, not EXA)
-        toolEnv.SEARCH_API_URL = "https://mcp.baisoln.com/search/search";
-        const searchKey = (await readPlatformVaultPath("t6-apps/mcp/config"))?.apikey_mcp_admin_key;
-        if (searchKey) toolEnv.SEARCH_API_KEY = searchKey;
+        // Search API for web_search tool — use internal K8s service (no API key needed)
+        toolEnv.SEARCH_API_URL = "http://search-mcp-service.mcp.svc.cluster.local:8000/search";
 
         if (Object.keys(toolEnv).length > 0) {
           await lettaAdmin.updateAgent(agent.lettaAgentId, {

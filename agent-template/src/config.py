@@ -95,6 +95,10 @@ class Settings(BaseSettings):
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
 
+    # Interview mode (session continuity by client ID)
+    interview_mode: bool = False
+    auto_summarize_on_disconnect: bool = True
+
     # Dynamic configuration (from ConfigMap, JSON strings)
     enabled_tools: str = "[]"
     mcp_servers: str = "[]"
