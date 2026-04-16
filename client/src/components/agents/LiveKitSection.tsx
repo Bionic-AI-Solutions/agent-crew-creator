@@ -689,22 +689,41 @@ export default function LiveKitSection(props: Props) {
         </CardContent>
       </Card>
 
-      {/* System Prompt */}
+      {/* Agent Persona */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm">System Prompt</CardTitle>
+          <CardTitle className="text-sm">Agent Persona</CardTitle>
         </CardHeader>
         <CardContent>
           <Textarea
             value={props.systemPrompt}
             onChange={(e) => props.setSystemPrompt(e.target.value)}
-            placeholder="You are a helpful AI assistant..."
+            placeholder="You are a friendly physics tutor who uses analogies and real-world examples to make complex concepts accessible..."
             rows={8}
             className="font-mono text-xs"
           />
           <p className="text-xs text-muted-foreground mt-1">
-            Instructions for the LiveKit voice agent (the user-facing conversational agent)
+            Define the agent's personality, speaking style, subject domain, and teaching approach.
+            Behavioral rules (delegation, lecture mode, tool usage, engagement) are enforced automatically and cannot be changed here.
           </p>
+          <details className="mt-3">
+            <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground flex items-center gap-1">
+              <span>View enforced rules (11 rules, always active)</span>
+            </summary>
+            <pre className="mt-2 p-3 bg-muted/50 rounded-md text-[10px] leading-relaxed text-muted-foreground whitespace-pre-wrap font-mono border max-h-64 overflow-y-auto">
+{`1. DELEGATION — use delegate_to_letta for research/analysis/deep work
+2. TOOL SILENCE — no narration before/during/after tool calls
+3. LECTURE MODE — walk through ALL bullet points, explain in depth
+4. SCREEN SYNC — never reference visuals until confirmed visible on screen
+5. NO REPETITION — never repeat covered topics unless user asks
+6. PACING & Q/A — pause between sections, ask substantive questions, wait for answers, max 2 review questions per topic
+7. VOICE CONSTRAINTS — terminal punctuation, no markdown/lists/URLs
+8. GREETING — ask user's name on first interaction
+9. IDENTITY — use their name, not "student"/"professor"
+10. INTERRUPTION — address questions, then resume lecture material
+11. EMAIL COLLECTION — ask for email to send session summary`}
+            </pre>
+          </details>
         </CardContent>
       </Card>
     </div>

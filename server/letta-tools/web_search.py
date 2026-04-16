@@ -2,7 +2,8 @@
 Web search using the local GPU-AI search MCP service.
 
 Replaces Letta's built-in web_search (which uses EXA API) with the local
-search service at mcp.baisoln.com/search/search (Tavily-shaped REST API).
+search service (Tavily-shaped REST API). Defaults to the internal K8s
+service URL; override via SEARCH_API_URL env var if needed.
 """
 import os
 import json
@@ -21,7 +22,10 @@ def web_search(query: str, max_results: int = 5) -> str:
     import urllib.request
     import urllib.error
 
-    search_url = os.environ.get("SEARCH_API_URL", "https://mcp.baisoln.com/search/search")
+    search_url = os.environ.get(
+        "SEARCH_API_URL",
+        "http://search-mcp-service.mcp.svc.cluster.local:8000/search",
+    )
     api_key = os.environ.get("SEARCH_API_KEY", "")
 
     headers = {

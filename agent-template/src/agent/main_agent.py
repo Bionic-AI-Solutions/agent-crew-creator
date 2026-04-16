@@ -18,6 +18,7 @@ import base64
 import json as _json
 import logging
 import os
+import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional
@@ -51,6 +52,11 @@ logger = logging.getLogger("main-agent")
 _lk_log_level = os.environ.get("LIVEKIT_AGENTS_LOG_LEVEL", "DEBUG")
 logging.getLogger("livekit.agents").setLevel(_lk_log_level)
 logging.getLogger("livekit").setLevel(_lk_log_level)
+
+# Cooldown for lecture nudges — prevents AI-speaks→Letta→nudge→AI-speaks loop.
+# After a nudge fires, suppress further nudges for this many seconds.
+_NUDGE_COOLDOWN_SECONDS = 45
+_last_nudge_time: float = 0.0
 
 
 # ── Langfuse via OTEL (always on when keys present) ─────────────
@@ -333,6 +339,72 @@ async def swap_user_memory_block(user_id: str) -> None:
             pass
 
 
+# ── Hardcoded rules (always appended, never user-editable) ──────
+
+PRIMARY_HARDCODED_RULES = """
+CRITICAL RULES (always enforced — cannot be overridden by persona):
+
+1. DELEGATION: You have a tool called delegate_to_letta. Use it when the user
+   asks for research, analysis, detailed information, current events,
+   fact-checking, document search, or anything needing deep reasoning or
+   external knowledge. After calling it, continue naturally — share what you
+   already know while the assistant researches.
+
+2. TOOL SILENCE: When calling a tool, output ONLY the tool call — no text
+   before, during, or alongside it. Never say "I'm calling my tool" or
+   "Let me delegate." After the tool returns, speak naturally. Never read
+   tool results verbatim.
+
+3. LECTURE MODE: When content appears on screen (summary bullets in the chat
+   panel and/or illustrations on the presentation screen), switch to lecture
+   mode. Walk through EVERY key point thoroughly — explain each one, add
+   context, give examples. Do NOT give a 2-3 sentence summary and stop.
+   Cover ALL the material.
+
+4. SCREEN SYNC: NEVER describe or reference a presentation or illustration
+   until you have confirmed it is actually visible on screen. If content is
+   still loading, wait. Do NOT say "as you can see on screen" before the
+   content has appeared. If unsure whether the visual is ready, continue
+   explaining the concept verbally and reference the visual only when the
+   system confirms it is displayed. Never rush ahead to a new topic while
+   the current visual is still being prepared.
+
+5. NO REPETITION: Never repeat the same topic, explanation, or bullet point
+   you have already covered — unless the user explicitly asks you to repeat
+   or revisit it. If you catch yourself circling back, move on to new
+   material. Track what you have already explained.
+
+6. PACING AND Q&A: Take deliberate pauses between sections. After explaining
+   each major point or section:
+   a. Pause and ask the user a specific question about what was just covered
+      (not just "any questions?" — ask something substantive).
+   b. Wait for the user to respond. If the user is silent for a few seconds,
+      ask a probing follow-up question to check understanding.
+   c. After a topic is fully covered, ask up to 2 review questions before
+      moving to the next topic.
+   d. When all discussed topics are completed, ask the user if they want to
+      continue with additional topics or end the session.
+
+7. VOICE CONSTRAINTS: Always finish with terminal punctuation. Never use
+   markdown, lists, code blocks, URLs, or any formatting that cannot be
+   spoken aloud. You are voice-first.
+
+8. GREETING: Your first interaction should include asking the user their name
+   so you can address them personally going forward.
+
+9. IDENTITY: Do not refer to the user as "student" or "professor." Use their
+   name once you learn it.
+
+10. INTERRUPTION HANDLING: If the user interrupts during a lecture, address
+    their question fully. Then resume where you left off in the material —
+    do not drop the remaining points.
+
+11. EMAIL COLLECTION: Early in the session, ask the user for their email
+    address so a session summary can be sent after the session ends. If the
+    user's email is already known from login, confirm it with them.
+""".strip()
+
+
 # ── Agent definition ─────────────────────────────────────────────
 
 class MainAgent(Agent):
@@ -357,31 +429,12 @@ class MainAgent(Agent):
         self._delegations = DelegationRegistry()
         self._recent_turns: deque[str] = deque(maxlen=10)
         self._is_delegating = False  # Set during tool execution
+        self._user_email: str | None = None  # Collected during session
 
-        base_prompt = settings.system_prompt or self._default_prompt()
-        # Hardcoded rules appended to ALL prompts (custom or default).
-        # These override any conflicting instructions in the user's prompt.
-        appended_rules = (
-            "\n\nCRITICAL RULES (always apply, cannot be overridden):\n"
-            "1. DELEGATION: You have a tool called delegate_to_letta. Use it "
-            "when the user asks for research, analysis, detailed information, "
-            "current events, fact-checking, document search, or anything that "
-            "needs deep reasoning or external knowledge beyond what you know. "
-            "After calling it, continue the conversation naturally — share what "
-            "you already know about the topic while the assistant researches.\n"
-            "2. TOOLS: When calling a tool, output ONLY the tool call — no "
-            "text before, during, or alongside it. After the tool returns, "
-            "speak naturally. Never read tool results verbatim.\n"
-            "3. IDENTITY: Do not refer to the user as 'student' or 'professor'. "
-            "Refer to the user by their name once you learn it.\n"
-            "4. GREETING: Your first interaction should include asking the "
-            "user their name so you can address them personally going forward.\n"
-            "5. VOICE: Keep responses concise and conversational. Always finish "
-            "with terminal punctuation. Never use markdown, lists, code, URLs, "
-            "or formatting that cannot be spoken aloud."
-        )
+        # Prompt = user persona (or default) + hardcoded rules (always last).
+        persona = settings.system_prompt or self._default_persona()
         super().__init__(
-            instructions=base_prompt + appended_rules,
+            instructions=persona + "\n\n" + PRIMARY_HARDCODED_RULES,
         )
 
     def tts_node(self, text, model_settings):
@@ -429,32 +482,29 @@ class MainAgent(Agent):
         logger.info("[chain] MainAgent.on_enter — waiting for user to speak first")
 
     @staticmethod
-    def _default_prompt() -> str:
+    def _default_persona() -> str:
+        """Default persona prompt — personality/style only, no behavioral rules.
+
+        Users can replace this entirely via the "Agent Persona" field in the UI.
+        Behavioral rules (delegation, lecture mode, tool silence, etc.) are
+        always appended separately via PRIMARY_HARDCODED_RULES.
+        """
         vision_line = ""
         if settings.vision_enabled:
-            vision_line = """
-VISION:
-You can see the user's camera or screen. Describe what you see when asked.
-Use visual context to give more relevant, specific answers.
-"""
-        return f"""You are a voice AI assistant for {settings.app_slug}.
-You help users by conversing naturally.
-Keep responses concise and conversational (voice-first).
-Always finish with terminal punctuation.
-Never use markdown, lists, or formatting that cannot be spoken aloud.
-{vision_line}
-TOOLS:
-When you use a tool, NEVER announce or describe the tool call. Do NOT say
-things like "I'm calling delegate_to_letta" or "Let me use my tool to..."
-Just call the tool silently and give a natural spoken response.
-
-DELEGATION:
-When the user asks for research, analysis, complex tasks, or anything requiring
-deep reasoning, tools, memory recall, or multi-step workflows, call the
-delegate_to_letta tool immediately. The tool returns a brief acknowledgement
-that will be spoken automatically — do NOT add your own text before or after
-calling the tool.
-"""
+            vision_line = (
+                "\nYou can see the user's camera or screen. "
+                "Use visual context to give more relevant, specific answers."
+            )
+        return (
+            f"You are a voice AI assistant for {settings.app_slug}. "
+            f"You help users by conversing naturally with a warm, engaging "
+            f"speaking style. Adapt your explanations to the learner's level. "
+            f"Use analogies and real-world examples to make concepts accessible. "
+            f"If a lesson plan or curriculum document is loaded via RAG, follow "
+            f"its topic sequence — when one topic is completed, check the lesson "
+            f"plan for the next scheduled topic and suggest it to the user."
+            f"{vision_line}"
+        )
 
     @function_tool
     async def delegate_to_letta(self, context: RunContext, task: str) -> str:
@@ -565,31 +615,69 @@ async def _delegation_worker(
             result = await _letta_call()
 
         if room and result:
-            await room.local_participant.send_text(result, topic="lk.chat")
-            logger.info("[chain] assistant → screen (explicit, %d chars)", len(result))
+            summary = _filter_letta_noise(result.get("summary", ""))
+            presentation = _filter_letta_noise(result.get("presentation", ""))
+
+            # Send summary bullets to chat panel
+            if summary:
+                await room.local_participant.send_text(
+                    summary, topic="lk.chat.summary",
+                )
+                logger.info("[chain] assistant → chat panel (%d chars)", len(summary))
+
+            # Send artifacts/illustrations to presentation area
+            if presentation:
+                await room.local_participant.send_text(
+                    presentation, topic="lk.chat.presentation",
+                )
+                logger.info("[chain] assistant → presentation (%d chars)", len(presentation))
 
             # Clear delegation flag so the TTS filter stops suppressing
             if agent_ref:
                 agent_ref._is_delegating = False
 
-            # Single nudge: tell the LLM that new content appeared on screen.
-            # The LLM produces ONE flowing spoken summary — no point-by-point
-            # session.say() loop. The detailed content is in chat for reading.
+            # Nudge the primary AI to deliver a full lecture-style narration.
+            # It acts as a professor: walking through each bullet point,
+            # explaining the concepts, and referencing the illustrations
+            # on the presentation screen as visual aids. NOT a brief teaser.
             if session:
                 try:
-                    brief = result[:800].replace("\n", " ").strip()
+                    # Give the LLM the full content so it can cover everything.
+                    # Cap at 4000 chars to stay within context but large enough
+                    # to cover a full research page worth of bullets + artifacts.
+                    summary_full = summary[:4000].strip()
+                    pres_full = presentation[:2000].strip()
+
+                    nudge_parts = []
+                    if summary_full:
+                        nudge_parts.append(
+                            f"SUMMARY BULLETS (displayed in the chat panel on the right):\n{summary_full}"
+                        )
+                    if pres_full:
+                        nudge_parts.append(
+                            f"ILLUSTRATIONS (displayed on the presentation screen):\n{pres_full}"
+                        )
+
                     session.generate_reply(
                         user_input=(
-                            f"[System: your research assistant just posted detailed "
-                            f"findings to the chat screen. Give a brief spoken overview "
-                            f"of the key highlights — 3-4 sentences max. The user can "
-                            f"read the full details in chat. Then ask if they'd like "
-                            f"to explore any aspect further.]\n\n"
-                            f"Summary: {brief}"
+                            "[System: your research assistant has posted detailed "
+                            "findings. Summary bullets are in the chat panel on the "
+                            "right, and illustrations/visuals are on the presentation "
+                            "screen.\n\n"
+                            "You are the professor. Deliver a THOROUGH spoken "
+                            "walk-through of ALL the material — do NOT summarize in "
+                            "2-3 sentences and stop. Go through each bullet point, "
+                            "explain the concepts in depth, and reference the "
+                            "illustrations on screen as visual aids (e.g. 'as you "
+                            "can see in the diagram on screen...', 'the illustration "
+                            "shows...'). Teach the audience as if giving a lecture. "
+                            "Cover every key point from the summary. After walking "
+                            "through everything, invite questions.\n\n"
+                            + "\n\n".join(nudge_parts)
                         ),
                         allow_interruptions=True,
                     )
-                    logger.info("[chain] primary AI nudged to summarize delegation result")
+                    logger.info("[chain] primary AI nudged for full lecture narration")
                 except Exception as e:
                     logger.warning("Failed to nudge primary AI: %s", e)
         elif result:
@@ -601,7 +689,7 @@ async def _delegation_worker(
             try:
                 await room.local_participant.send_text(
                     "[The assistant is still working on this — results may appear shortly.]",
-                    topic="lk.chat",
+                    topic="lk.chat.summary",
                 )
             except Exception:
                 pass
@@ -611,7 +699,7 @@ async def _delegation_worker(
             try:
                 await room.local_participant.send_text(
                     "[The assistant encountered an error processing that request.]",
-                    topic="lk.chat",
+                    topic="lk.chat.summary",
                 )
             except Exception:
                 pass
@@ -621,7 +709,7 @@ async def _delegation_worker(
             try:
                 await room.local_participant.send_text(
                     "[Could not reach the assistant. Please try again.]",
-                    topic="lk.chat",
+                    topic="lk.chat.summary",
                 )
             except Exception:
                 pass
@@ -629,6 +717,34 @@ async def _delegation_worker(
         # Always clear the delegation flag so TTS isn't permanently suppressed
         if agent_ref:
             agent_ref._is_delegating = False
+
+
+def _filter_letta_noise(text: str) -> str:
+    """Remove Letta internal noise lines from text before sending to the UI.
+
+    Letta emits lines like '*(No output ...)*', '*(Waiting ...)*', etc.
+    that are internal status indicators, not user-facing content.
+    """
+    if not text:
+        return text
+    lines = text.split("\n")
+    filtered = []
+    for line in lines:
+        stripped = line.strip()
+        # Skip Letta internal status lines
+        if stripped.startswith("*(No output") or stripped.startswith("*(Waiting"):
+            continue
+        if stripped.startswith("*(") and stripped.endswith(")*"):
+            continue
+        # Skip empty artifact-like noise
+        if stripped == "---" or stripped == "":
+            # Keep blank lines between real content but skip standalone dashes
+            if stripped == "" and filtered and filtered[-1].strip():
+                filtered.append(line)
+            continue
+        filtered.append(line)
+    result = "\n".join(filtered).strip()
+    return result
 
 
 async def forward_to_assistant_async(
@@ -658,12 +774,22 @@ async def forward_to_assistant_async(
     if not room:
         return
     try:
-        # Frame the primary AI's turn as system context so Letta knows what
-        # was said. Letta is configured (via DEFAULT_LETTA_PROMPT in
-        # server/agentRouter.ts) to react proactively to primary AI turns
-        # without waiting for an explicit delegation.
-        speaker = "Primary AI" if role == "assistant" else "User"
-        framed = f"[Live transcript — {speaker}]: {text.strip()}"
+        # Frame the turn for Letta. For user messages with visual intent,
+        # send as a direct instruction (no transcript prefix) so the model
+        # treats it as a command and calls generate_image. For primary AI
+        # turns, keep the transcript framing for passive context.
+        lowered = text.strip().lower()
+        has_visual_intent = role == "user" and any(
+            kw in lowered for kw in (
+                "show", "image", "picture", "diagram", "illustration",
+                "draw", "sketch", "visualize", "display", "see",
+            )
+        )
+        if has_visual_intent:
+            framed = text.strip()
+        else:
+            speaker = "Primary AI" if role == "assistant" else "User"
+            framed = f"[Live transcript — {speaker}]: {text.strip()}"
 
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
@@ -677,20 +803,75 @@ async def forward_to_assistant_async(
             response.raise_for_status()
             result = _parse_letta_response(response.json())
 
-        if not result or len(result.strip()) < 10:
+        summary = result.get("summary", "")
+        presentation = result.get("presentation", "")
+        combined = result.get("combined", "")
+
+        if not combined or len(combined.strip()) < 10:
             # No substantive output — assistant chose not to react.
             logger.info("[chain] assistant chose silence (in=%d, out=%d)",
-                        len(text), len(result or ""))
+                        len(text), len(combined))
             return
 
-        await room.local_participant.send_text(result, topic="lk.chat")
+        # Filter out Letta internal noise from summary before sending
+        if summary:
+            summary = _filter_letta_noise(summary)
+        if presentation:
+            presentation = _filter_letta_noise(presentation)
+
+        # Send to separate channels
+        if summary:
+            await room.local_participant.send_text(summary, topic="lk.chat.summary")
+        if presentation:
+            await room.local_participant.send_text(presentation, topic="lk.chat.presentation")
         logger.info(
-            "[chain] assistant → screen (proactive, in=%d, out=%d)",
-            len(text), len(result),
+            "[chain] assistant → panels (proactive, in=%d, summary=%d, pres=%d)",
+            len(text), len(summary), len(presentation),
         )
 
-        # Proactive content goes to chat only — no spoken walk-through.
-        # The LLM will naturally reference it if the user asks.
+        # When substantial content appears on screen, nudge the primary AI
+        # to deliver a lecture-style walk-through of the material.
+        # Cooldown prevents infinite loop: AI speaks → Letta → nudge → AI speaks → ...
+        global _last_nudge_time
+        now = time.monotonic()
+        cooldown_ok = (now - _last_nudge_time) > _NUDGE_COOLDOWN_SECONDS
+        if session and cooldown_ok and len(summary) > 100:
+            try:
+                summary_full = summary[:4000].strip()
+                pres_full = presentation[:2000].strip()
+
+                nudge_parts = []
+                if summary_full:
+                    nudge_parts.append(
+                        f"SUMMARY BULLETS (now visible in the chat panel):\n{summary_full}"
+                    )
+                if pres_full:
+                    nudge_parts.append(
+                        f"ILLUSTRATIONS (now on the presentation screen):\n{pres_full}"
+                    )
+
+                _last_nudge_time = now
+                session.generate_reply(
+                    user_input=(
+                        "[System: your research assistant has posted new findings "
+                        "to the screen. Summary bullets are in the chat panel, "
+                        "and any illustrations are on the presentation screen.\n\n"
+                        "You are the professor. Walk through EVERY key point in "
+                        "the summary — explain each one, add context, give examples. "
+                        "If there are illustrations, reference them as visual aids "
+                        "(e.g. 'as you can see on screen...'). Do NOT just say "
+                        "'I've put some information on screen' — actually teach "
+                        "the material. After covering each major section, pause "
+                        "and ask the student if they have questions or want to "
+                        "go deeper on that topic before moving on. Keep the "
+                        "student engaged.]\n\n"
+                        + "\n\n".join(nudge_parts)
+                    ),
+                    allow_interruptions=True,
+                )
+                logger.info("[chain] primary AI nudged for lecture (proactive path)")
+            except Exception as e:
+                logger.warning("Failed to nudge primary AI (proactive): %s", e)
     except httpx.TimeoutException:
         logger.warning("Proactive Letta forward timed out (role=%s)", role)
     except Exception as e:
@@ -698,8 +879,15 @@ async def forward_to_assistant_async(
         logger.warning("Proactive Letta forward failed: %s", e)
 
 
-def _parse_letta_response(data: dict | list) -> str:
-    """Parse Letta API response into displayable text.
+def _parse_letta_response(data: dict | list) -> dict:
+    """Parse Letta API response into a structured dict with separate channels.
+
+    Returns:
+        {
+            "summary": str,        # bullet-point text for the chat panel
+            "presentation": str,   # artifact JSON blocks for the presentation area
+            "combined": str,       # legacy: both combined (used for the primary AI nudge)
+        }
 
     Known message_type values:
       reasoning_message — internal chain-of-thought (skipped)
@@ -713,7 +901,11 @@ def _parse_letta_response(data: dict | list) -> str:
     """
     messages = data if isinstance(data, list) else data.get("messages", [])
     if not messages:
-        return "Secondary agent returned no output."
+        return {
+            "summary": "Secondary agent returned no output.",
+            "presentation": "",
+            "combined": "Secondary agent returned no output.",
+        }
 
     result_parts = []
     artifacts = []
@@ -757,11 +949,10 @@ def _parse_letta_response(data: dict | list) -> str:
                 except (ValueError, TypeError):
                     result_parts.append(f"[Tool result]: {str(tool_return)[:2000]}")
 
-    text = "\n\n".join(result_parts) if result_parts else ""
+    summary_text = "\n\n".join(result_parts) if result_parts else ""
 
-    # Append artifact references as structured JSON blocks so the frontend
-    # can render them as rich cards. The subtype field distinguishes images
-    # (rendered as <img>) from generic file artifacts (rendered as download link).
+    # Build artifact JSON blocks for the presentation area
+    presentation_parts = []
     if artifacts:
         for artifact in artifacts:
             if not isinstance(artifact, dict):
@@ -789,9 +980,20 @@ def _parse_letta_response(data: dict | list) -> str:
                 "content_type": artifact.get("content_type", ""),
                 "summary": artifact.get("summary", ""),
             })
-            text = f"{text}\n\n{artifact_msg}" if text else artifact_msg
+            presentation_parts.append(artifact_msg)
 
-    return text or "Task delegated. Secondary agent processed but produced no text output."
+    presentation_text = "\n\n".join(presentation_parts)
+
+    # Combined for the primary AI nudge (backward compat)
+    combined = summary_text
+    if presentation_text:
+        combined = f"{combined}\n\n{presentation_text}" if combined else presentation_text
+
+    return {
+        "summary": summary_text or "Task delegated. Secondary agent processed but produced no text output.",
+        "presentation": presentation_text,
+        "combined": combined or "Task delegated. Secondary agent processed but produced no text output.",
+    }
 
 
 def _regenerate_presigned_url(s3_url: str, expires_seconds: int = 86400) -> str:
@@ -1244,6 +1446,24 @@ async def entrypoint(ctx: JobContext):
         if not client_id:
             logger.info("Interview mode: no client_id found — using default memory key")
 
+    # ── Extract user email from participant metadata (Keycloak) ──
+    user_email = ""
+    for p in ctx.room.remote_participants.values():
+        if not p.identity.startswith("agent-") and not p.identity.startswith("bithuman"):
+            p_metadata = getattr(p, 'metadata', '') or ''
+            if p_metadata:
+                try:
+                    meta = _json.loads(p_metadata)
+                    user_email = meta.get("email", "") or ""
+                except Exception:
+                    pass
+            break
+    if user_email:
+        logger.info("User email from metadata: %s", user_email)
+    # Set on agent instance so the shutdown handler can use it
+    if agent:
+        agent._user_email = user_email or None
+
     # ── Per-user/client memory isolation ─────────────────────
     # In interview mode with a client_id, swap to client-specific block.
     # Otherwise, swap to user-specific block (default behavior).
@@ -1493,7 +1713,7 @@ async def entrypoint(ctx: JobContext):
                     import urllib.request
                     ambient_tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
                     urllib.request.urlretrieve(settings.ambient_audio_url, ambient_tmp.name)
-                    bg_kwargs["ambient_sound"] = AudioConfig(ambient_tmp.name, volume=0.3)
+                    bg_kwargs["ambient_sound"] = AudioConfig(ambient_tmp.name, volume=0.1)
                     logger.info("Downloaded custom ambient audio to %s (volume=0.3)", ambient_tmp.name)
                 except Exception as dl_err:
                     logger.warning("Failed to download ambient audio: %s", dl_err)
@@ -1622,6 +1842,68 @@ async def entrypoint(ctx: JobContext):
 
             except Exception as e:
                 logger.warning("[interview] Summary persistence failed: %s", e)
+
+        # ── Session summary email ──────────────────────────────
+        # If the primary agent collected a user email, generate a session
+        # summary and email it via the platform API.
+        user_email = getattr(agent, '_user_email', None) if agent else None
+        platform_api = os.environ.get("PLATFORM_API_URL", "")
+        if user_email and platform_api and LETTA_AGENT_ID:
+            try:
+                # Collect conversation turns for the summary
+                messages = []
+                try:
+                    for msg in session.chat_ctx.items:
+                        role = getattr(msg, 'role', 'unknown')
+                        content = getattr(msg, 'content', '')
+                        if content and role in ('user', 'assistant'):
+                            messages.append(f"{role}: {content}")
+                except Exception:
+                    pass
+
+                if messages:
+                    conversation_text = "\n".join(messages[-50:])
+
+                    # Ask Letta to produce a structured session summary
+                    summary_prompt = (
+                        "[System: The session is ending. Generate a comprehensive session summary "
+                        "for email delivery. Structure it as:\n"
+                        "# Session Summary\n"
+                        "## Topics Covered\n"
+                        "(list each topic as a section with bullet points)\n"
+                        "## Key Takeaways\n"
+                        "(3-5 key points the user should remember)\n\n"
+                        f"Session conversation:\n{conversation_text}"
+                    )
+                    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as hc:
+                        resp = await hc.post(
+                            f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages",
+                            headers=LETTA_HEADERS,
+                            json={"messages": [{"role": "user", "content": summary_prompt}]},
+                        )
+                        if resp.status_code < 300:
+                            parsed = _parse_letta_response(resp.json())
+                            summary_md = parsed.get("summary", "")
+                            if summary_md and len(summary_md) > 50:
+                                # Send to platform API for email delivery
+                                await hc.post(
+                                    f"{platform_api}/api/session-summary/send",
+                                    json={
+                                        "email": user_email,
+                                        "sessionTitle": f"{settings.agent_name} - Session Summary",
+                                        "summaryMarkdown": summary_md,
+                                        "agentName": settings.agent_name,
+                                        "userName": user_email.split("@")[0],
+                                    },
+                                    timeout=15.0,
+                                )
+                                logger.info("[session] Summary emailed to %s", user_email)
+                            else:
+                                logger.info("[session] Letta summary too short, skipping email")
+                        else:
+                            logger.warning("[session] Letta summary request failed: %s", resp.status_code)
+            except Exception as e:
+                logger.warning("[session] Session summary email failed (non-fatal): %s", e)
 
         if trace_provider and hasattr(trace_provider, 'force_flush'):
             trace_provider.force_flush()

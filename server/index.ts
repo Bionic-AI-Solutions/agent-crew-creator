@@ -41,6 +41,17 @@ app.post("/api/webhooks/notify", (req, res) => {
   void handleNotifyWebhook(req, res);
 });
 
+// ── Session summary API (called by agent pod on session end) ────
+import { sendSessionSummary } from "./services/sessionSummaryService.js";
+app.post("/api/session-summary/send", async (req, res) => {
+  try {
+    const result = await sendSessionSummary(req.body);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
 // ── Player-UI internal API (agent listing for per-app frontends) ──
 import { registerPlayerUiRoutes } from "./playerUiApi.js";
 registerPlayerUiRoutes(app);

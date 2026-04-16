@@ -10,6 +10,7 @@ import {
   useVoiceAssistant,
   useLocalParticipant,
   useRemoteParticipants,
+  useTextStream,
   BarVisualizer,
   VideoTrack,
 } from "@livekit/components-react";
@@ -359,6 +360,12 @@ function parseMessageContent(raw: string): { type: "text" | "image" | "artifact"
   return results;
 }
 
+interface UploadedDoc {
+  name: string;
+  size: number;
+  id: string; // unique key for removal
+}
+
 function ActiveSession({
   agentName,
   userName,
@@ -377,10 +384,17 @@ function ActiveSession({
   const remoteParticipants = useRemoteParticipants();
   const [chatInput, setChatInput] = useState("");
   const presentationRef = useRef<HTMLDivElement>(null);
+  const chatRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [micEnabled, setMicEnabled] = useState(true);
   const [camEnabled, setCamEnabled] = useState(false);
   const [screenEnabled, setScreenEnabled] = useState(false);
   const [fileUploading, setFileUploading] = useState(false);
+  const [uploadedDocs, setUploadedDocs] = useState<UploadedDoc[]>([]);
+
+  // Subscribe to separate LiveKit text stream topics
+  const { textStreams: summaryStreams } = useTextStream("lk.chat.summary");
+  const { textStreams: presentationStreams } = useTextStream("lk.chat.presentation");
 
   const toggleMic = async () => { await localParticipant.setMicrophoneEnabled(!micEnabled); setMicEnabled(!micEnabled); };
   const toggleCam = async () => { await localParticipant.setCameraEnabled(!camEnabled); setCamEnabled(!camEnabled); };
@@ -389,12 +403,53 @@ function ActiveSession({
     else { await localParticipant.setScreenShareEnabled(true); setScreenEnabled(true); }
   };
 
+  // Parse presentation streams into renderable slides
+  const presentationMessages = presentationStreams
+    .flatMap((s) => parseMessageContent(s.text))
+    .filter((m) => m.html || m.imageUrl);
+
+  // Parse summary streams into chat-panel items
+  const summaryMessages = summaryStreams.map((s) => ({
+    type: "summary" as const,
+    text: s.text,
+    html: marked.parse(s.text, { breaks: true, gfm: true }) as string,
+  }));
+
+  // Collect user-sent messages for the chat panel
+  const userMessages = chatMessages
+    .filter((msg) => msg.from?.identity === localParticipant.identity)
+    .map((msg) => ({ type: "user" as const, text: msg.message, timestamp: msg.timestamp }));
+
+  // Interleave user messages and summary messages by arrival order
+  // (simple: all user msgs first in order, then all summaries — both scroll together)
+  const chatPanelItems: { kind: "user" | "summary"; html: string }[] = [];
+  let uIdx = 0;
+  let sIdx = 0;
+  // Merge by keeping original order: user messages interleaved with summaries
+  // Since we can't perfectly time-sort across hooks, show user msgs then summaries
+  // that arrived after each user msg. Simple approach: user first, then summary.
+  for (const u of userMessages) {
+    chatPanelItems.push({ kind: "user", html: u.text });
+  }
+  for (const s of summaryMessages) {
+    if (s.html.trim()) {
+      chatPanelItems.push({ kind: "summary", html: s.html });
+    }
+  }
+
   // Auto-scroll presentation area
   useEffect(() => {
     if (presentationRef.current) {
       presentationRef.current.scrollTop = presentationRef.current.scrollHeight;
     }
-  }, [chatMessages]);
+  }, [presentationStreams]);
+
+  // Auto-scroll chat panel
+  useEffect(() => {
+    if (chatRef.current) {
+      chatRef.current.scrollTop = chatRef.current.scrollHeight;
+    }
+  }, [chatMessages, summaryStreams]);
 
   const handleSendChat = () => {
     const msg = chatInput.trim();
@@ -408,28 +463,27 @@ function ActiveSession({
     if (!file) return;
     setFileUploading(true);
     try {
-      // Send file name as chat message to trigger document processing
+      const doc: UploadedDoc = { name: file.name, size: file.size, id: `${Date.now()}-${file.name}` };
+      setUploadedDocs((prev) => [...prev, doc]);
       sendChat(`[Uploading document: ${file.name}]`);
       // TODO: actual file upload via platform API
     } finally {
       setFileUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
+  };
+
+  const removeDoc = (id: string) => {
+    setUploadedDocs((prev) => prev.filter((d) => d.id !== id));
   };
 
   // Find avatar video track — BitHuman avatar joins as "bithuman-avatar-agent"
   const avatarParticipant = remoteParticipants.find((p) => p.identity === "bithuman-avatar-agent");
   const avatarVideoTrack = avatarParticipant?.getTrackPublication(Track.Source.Camera);
-  // Fallback: any remote participant with a camera (for non-BitHuman avatars)
   const agentParticipant = avatarParticipant ?? remoteParticipants.find((p) =>
     p.identity.startsWith("agent-") && p.getTrackPublication(Track.Source.Camera)
   );
   const agentVideoTrack = avatarVideoTrack ?? agentParticipant?.getTrackPublication(Track.Source.Camera);
-
-  // Parse agent messages for the presentation screen
-  const agentMessages = chatMessages
-    .filter((msg) => msg.from?.identity !== localParticipant.identity)
-    .flatMap((msg) => parseMessageContent(msg.message))
-    .filter((m) => m.html || m.imageUrl); // Skip empty
 
   if (connectionState === ConnectionState.Connecting) {
     return <LoadingScreen message="Connecting to agent..." />;
@@ -446,7 +500,6 @@ function ActiveSession({
           </span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {/* Media controls */}
           <button onClick={toggleMic} style={{ ...cls.ctrlBtn, background: micEnabled ? "var(--accent)" : "var(--bg-hover)" }}>
             {micEnabled ? "🎙️ Mic On" : "🔇 Mic Off"}
           </button>
@@ -460,12 +513,6 @@ function ActiveSession({
               🖥️ Share
             </button>
           )}
-          {/* Document upload */}
-          <label style={{ ...cls.ctrlBtn, background: "var(--bg-hover)", cursor: "pointer" }}>
-            📎 {fileUploading ? "..." : "Upload"}
-            <input type="file" accept=".pdf,.docx,.txt,.md,.csv" style={{ display: "none" }} onChange={handleFileUpload} />
-          </label>
-
           <span style={{ color: "var(--text-muted)", fontSize: 11, marginLeft: 8 }}>{userName}</span>
           <button onClick={onDisconnect} style={cls.endBtn}>End</button>
         </div>
@@ -474,7 +521,7 @@ function ActiveSession({
       {/* ── Main classroom area ── */}
       <div style={cls.classroom}>
 
-        {/* ── Left: Avatar + Agent State ── */}
+        {/* ── Left: Avatar + Documents ── */}
         <div style={cls.leftPanel}>
           {/* Avatar video */}
           <div style={cls.avatarBox}>
@@ -494,17 +541,35 @@ function ActiveSession({
             )}
           </div>
           <div style={{ fontSize: 12, fontWeight: 600, textAlign: "center", marginTop: 6 }}>{agentName}</div>
+
+          {/* ── Document list ── */}
+          <div style={cls.docSection}>
+            <div style={cls.docHeader}>Documents</div>
+            <div style={cls.docList}>
+              {uploadedDocs.length === 0 && (
+                <div style={{ color: "var(--text-muted)", fontSize: 11, textAlign: "center", padding: "8px 0" }}>
+                  No documents uploaded
+                </div>
+              )}
+              {uploadedDocs.map((doc) => (
+                <div key={doc.id} style={cls.docItem}>
+                  <span style={cls.docName} title={doc.name}>📄 {doc.name}</span>
+                  <button onClick={() => removeDoc(doc.id)} style={cls.docRemoveBtn} title="Remove from context">✕</button>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
-        {/* ── Center: Presentation Screen ── */}
+        {/* ── Center: Presentation Screen (artifacts/illustrations only) ── */}
         <div style={cls.presentationArea}>
           <div ref={presentationRef} style={cls.presentationScroll}>
-            {agentMessages.length === 0 && (
+            {presentationMessages.length === 0 && (
               <div style={{ color: "var(--text-muted)", fontSize: 14, textAlign: "center", marginTop: 60 }}>
-                Session started. Ask a question or start a topic.
+                Illustrations and visuals will appear here.
               </div>
             )}
-            {agentMessages.map((msg, i) => (
+            {presentationMessages.map((msg, i) => (
               <div key={i} style={cls.slide}>
                 {msg.type === "image" && msg.imageUrl && (
                   <div style={{ marginBottom: 12 }}>
@@ -523,19 +588,56 @@ function ActiveSession({
             ))}
           </div>
         </div>
-      </div>
 
-      {/* ── Bottom: Chat input bar ── */}
-      <div style={cls.chatBar}>
-        <input
-          type="text"
-          value={chatInput}
-          onChange={(e) => setChatInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSendChat()}
-          placeholder="Ask a question..."
-          style={cls.chatInput}
-        />
-        <button onClick={handleSendChat} style={cls.sendBtn}>Send</button>
+        {/* ── Right: Chat & Summary Panel ── */}
+        <div style={cls.rightPanel}>
+          <div style={cls.chatHeader}>Chat & Summary</div>
+          <div ref={chatRef} style={cls.chatMessages}>
+            {chatPanelItems.length === 0 && (
+              <div style={{ color: "var(--text-muted)", fontSize: 13, textAlign: "center", marginTop: 24 }}>
+                Ask a question to get started.
+              </div>
+            )}
+            {chatPanelItems.map((item, i) => (
+              <div key={i} style={item.kind === "user" ? cls.chatMsgUser : cls.chatMsgAgent}>
+                <div style={cls.chatSender}>{item.kind === "user" ? "You" : "Research Summary"}</div>
+                {item.kind === "user" ? (
+                  <span>{item.html}</span>
+                ) : (
+                  <div dangerouslySetInnerHTML={{ __html: item.html }} style={{ fontSize: 13, lineHeight: 1.6 }} />
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Chat input with paperclip */}
+          <div style={cls.chatBar}>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              style={cls.clipBtn}
+              title="Upload document"
+              disabled={fileUploading}
+            >
+              {fileUploading ? "..." : "📎"}
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.docx,.txt,.md,.csv,.xlsx,.json"
+              style={{ display: "none" }}
+              onChange={handleFileUpload}
+            />
+            <input
+              type="text"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSendChat()}
+              placeholder="Ask a question..."
+              style={cls.chatInput}
+            />
+            <button onClick={handleSendChat} style={cls.sendBtn}>Send</button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -551,6 +653,7 @@ const cls: Record<string, React.CSSProperties> = {
   ctrlBtn: { color: "white", padding: "5px 10px", borderRadius: 6, fontSize: 11, fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 4 },
   endBtn: { background: "var(--error)", color: "white", padding: "5px 12px", borderRadius: 6, fontSize: 11, fontWeight: 500 },
   classroom: { display: "flex", flex: 1, overflow: "hidden" },
+  // ── Left panel: avatar + documents ──
   leftPanel: {
     width: 200, padding: 16, borderRight: "1px solid var(--border)", background: "var(--bg-card)",
     display: "flex", flexDirection: "column", alignItems: "center",
@@ -559,14 +662,72 @@ const cls: Record<string, React.CSSProperties> = {
     width: 168, height: 168, borderRadius: 12, overflow: "hidden",
     background: "var(--bg)", border: "2px solid var(--border)",
   },
+  docSection: {
+    width: "100%", marginTop: 16, display: "flex", flexDirection: "column",
+    flex: 1, minHeight: 0,
+  },
+  docHeader: {
+    fontSize: 10, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" as const,
+    letterSpacing: 0.5, padding: "4px 0", borderBottom: "1px solid var(--border)", marginBottom: 6,
+  },
+  docList: {
+    flex: 1, overflowY: "auto" as const, display: "flex", flexDirection: "column", gap: 4,
+  },
+  docItem: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    padding: "4px 6px", borderRadius: 6, background: "rgba(255,255,255,0.03)",
+    border: "1px solid var(--border)",
+  },
+  docName: {
+    fontSize: 11, color: "var(--text)", overflow: "hidden" as const,
+    textOverflow: "ellipsis" as const, whiteSpace: "nowrap" as const, flex: 1, marginRight: 4,
+  },
+  docRemoveBtn: {
+    background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer",
+    fontSize: 12, padding: "2px 4px", borderRadius: 4, flexShrink: 0,
+  },
+  // ── Center: presentation area ──
   presentationArea: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },
   presentationScroll: { flex: 1, overflowY: "auto" as const, padding: "24px 32px" },
   slide: { marginBottom: 24, paddingBottom: 20, borderBottom: "1px solid var(--border)" },
   slideImage: { maxWidth: "100%", maxHeight: 400, borderRadius: 8, border: "1px solid var(--border)" },
   slideText: { fontSize: 15, lineHeight: 1.7, color: "var(--text)" },
+  // ── Right panel: chat & summary ──
+  rightPanel: {
+    width: 320, borderLeft: "1px solid var(--border)", background: "var(--bg-card)",
+    display: "flex", flexDirection: "column",
+  },
+  chatHeader: {
+    padding: "12px 16px", borderBottom: "1px solid var(--border)",
+    fontSize: 12, fontWeight: 600, color: "var(--text-muted)",
+    textTransform: "uppercase" as const, letterSpacing: 0.5,
+  },
+  chatMessages: {
+    flex: 1, overflowY: "auto" as const, padding: "12px 16px",
+    display: "flex", flexDirection: "column", gap: 12,
+  },
+  chatMsgUser: {
+    padding: "10px 14px", borderRadius: 10, fontSize: 13, lineHeight: 1.6,
+    background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", alignSelf: "flex-end" as const,
+    maxWidth: "100%",
+  },
+  chatMsgAgent: {
+    padding: "10px 14px", borderRadius: 10, fontSize: 13, lineHeight: 1.6,
+    background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.15)",
+    maxWidth: "100%",
+  },
+  chatSender: {
+    fontSize: 10, fontWeight: 600, color: "var(--text-muted)", marginBottom: 4,
+    textTransform: "uppercase" as const, letterSpacing: 0.3,
+  },
   chatBar: {
     display: "flex", gap: 8, padding: "10px 16px",
     borderTop: "1px solid var(--border)", background: "var(--bg-card)",
+  },
+  clipBtn: {
+    background: "none", border: "1px solid var(--border)", borderRadius: 8,
+    padding: "6px 8px", cursor: "pointer", fontSize: 16, color: "var(--text-muted)",
+    display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
   },
   chatInput: {
     flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border)",

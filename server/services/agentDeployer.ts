@@ -254,7 +254,7 @@ export async function deployAgent(
         if (currentToolNames.has(name) && sourceCode) {
           const existingTool = (agentLettaTools as any[]).find((t: any) => t.name === name);
           // Replace if existing tool has no source_code (built-in) or different source
-          if (existingTool && (!existingTool.source_code || !existingTool.source_code.includes("mcp.baisoln.com"))) {
+          if (existingTool && (!existingTool.source_code || !existingTool.source_code.includes("search-mcp-service"))) {
             try {
               await lettaAdmin.detachToolFromAgent(agent.lettaAgentId, existingTool.id);
               // Don't delete shared tools (they may be used by other agents)

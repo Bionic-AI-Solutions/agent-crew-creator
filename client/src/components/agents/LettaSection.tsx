@@ -58,14 +58,32 @@ export default function LettaSection(props: Props) {
             <p className="text-xs text-muted-foreground mt-1">Default: GPU deep model (Qwen 3.5 27B)</p>
           </div>
           <div>
-            <Label className="text-xs">Letta System Prompt</Label>
+            <Label className="text-xs">Assistant Persona</Label>
             <Textarea
               value={props.lettaSystemPrompt}
               onChange={(e) => props.setLettaSystemPrompt(e.target.value)}
-              placeholder="You are the execution arm of the voice agent. Handle tools, memory, and deep reasoning..."
+              placeholder="You are a visual learning assistant that creates clear, well-structured educational slides and summaries..."
               rows={5}
               className="font-mono text-xs"
             />
+            <p className="text-xs text-muted-foreground mt-1">
+              Define the assistant's content style and domain focus.
+              Core rules (silence, image generation, output format, session summary) are enforced automatically.
+            </p>
+            <details className="mt-2">
+              <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+                View enforced rules (7 rules, always active)
+              </summary>
+              <pre className="mt-2 p-3 bg-muted/50 rounded-md text-[10px] leading-relaxed text-muted-foreground whitespace-pre-wrap font-mono border max-h-48 overflow-y-auto">
+{`1. SILENCE — output to screen only, never speak aloud
+2. OUTPUT FORMAT — markdown slides, bullets, tables; no preamble
+3. PROACTIVITY — react to every meaningful turn with content
+4. TOOL USAGE — generate_image, run_crew, memory tools, send_session_summary
+5. IMAGE GENERATION — 8 strict rules (trigger detection, no inline URLs, etc.)
+6. NOISE SUPPRESSION — only topic-relevant content
+7. SESSION SUMMARY — generate PDF summary on session end, email to user`}
+              </pre>
+            </details>
           </div>
         </CardContent>
       </Card>
