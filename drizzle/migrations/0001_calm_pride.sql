@@ -1,0 +1,1 @@
+ALTER TABLE "agent_configs" ADD COLUMN "avatar_image_url" varchar(500);

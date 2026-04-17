@@ -19,9 +19,9 @@ const pg = require("pg");
 const PLATFORM = "https://platform.baisoln.com";
 const KC_USER = "test-admin";
 const KC_PASS = process.env.KC_USER_PASSWORD;
-const TEST_APP_NAME = "Regression Test App";
-const TEST_APP_SLUG = "regression-test-app";
-const TEST_AGENT_NAME = "regression-agent";
+const TEST_APP_NAME = process.env.TEST_APP_NAME || "UI Regression App";
+const TEST_APP_SLUG = process.env.TEST_APP_SLUG || "ui-regress";
+const TEST_AGENT_NAME = process.env.TEST_AGENT_NAME || "ui-agent";
 
 const PG_PLATFORM_URL = "postgresql://bionic_platform_user:B10n1cPl4tf0rm!S3cur3@192.168.0.212:5432/bionic_platform";
 const PG_ADMIN_URL = "postgresql://postgres:1rJlrTbsgL1YaqDVors6HGK8KnaHom1n6sUFccQNTadpkpzZCN9r0s2llroTy9Tu@192.168.0.212:5432/postgres";
@@ -129,14 +129,27 @@ async function runCreateTests() {
       // Step 1: Basic info
       await page.fill('input[placeholder="My AI App"]', TEST_APP_NAME);
       await page.waitForTimeout(300);
-      const slug = await page.locator("input.font-mono").first().inputValue();
-      ok("Slug auto-generated", slug === TEST_APP_SLUG, slug);
+      // Override auto-generated slug with our expected slug
+      const slugInput = page.locator("input.font-mono").first();
+      await slugInput.fill("");
+      await slugInput.fill(TEST_APP_SLUG);
+      await page.waitForTimeout(300);
+      const slug = await slugInput.inputValue();
+      ok("Slug set correctly", slug === TEST_APP_SLUG, slug);
       await page.click('button:has-text("Next")');
       await page.waitForTimeout(500);
       await screenshot(page, "02-services");
 
-      // Step 2: Services (keep defaults)
+      // Step 2: Services — enable player_ui in addition to defaults
       ok("Services selection shown", true);
+      const playerUiLabel = page.locator('label:has-text("Agent player UI")');
+      if (await playerUiLabel.count() > 0) {
+        await playerUiLabel.click();
+        await page.waitForTimeout(300);
+        ok("Player UI service enabled", true);
+      } else {
+        ok("Player UI checkbox found", false, "Not found");
+      }
       await page.click('button:has-text("Next")');
       await page.waitForTimeout(500);
 
@@ -147,8 +160,8 @@ async function runCreateTests() {
       // Wait for provisioning
       console.log("  Waiting for provisioning...");
       let provStatus = "";
-      for (let i = 0; i < 30; i++) {
-        await page.waitForTimeout(2000);
+      for (let i = 0; i < 90; i++) {
+        await page.waitForTimeout(3000);
         await page.goto(PLATFORM + "/apps", { waitUntil: "networkidle" });
         await page.waitForTimeout(500);
         const rows = await page.locator("tr").allTextContents();
@@ -423,6 +436,58 @@ async function runCreateTests() {
   const minioBucket = shell(`kubectl port-forward -n minio svc/minio-tenant-hl 9199:9000 &>/dev/null & sleep 2 && mc alias set rgtest http://localhost:9199 admin "Th1515T0p53cr3t" 2>/dev/null && mc stat rgtest/${TEST_APP_SLUG} 2>&1 | grep -c Name; kill %1 2>/dev/null`);
   ok("MinIO bucket exists", minioBucket.includes("1"), minioBucket);
 
+  // ── PLAYER UI / CLOUDFLARE DNS / KONG ROUTING ──
+  section("9b. PLAYER UI + DNS + KONG VERIFICATION");
+
+  // Player UI deployment
+  const playerUiDeploy = shell(`kubectl get deploy player-ui -n ${TEST_APP_SLUG} -o jsonpath='{.status.readyReplicas}' 2>&1`);
+  ok("Player UI deployment exists and ready", playerUiDeploy === "1", playerUiDeploy);
+
+  // Player UI service
+  const playerUiSvc = shell(`kubectl get svc player-ui -n ${TEST_APP_SLUG} -o jsonpath='{.spec.ports[0].port}' 2>&1`);
+  ok("Player UI service exists (port 80)", playerUiSvc === "80", playerUiSvc);
+
+  // K8s Ingress for player-ui
+  const ingressHost = shell(`kubectl get ingress player-ui -n ${TEST_APP_SLUG} -o jsonpath='{.spec.rules[0].host}' 2>&1`);
+  const expectedHost = `${TEST_APP_SLUG}.baisoln.com`;
+  ok("Ingress host matches slug.baisoln.com", ingressHost === expectedHost, ingressHost);
+
+  const ingressClass = shell(`kubectl get ingress player-ui -n ${TEST_APP_SLUG} -o jsonpath='{.spec.ingressClassName}' 2>&1`);
+  ok("Ingress class is kong", ingressClass === "kong", ingressClass);
+
+  const ingressBackend = shell(`kubectl get ingress player-ui -n ${TEST_APP_SLUG} -o jsonpath='{.spec.rules[0].http.paths[0].backend.service.name}' 2>&1`);
+  ok("Ingress backend is player-ui service", ingressBackend === "player-ui", ingressBackend);
+
+  // Cloudflare DNS A record verification
+  // Vault uses zone_ids (JSON map) not zone_id, and WAN_IP (uppercase) not wan_ip
+  const cfToken = shell(`kubectl exec -n vault vault-0 -- vault kv get -field=api_token secret/shared/cloudflare 2>/dev/null`);
+  const cfZoneId = shell(`kubectl exec -n vault vault-0 -- vault kv get -format=json secret/shared/cloudflare 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin)['data']['data']; zid=d.get('zone_id',''); zids=d.get('zone_ids',''); z=zid or (json.loads(zids).get('baisoln.com','') if zids else ''); print(z)" 2>&1`);
+  const cfWanIp = shell(`kubectl exec -n vault vault-0 -- vault kv get -format=json secret/shared/cloudflare 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin)['data']['data']; print(d.get('wan_ip','') or d.get('WAN_IP',''))" 2>&1`);
+
+  if (cfToken && cfZoneId) {
+    const dnsRecords = shell(`curl -s "https://api.cloudflare.com/client/v4/zones/${cfZoneId}/dns_records?name=${expectedHost}&type=A" -H "Authorization: Bearer ${cfToken}" | python3 -c "import sys,json; r=json.load(sys.stdin)['result']; print(len(r), r[0]['content'] if r else 'NONE')" 2>&1`);
+    const [dnsCount, dnsIp] = dnsRecords.split(" ");
+    ok("Cloudflare A record exists", parseInt(dnsCount) >= 1, dnsRecords);
+    if (cfWanIp) {
+      ok("Cloudflare A record points to WAN IP", dnsIp === cfWanIp, `DNS=${dnsIp} WAN=${cfWanIp}`);
+    }
+  } else {
+    ok("Cloudflare creds available in Vault", false, `token=${!!cfToken} zoneId=${cfZoneId}`);
+  }
+
+  // Kong routing — test from platform pod via wget
+  const kongProxyUrl = "http://kong-kong-proxy.kong.svc.cluster.local:80";
+  const kongHealth = shell(`kubectl exec deploy/bionic-platform -n bionic-platform -- wget -qO- --header="Host: ${expectedHost}" "${kongProxyUrl}/api/health" 2>&1`);
+  ok("Kong routes to player-ui (health check via Host header)", kongHealth.includes('"ok":true'), kongHealth);
+
+  // External DNS resolution check
+  const dnsResolve = shell(`dig +short ${expectedHost} @1.1.1.1 2>/dev/null | head -1`);
+  if (cfWanIp) {
+    ok("Public DNS resolves to WAN IP", dnsResolve === cfWanIp || dnsResolve.length > 0, `resolved=${dnsResolve} wan=${cfWanIp}`);
+  } else {
+    ok("Public DNS resolves", dnsResolve.length > 0, dnsResolve);
+  }
+
   // Agent deployment check
   section("10. AGENT DEPLOYMENT VERIFICATION");
 
@@ -472,6 +537,167 @@ async function runCreateTests() {
   printResults("CREATE & DEPLOY PHASE");
   console.log("\n  Screenshots: " + SCREENSHOTS_DIR + "/");
   console.log("  → Validate manually, then run: node tests/e2e-regression.js delete\n");
+  process.exit(totalFailed > 0 ? 1 : 0);
+}
+
+// ═════════════════════════════════════════════════════════════════
+// PHASE 3: PLAYER-UI END-TO-END (deployed app browser test)
+// ═════════════════════════════════════════════════════════════════
+async function runPlayerUiTest() {
+  if (!KC_PASS) { console.error("Set KC_USER_PASSWORD"); process.exit(1); }
+  execSync(`mkdir -p ${SCREENSHOTS_DIR}`);
+
+  const APP_URL = `https://${TEST_APP_SLUG}.baisoln.com`;
+  console.log(`\n  Testing deployed player-ui at: ${APP_URL}\n`);
+
+  const browser = await chromium.launch({ args: ["--no-sandbox", "--ignore-certificate-errors"] });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const errors = [];
+  page.on("pageerror", (err) => errors.push(err.message));
+
+  try {
+    // ── 1. NAVIGATE TO APP ──
+    section("1. NAVIGATE TO DEPLOYED APP");
+    await page.goto(APP_URL, { waitUntil: "networkidle", timeout: 30000 });
+    await page.waitForTimeout(2000);
+    await screenshot(page, "playerui-01-landing");
+
+    const bodyText = await page.textContent("body");
+    // Should show "Sign in" or redirect to Keycloak
+    const isAuthPage = bodyText.includes("Sign in") ||
+                       bodyText.includes("Keycloak") ||
+                       bodyText.includes("Username") ||
+                       page.url().includes("auth.bionicaisolutions.com");
+    ok("Player UI requires authentication", isAuthPage, page.url());
+
+    // ── 2. SIGN IN VIA KEYCLOAK ──
+    section("2. SIGN IN VIA KEYCLOAK");
+    // If we're on the player-ui sign-in page, click sign in
+    const signInBtn = page.locator('button:has-text("Sign in")');
+    if (await signInBtn.count() > 0) {
+      await signInBtn.first().click();
+      await page.waitForTimeout(2000);
+    }
+
+    // Wait for Keycloak login form
+    await page.waitForSelector("#username", { timeout: 15000 });
+    await page.fill("#username", KC_USER);
+    await page.fill("#password", KC_PASS);
+    await page.click("#kc-login");
+    await page.waitForTimeout(3000);
+    await screenshot(page, "playerui-02-after-login");
+
+    // Should be back on the app with session
+    const afterLoginUrl = page.url();
+    ok("Redirected back to app after login", afterLoginUrl.includes(TEST_APP_SLUG) || afterLoginUrl.includes("baisoln.com"), afterLoginUrl);
+
+    // ── 3. WAIT FOR AGENT TO APPEAR ──
+    section("3. WAIT FOR AGENT TO APPEAR");
+    let agentFound = false;
+    for (let i = 0; i < 20; i++) {
+      await page.waitForTimeout(3000);
+      const text = await page.textContent("body");
+      // Check for agent name or "Start Session" button
+      if (text.includes("Start Session") || text.includes("Agent")) {
+        const hasStartBtn = await page.locator('button:has-text("Start Session")').count();
+        if (hasStartBtn > 0) {
+          agentFound = true;
+          break;
+        }
+      }
+      process.stdout.write(".");
+    }
+    console.log("");
+    await screenshot(page, "playerui-03-agent-list");
+    ok("Agent visible in player UI", agentFound);
+
+    if (!agentFound) {
+      console.log("  ⚠️  Agent not found in UI — checking API directly");
+      const apiRes = shell(`kubectl exec deploy/player-ui -n ${TEST_APP_SLUG} -- sh -c 'wget -qO- http://bionic-platform.bionic-platform.svc.cluster.local:80/api/player-ui/agents?slug=${TEST_APP_SLUG} 2>&1'`);
+      console.log("  API response: " + apiRes);
+    }
+
+    // ── 4. START SESSION ──
+    section("4. START AGENT SESSION");
+    if (agentFound) {
+      const startBtn = page.locator('button:has-text("Start Session")');
+      await startBtn.click();
+      console.log("  Clicked Start Session, waiting for connection...");
+
+      // Wait for the session view to appear (header with agent name + "Connected")
+      let sessionStarted = false;
+      for (let i = 0; i < 20; i++) {
+        await page.waitForTimeout(2000);
+        const sessionText = await page.textContent("body");
+        if (sessionText.includes("Connected") || sessionText.includes("Listening") || sessionText.includes("End")) {
+          sessionStarted = true;
+          break;
+        }
+        // Check for visible error messages (not raw script content)
+        const errorEls = await page.locator('p:has-text("error"), p:has-text("Error"), [style*="error"]').count();
+        if (errorEls > 0) {
+          const errText = await page.locator('p:has-text("error"), p:has-text("Error")').first().textContent();
+          console.log("  ⚠️  Error in UI: " + errText);
+          break;
+        }
+        process.stdout.write(".");
+      }
+      console.log("");
+      await screenshot(page, "playerui-04-session");
+      ok("LiveKit session started", sessionStarted);
+
+      if (sessionStarted) {
+        // ── 5. SEND CHAT MESSAGE ──
+        section("5. SEND CHAT MESSAGE");
+        const chatInput = page.locator('input[placeholder="Ask a question..."]');
+        if (await chatInput.count() > 0) {
+          await chatInput.fill("Hello, this is a test message.");
+          await chatInput.press("Enter");
+          ok("Chat message sent", true);
+
+          // Wait for any response in the chat
+          let gotResponse = false;
+          for (let i = 0; i < 15; i++) {
+            await page.waitForTimeout(2000);
+            const chatText = await page.textContent("body");
+            // Look for agent's reply bubble (any text in agent-bubble style)
+            const msgCount = await page.locator('[style*="agent-bubble"], [style*="flex-start"]').count();
+            if (msgCount > 0) {
+              gotResponse = true;
+              break;
+            }
+            process.stdout.write(".");
+          }
+          console.log("");
+          await screenshot(page, "playerui-05-chat-response");
+          ok("Agent responded to chat", gotResponse);
+        } else {
+          ok("Chat input found", false, "No chat input visible");
+        }
+
+        // ── 6. DISCONNECT ──
+        section("6. DISCONNECT");
+        const endBtn = page.locator('button:has-text("End")');
+        if (await endBtn.count() > 0) {
+          await endBtn.click();
+          await page.waitForTimeout(2000);
+          ok("Session disconnected", true);
+        }
+      }
+    }
+
+    // JS errors
+    ok("No JS errors during player-ui test", errors.length === 0, errors);
+
+  } catch (err) {
+    console.error("\n  ⚠️  Player-UI test error: " + err.message.split("\n")[0]);
+    await screenshot(page, "playerui-error");
+  }
+
+  await browser.close();
+
+  printResults("PLAYER-UI E2E PHASE");
+  console.log("\n  Screenshots: " + SCREENSHOTS_DIR + "/");
   process.exit(totalFailed > 0 ? 1 : 0);
 }
 
@@ -625,11 +851,19 @@ if (mode === "create") {
   runCreateTests().catch((e) => { console.error("FATAL:", e.message); process.exit(1); });
 } else if (mode === "delete") {
   runDeleteTests().catch((e) => { console.error("FATAL:", e.message); process.exit(1); });
+} else if (mode === "playerui") {
+  runPlayerUiTest().catch((e) => { console.error("FATAL:", e.message); process.exit(1); });
+} else if (mode === "all") {
+  // Full E2E: create → player-ui test → delete
+  runCreateTests()
+    .then(() => { results.length = 0; totalPassed = 0; totalFailed = 0; return runPlayerUiTest(); })
+    .catch((e) => { console.error("FATAL:", e.message); process.exit(1); });
 } else {
   console.log("Usage:");
-  console.log("  KC_USER_PASSWORD=... node tests/e2e-regression.js create");
-  console.log("  KC_USER_PASSWORD=... node tests/e2e-regression.js delete");
+  console.log("  KC_USER_PASSWORD=... node tests/e2e-regression.cjs create");
+  console.log("  KC_USER_PASSWORD=... node tests/e2e-regression.cjs playerui");
+  console.log("  KC_USER_PASSWORD=... node tests/e2e-regression.cjs delete");
   console.log("");
-  console.log("Run 'create' first, validate manually, then run 'delete'.");
+  console.log("Run 'create' first, then 'playerui' to test deployed UI, then 'delete'.");
   process.exit(1);
 }

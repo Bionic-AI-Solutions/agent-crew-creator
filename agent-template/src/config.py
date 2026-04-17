@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     letta_llm_model: str = "openai-proxy/qwen3.5-27b-fp8"
     letta_system_prompt: str = ""
     letta_api_key: str = ""
+    letta_server_password: str = ""
     mcp_api_key: str = ""
 
     # ── STT/TTS configuration ────────────────────────────────────
@@ -39,29 +40,44 @@ class Settings(BaseSettings):
     stt_model: str = ""
     tts_provider: str = "gpu-ai"
     tts_voice: str = "Sudhir-IndexTTS2"
+    tts_model: str = "tts-1"
 
     # ── Fallback providers (keys from Vault, not user-configurable) ──
     deepgram_api_key: str = ""
     openai_api_key: str = ""
+    openrouter_api_key: str = ""
+    anthropic_api_key: str = ""
     cartesia_api_key: str = ""
+    elevenlabs_api_key: str = ""
+    async_api_key: str = ""
 
     # System prompt (primary agent)
     system_prompt: str = ""
 
     # GPU-AI services
+    # MCP endpoint — for tool calls via Model Context Protocol
     gpu_ai_mcp_url: str = "http://mcp-ai-mcp-server.mcp.svc.cluster.local:8009/mcp"
+    # OpenAI-compatible LLM/STT/TTS endpoint — different service from the MCP
+    # server. mcp-api-server routes by model suffix (gemma → llm-fast,
+    # qwen3.5-*-think → llm-deep, etc.). Used by plugins.py for STT/TTS/LLM.
+    gpu_ai_llm_url: str = "http://mcp-api-server.mcp.svc.cluster.local:8000"
 
-    # Avatar
+    # Avatar (BitHuman)
     avatar_enabled: bool = False
     bithuman_api_key: str = ""
     bithuman_api_secret: str = ""
     bithuman_api_url: str = "http://192.168.0.10:8089/launch"
+    bithuman_livekit_url: str = ""  # External LiveKit URL for BitHuman (set from Vault shared/bithuman)
+    bithuman_avatar_image: str = ""
 
     # Vision (feed camera/screen frames to the primary LLM)
     vision_enabled: bool = False
 
-    # Background audio (thinking sounds)
+    # Background audio
     background_audio_enabled: bool = False
+    busy_audio_enabled: bool = False
+    ambient_audio_url: str = ""    # Custom ambient sound (loop) — presigned MinIO URL
+    thinking_audio_url: str = ""   # Custom thinking sound — presigned MinIO URL
 
     # Capture (periodic frame storage to MinIO, separate from vision)
     capture_mode: str = "off"
@@ -78,6 +94,10 @@ class Settings(BaseSettings):
     langfuse_host: str = "http://langfuse-web.langfuse.svc.cluster.local:3000"
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
+
+    # Interview mode (session continuity by client ID)
+    interview_mode: bool = False
+    auto_summarize_on_disconnect: bool = True
 
     # Dynamic configuration (from ConfigMap, JSON strings)
     enabled_tools: str = "[]"

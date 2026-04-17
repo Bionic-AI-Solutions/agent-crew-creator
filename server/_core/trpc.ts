@@ -43,12 +43,13 @@ const isAuthenticated = middleware(async ({ ctx, next }) => {
 
 export const protectedProcedure = t.procedure.use(isAuthenticated);
 
-/** Admin — requires admin role */
+/** Admin — requires admin or super_admin platform role */
 const isAdmin = middleware(async ({ ctx, next }) => {
   if (!ctx.user) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
   }
-  if (ctx.user.role !== "admin") {
+  const pr = ctx.user.platformRole || ctx.user.role;
+  if (pr !== "admin" && pr !== "super_admin") {
     throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
   }
   return next({ ctx: { ...ctx, user: ctx.user } });
@@ -56,17 +57,13 @@ const isAdmin = middleware(async ({ ctx, next }) => {
 
 export const adminProcedure = t.procedure.use(isAdmin);
 
-/** Analyst or Admin — used by the crew templates feature. Either the
- *  legacy "admin" coarse role OR the realm role "Analyst" / "Admin"
- *  (case-insensitive) grants access. Falls through to FORBIDDEN otherwise. */
+/** Analyst or Admin — uses unified platformRole. */
 const isAnalystOrAdmin = middleware(async ({ ctx, next }) => {
   if (!ctx.user) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
   }
-  const roles = (ctx.user.realmRoles || []).map((r) => r.toLowerCase());
-  const allowed =
-    ctx.user.role === "admin" || roles.includes("admin") || roles.includes("analyst");
-  if (!allowed) {
+  const pr = ctx.user.platformRole || ctx.user.role;
+  if (pr !== "admin" && pr !== "super_admin" && pr !== "analyst") {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "Analyst or Admin role required",

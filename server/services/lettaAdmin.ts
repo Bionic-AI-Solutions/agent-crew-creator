@@ -108,6 +108,10 @@ export async function getAgent(agentId: string): Promise<any> {
   return lettaRequest("GET", `/v1/agents/${agentId}/`);
 }
 
+export async function updateAgent(agentId: string, updates: Record<string, any>): Promise<any> {
+  return lettaRequest("PATCH", `/v1/agents/${agentId}/`, updates);
+}
+
 export async function getAgentByName(name: string): Promise<any | null> {
   const agents = await lettaRequest("GET", `/v1/agents/?name=${encodeURIComponent(name)}`);
   if (Array.isArray(agents) && agents.length > 0) {
@@ -121,15 +125,27 @@ export async function deleteAgent(agentId: string): Promise<void> {
   log.info("Deleted Letta agent", { agentId });
 }
 
+/**
+ * Update an existing Letta agent's system prompt + (optionally) model.
+ * Used when the platform-side prompt is changed in agent_configs and the
+ * existing Letta agent needs to be re-aligned without recreating it.
+ *
+ * Letta exposes this as PATCH /v1/agents/{id}/ — fields not in the payload
+ * are left unchanged.
+ */
+// Note: updateAgent with full Record<string, any> support is defined at line 111
+
 // ── Memory / Passages ───────────────────────────────────────────
 
 export async function createPassage(agentId: string, text: string): Promise<string> {
-  const result = await lettaRequest("POST", `/v1/agents/${agentId}/archival/`, { text });
+  // Letta API renamed: /archival/ → /archival-memory
+  const result = await lettaRequest("POST", `/v1/agents/${agentId}/archival-memory`, { text });
+  if (Array.isArray(result)) return result[0]?.id || "";
   return result?.id || "";
 }
 
 export async function deletePassage(agentId: string, passageId: string): Promise<void> {
-  await lettaRequest("DELETE", `/v1/agents/${agentId}/archival/${passageId}/`);
+  await lettaRequest("DELETE", `/v1/agents/${agentId}/archival-memory/${passageId}`);
 }
 
 // ── Memory Blocks ───────────────────────────────────────────────
@@ -453,6 +469,7 @@ export const lettaAdmin = {
   createTenant,
   deleteTenant,
   createAgent,
+  updateAgent,
   getAgent,
   getAgentByName,
   deleteAgent,

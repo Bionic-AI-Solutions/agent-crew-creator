@@ -88,14 +88,21 @@ export const agentConfigs = pgTable(
     // LiveKit voice pipeline
     sttProvider: varchar("stt_provider", { length: 50 }).default("gpu-ai").notNull(),
     sttModel: varchar("stt_model", { length: 100 }),
-    llmProvider: varchar("llm_provider", { length: 50 }).default("letta").notNull(),
-    llmModel: varchar("llm_model", { length: 200 }).default("gpt-4o-mini"),
+    // PRIMARY voice LLM (fast, low-latency). The Letta brain is secondary
+    // and accessed via tools (run_crew, recall_memory) — its model lives
+    // in lettaLlmModel below. Default to gpu-ai gemma for sub-second turns.
+    llmProvider: varchar("llm_provider", { length: 50 }).default("gpu-ai").notNull(),
+    llmModel: varchar("llm_model", { length: 200 }).default("gemma-4-e4b-it"),
     ttsProvider: varchar("tts_provider", { length: 50 }).default("gpu-ai").notNull(),
     ttsVoice: varchar("tts_voice", { length: 200 }).default("Sudhir-IndexTTS2"),
     systemPrompt: text("system_prompt"),
     visionEnabled: boolean("vision_enabled").default(false).notNull(),
     avatarEnabled: boolean("avatar_enabled").default(false).notNull(),
+    avatarImageUrl: varchar("avatar_image_url", { length: 500 }),
     backgroundAudioEnabled: boolean("background_audio_enabled").default(false).notNull(),
+    busyAudioEnabled: boolean("busy_audio_enabled").default(false).notNull(),
+    ambientAudioUrl: varchar("ambient_audio_url", { length: 500 }),
+    thinkingAudioUrl: varchar("thinking_audio_url", { length: 500 }),
     captureMode: varchar("capture_mode", { length: 20 }).default("off").notNull(),
     captureInterval: integer("capture_interval").default(5),
 
@@ -110,6 +117,7 @@ export const agentConfigs = pgTable(
     imageTag: varchar("image_tag", { length: 100 }).default("latest"),
     deploymentStatus: varchar("deployment_status", { length: 50 }),
     lastDeployedAt: timestamp("last_deployed_at"),
+    configVersion: integer("config_version").default(1).notNull(),
 
     metadata: json("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -171,10 +179,16 @@ export const mcpServers = pgTable(
       .notNull()
       .references(() => apps.id, { onDelete: "cascade" }),
     name: varchar("name", { length: 100 }).notNull(),
-    url: varchar("url", { length: 500 }).notNull(),
+    url: varchar("url", { length: 500 }),
     transport: varchar("transport", { length: 20 }).default("streamable-http").notNull(),
     authType: varchar("auth_type", { length: 20 }).default("none").notNull(),
     description: text("description"),
+    // Stdio transport fields (command-based MCP servers)
+    command: varchar("command", { length: 500 }),
+    args: text("args"),  // JSON array of strings
+    env: text("env"),    // JSON object of env vars
+    // HTTP transport fields
+    headers: text("headers"),  // JSON object of HTTP headers
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => [
@@ -297,6 +311,42 @@ export const agentDocuments = pgTable(
   ],
 );
 
+// ── Embed Tokens (per-agent embeddable widget keys) ────────────
+
+export const embedTokens = pgTable(
+  "embed_tokens",
+  {
+    id: serial("id").primaryKey(),
+    agentConfigId: integer("agent_config_id")
+      .notNull()
+      .references(() => agentConfigs.id, { onDelete: "cascade" }),
+    appId: integer("app_id")
+      .notNull()
+      .references(() => apps.id, { onDelete: "cascade" }),
+    token: varchar("token", { length: 64 }).notNull().unique(),
+    label: varchar("label", { length: 100 }).default("default").notNull(),
+    // Feature toggles
+    allowVoice: boolean("allow_voice").default(true).notNull(),
+    allowChat: boolean("allow_chat").default(true).notNull(),
+    allowVideo: boolean("allow_video").default(false).notNull(),
+    allowScreenShare: boolean("allow_screen_share").default(false).notNull(),
+    allowAvatar: boolean("allow_avatar").default(false).notNull(),
+    showTranscription: boolean("show_transcription").default(true).notNull(),
+    // Appearance
+    theme: varchar("theme", { length: 20 }).default("light").notNull(),
+    mode: varchar("mode", { length: 20 }).default("popup").notNull(), // popup | iframe
+    // Security
+    allowedOrigins: json("allowed_origins").$type<string[]>().default([]),
+    isActive: boolean("is_active").default(true).notNull(),
+    lastUsedAt: timestamp("last_used_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_embed_tokens_agent").on(table.agentConfigId),
+    index("idx_embed_tokens_token").on(table.token),
+  ],
+);
+
 // ── Type helpers ────────────────────────────────────────────────
 
 // ── User Memory Blocks (per-user Letta memory isolation) ────────
@@ -345,3 +395,5 @@ export type Crew = typeof crews.$inferSelect;
 export type InsertCrew = typeof crews.$inferInsert;
 export type CrewExecution = typeof crewExecutions.$inferSelect;
 export type UserMemoryBlock = typeof userMemoryBlocks.$inferSelect;
+export type EmbedToken = typeof embedTokens.$inferSelect;
+export type InsertEmbedToken = typeof embedTokens.$inferInsert;

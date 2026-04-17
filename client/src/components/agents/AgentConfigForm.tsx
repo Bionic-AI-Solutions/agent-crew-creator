@@ -2,13 +2,14 @@ import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { Save, Rocket, Trash2 } from "lucide-react";
+import { Rocket, Trash2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { useAppContext } from "@/contexts/AppContext";
 import LiveKitSection from "./LiveKitSection";
 import LettaSection from "./LettaSection";
 import CrewBuilder from "./CrewBuilder";
 import DeploymentStatus from "./DeploymentStatus";
+import EmbedSection from "./EmbedSection";
 
 interface Props {
   agentId: number;
@@ -27,6 +28,10 @@ export default function AgentConfigForm({ agentId }: Props) {
   const [ttsProvider, setTtsProvider] = useState("");
   const [ttsVoice, setTtsVoice] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [avatarEnabled, setAvatarEnabled] = useState(false);
+  const [visionEnabled, setVisionEnabled] = useState(false);
+  const [backgroundAudioEnabled, setBackgroundAudioEnabled] = useState(false);
+  const [busyAudioEnabled, setBusyAudioEnabled] = useState(false);
   const [lettaAgentName, setLettaAgentName] = useState("");
   const [lettaLlmModel, setLettaLlmModel] = useState("");
   const [lettaSystemPrompt, setLettaSystemPrompt] = useState("");
@@ -41,6 +46,10 @@ export default function AgentConfigForm({ agentId }: Props) {
       setTtsProvider(agent.ttsProvider);
       setTtsVoice(agent.ttsVoice || "");
       setSystemPrompt(agent.systemPrompt || "");
+      setAvatarEnabled(agent.avatarEnabled);
+      setVisionEnabled(agent.visionEnabled);
+      setBackgroundAudioEnabled(agent.backgroundAudioEnabled);
+      setBusyAudioEnabled((agent as any).busyAudioEnabled ?? false);
       setLettaAgentName(agent.lettaAgentName || "");
       setLettaLlmModel(agent.lettaLlmModel || "");
       setLettaSystemPrompt(agent.lettaSystemPrompt || "");
@@ -72,20 +81,32 @@ export default function AgentConfigForm({ agentId }: Props) {
     onError: (err) => toast.error(err.message),
   });
 
-  const handleSave = () => {
-    updateMutation.mutate({
-      id: agentId,
-      sttProvider,
-      sttModel: sttModel || null,
-      llmProvider,
-      llmModel: llmModel || null,
-      ttsProvider,
-      ttsVoice: ttsVoice || null,
-      systemPrompt: systemPrompt || null,
-      lettaAgentName: lettaAgentName || null,
-      lettaLlmModel: lettaLlmModel || null,
-      lettaSystemPrompt: lettaSystemPrompt || null,
-    });
+  const handleDeploy = () => {
+    // Save all fields first, then deploy (which auto-provisions Letta if needed)
+    updateMutation.mutate(
+      {
+        id: agentId,
+        sttProvider,
+        sttModel: sttModel || null,
+        llmProvider,
+        llmModel: llmModel || null,
+        ttsProvider,
+        ttsVoice: ttsVoice || null,
+        systemPrompt: systemPrompt || null,
+        avatarEnabled,
+        visionEnabled,
+        backgroundAudioEnabled,
+        busyAudioEnabled,
+        lettaAgentName: lettaAgentName || null,
+        lettaLlmModel: lettaLlmModel || null,
+        lettaSystemPrompt: lettaSystemPrompt || null,
+      },
+      {
+        onSuccess: () => {
+          deployMutation.mutate({ id: agentId });
+        },
+      },
+    );
   };
 
   if (isLoading) {
@@ -111,6 +132,7 @@ export default function AgentConfigForm({ agentId }: Props) {
           <TabsTrigger value="letta">Letta</TabsTrigger>
           <TabsTrigger value="crews">Crews</TabsTrigger>
           <TabsTrigger value="deployment">Deployment</TabsTrigger>
+          <TabsTrigger value="embed">Embed</TabsTrigger>
         </TabsList>
 
         <TabsContent value="livekit">
@@ -129,6 +151,15 @@ export default function AgentConfigForm({ agentId }: Props) {
             setTtsVoice={setTtsVoice}
             systemPrompt={systemPrompt}
             setSystemPrompt={setSystemPrompt}
+            avatarEnabled={avatarEnabled}
+            setAvatarEnabled={setAvatarEnabled}
+            avatarImageUrl={agent?.avatarImageUrl || ""}
+            visionEnabled={visionEnabled}
+            setVisionEnabled={setVisionEnabled}
+            backgroundAudioEnabled={backgroundAudioEnabled}
+            setBackgroundAudioEnabled={setBackgroundAudioEnabled}
+            busyAudioEnabled={busyAudioEnabled}
+            setBusyAudioEnabled={setBusyAudioEnabled}
             agentId={agentId}
           />
         </TabsContent>
@@ -153,21 +184,29 @@ export default function AgentConfigForm({ agentId }: Props) {
         <TabsContent value="deployment">
           <DeploymentStatus agentId={agentId} agent={agent} />
         </TabsContent>
+
+        <TabsContent value="embed">
+          <EmbedSection
+            agentId={agentId}
+            appId={agent.appId}
+            deployed={agent.deployed}
+            avatarEnabled={agent.avatarEnabled}
+          />
+        </TabsContent>
       </Tabs>
 
       {/* Action bar */}
       <div className="flex items-center gap-2 border-t pt-4">
-        <Button onClick={handleSave} disabled={updateMutation.isPending}>
-          <Save className="h-4 w-4 mr-1" />
-          {updateMutation.isPending ? "Saving..." : "Save"}
-        </Button>
         <Button
-          variant="secondary"
-          onClick={() => deployMutation.mutate({ id: agentId })}
-          disabled={deployMutation.isPending}
+          onClick={handleDeploy}
+          disabled={updateMutation.isPending || deployMutation.isPending}
         >
           <Rocket className="h-4 w-4 mr-1" />
-          {deployMutation.isPending ? "Deploying..." : "Deploy"}
+          {updateMutation.isPending
+            ? "Saving..."
+            : deployMutation.isPending
+              ? "Deploying..."
+              : "Deploy"}
         </Button>
         <div className="flex-1" />
         <Button

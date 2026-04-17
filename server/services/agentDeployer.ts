@@ -23,6 +23,59 @@ import type { App, AgentConfig } from "../../drizzle/platformSchema.js";
 
 const log = createLogger("AgentDeployer");
 
+// ── Letta tool source code loader ────────────────────────────────
+const TOOL_SOURCE_DIR = new URL("../letta-tools/", import.meta.url).pathname;
+
+async function loadToolSourceCode(toolName: string): Promise<string | null> {
+  try {
+    const fs = await import("fs/promises");
+    const path = `${TOOL_SOURCE_DIR}${toolName}.py`;
+    return await fs.readFile(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function getToolPipRequirements(toolName: string): { name: string }[] {
+  const reqs: Record<string, { name: string }[]> = {
+    code_interpreter: [],
+    generate_pdf: [{ name: "reportlab" }, { name: "minio" }],
+    generate_image: [],
+    generate_persona_image: [],
+    web_search: [],
+    run_crew: [{ name: "requests" }],
+  };
+  return reqs[toolName] || [];
+}
+
+/**
+ * Map an llmProvider value (lowercase) to the conventional SDK env var.
+ * Used to inject the per-agent API key from Vault into the worker pod.
+ * gpu-ai is intentionally excluded — internal cluster GPU has no auth.
+ */
+function providerEnvName(provider: string): string | null {
+  switch (provider) {
+    case "openai":
+      return "OPENAI_API_KEY";
+    case "openrouter":
+      return "OPENROUTER_API_KEY";
+    case "anthropic":
+      return "ANTHROPIC_API_KEY";
+    case "deepgram":
+      return "DEEPGRAM_API_KEY";
+    case "cartesia":
+      return "CARTESIA_API_KEY";
+    case "elevenlabs":
+      return "ELEVENLABS_API_KEY";
+    case "groq":
+      return "GROQ_API_KEY";
+    case "async":
+      return "ASYNC_API_KEY";
+    default:
+      return null;
+  }
+}
+
 const AGENT_IMAGE = process.env.AGENT_TEMPLATE_IMAGE || "docker4zerocool/bionic-agent:latest";
 // All internal cluster URLs — agents run inside the cluster, no need for external hops
 const LETTA_MCP_URL = process.env.LETTA_INTERNAL_URL
@@ -31,6 +84,8 @@ const LETTA_MCP_URL = process.env.LETTA_INTERNAL_URL
 const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || "minio-tenant-hl.minio.svc.cluster.local:9000";
 const LANGFUSE_HOST = process.env.LANGFUSE_INTERNAL_URL || "http://langfuse-web.langfuse.svc.cluster.local:3000";
 const GPU_AI_MCP_URL = process.env.GPU_AI_MCP_INTERNAL_URL || "http://mcp-ai-mcp-server.mcp.svc.cluster.local:8009/mcp";
+// OpenAI-compatible LLM/STT/TTS endpoint — different from the MCP server above.
+const GPU_AI_LLM_URL = process.env.GPU_AI_LLM_INTERNAL_URL || "http://mcp-api-server.mcp.svc.cluster.local:8000";
 const LIVEKIT_INTERNAL_URL = process.env.LIVEKIT_INTERNAL_URL || "ws://livekit-server.livekit.svc.cluster.local:7880";
 
 export async function deployAgent(
@@ -45,13 +100,27 @@ export async function deployAgent(
   const secretName = `${namespace}-secrets`; // ExternalSecret created during app provisioning
   const image = `${AGENT_IMAGE.split(":")[0]}:${agent.imageTag || "latest"}`;
 
-  log.info("Deploying agent", { namespace, agentName, image });
+  // LiveKit dispatch key — must be unique across the shared LiveKit instance.
+  // We share one LiveKit (wss://livekit.bionicaisolutions.com) across all
+  // apps, so two apps with agents named the same would collide if we
+  // registered with the bare agent.name. Prefix with the app slug.
+  const dispatchName = `${app.slug}-${agentName}`;
+  log.info("Deploying agent", { namespace, agentName, dispatchName, image });
 
   // 1. Gather relations from DB
   const [tools, mcpLinks, agentCrewLinks, appCrews] = await Promise.all([
     db.select().from(agentTools).where(eq(agentTools.agentConfigId, agent.id)),
     db
-      .select({ name: mcpServers.name, url: mcpServers.url, transport: mcpServers.transport })
+      .select({
+        name: mcpServers.name,
+        url: mcpServers.url,
+        transport: mcpServers.transport,
+        command: mcpServers.command,
+        args: mcpServers.args,
+        env: mcpServers.env,
+        headers: mcpServers.headers,
+        authType: mcpServers.authType,
+      })
       .from(agentMcpServers)
       .innerJoin(mcpServers, eq(agentMcpServers.mcpServerId, mcpServers.id))
       .where(eq(agentMcpServers.agentConfigId, agent.id)),
@@ -63,7 +132,8 @@ export async function deployAgent(
   const configData: Record<string, string> = {
     APP_SLUG: app.slug,
     APP_ENV: "production",
-    AGENT_NAME: agentName,
+    AGENT_NAME: dispatchName,
+    AGENT_CONFIG_ID: String(agent.id),
 
     // ── Primary brain (fast, user-facing voice LLM) ─────────────
     LLM_PROVIDER: agent.llmProvider,
@@ -79,12 +149,14 @@ export async function deployAgent(
     LETTA_AGENT_ID: agent.lettaAgentId || "",
     LETTA_LLM_MODEL: agent.lettaLlmModel || "openai-proxy/qwen3.5-27b-fp8",
     LETTA_SYSTEM_PROMPT: agent.lettaSystemPrompt || "",
+    LETTA_SERVER_PASSWORD: "",  // Populated below from shared Vault
 
     // ── Infrastructure URLs (internal cluster) ──────────────────
     LIVEKIT_URL: LIVEKIT_INTERNAL_URL,
     LETTA_MCP_URL: LETTA_MCP_URL,
     LETTA_BASE_URL: LETTA_MCP_URL.replace("/mcp", ""),
     GPU_AI_MCP_URL: GPU_AI_MCP_URL,
+    GPU_AI_LLM_URL: GPU_AI_LLM_URL,
     MINIO_ENDPOINT: MINIO_ENDPOINT,
     MINIO_USE_SSL: "false",
     MINIO_BUCKET: app.slug,
@@ -97,9 +169,22 @@ export async function deployAgent(
     VISION_ENABLED: String(agent.visionEnabled),
     AVATAR_ENABLED: String(agent.avatarEnabled),
     BACKGROUND_AUDIO_ENABLED: String(agent.backgroundAudioEnabled),
+    BUSY_AUDIO_ENABLED: String((agent as any).busyAudioEnabled ?? false),
+    AMBIENT_AUDIO_URL: "",  // Populated below with presigned URL if audio file exists
+    THINKING_AUDIO_URL: "",  // Populated below with presigned URL if audio file exists
     CAPTURE_MODE: agent.captureMode,
     CAPTURE_INTERVAL_SECONDS: String(agent.captureInterval || 5),
-    MCP_SERVERS: JSON.stringify(mcpLinks.map((m) => ({ name: m.name, url: m.url, transport: m.transport }))),
+    BITHUMAN_AVATAR_IMAGE: "",  // Populated below with presigned URL if avatar image exists
+    BITHUMAN_API_URL: "http://192.168.0.10:8089/launch",
+    MCP_SERVERS: JSON.stringify(mcpLinks.map((m) => {
+      const config: Record<string, any> = { name: m.name, transport: m.transport };
+      if (m.url) config.url = m.url;
+      if (m.command) config.command = m.command;
+      if (m.args) { try { config.args = JSON.parse(m.args); } catch { config.args = [m.args]; } }
+      if (m.env) { try { config.env = JSON.parse(m.env); } catch {} }
+      if (m.headers) { try { config.headers = JSON.parse(m.headers); } catch {} }
+      return config;
+    })),
     ENABLED_CREWS: JSON.stringify(agentCrewLinks.map((c) => c.crewName)),
     CREW_REGISTRY: JSON.stringify(
       appCrews
@@ -134,12 +219,307 @@ export async function deployAgent(
     }
   }
 
-  // 4. ConfigMap + ExternalSecret in the app's namespace
-  await k8s.ensureConfigMap(namespace, configMapName, configData);
+  // 3b. Sync ALL enabled tools to Letta agent
+  if (agent.lettaAgentId) {
+    try {
+      const { lettaAdmin } = await import("./lettaAdmin.js");
+      const { BUILTIN_TOOLS } = await import("./toolRegistry.js");
+
+      // Get current Letta agent tools and all available Letta tools
+      const [agentLettaTools, allLettaTools] = await Promise.all([
+        lettaAdmin.getAgentTools(agent.lettaAgentId),
+        lettaAdmin.listTools(),
+      ]);
+      const currentToolNames = new Set((agentLettaTools as any[]).map((t: any) => t.name));
+
+      // Build set of desired Letta tool names from enabled agent_tools
+      const enabledToolIds = new Set(tools.filter((t) => t.enabled).map((t) => t.toolId));
+      const desiredLettaNames = new Set<string>();
+      for (const bt of BUILTIN_TOOLS) {
+        if (bt.lettaToolName && enabledToolIds.has(bt.id)) {
+          desiredLettaNames.add(bt.lettaToolName);
+        }
+      }
+
+      // Build lookup: Letta tool name → Letta tool ID
+      const lettaToolByName = new Map<string, string>();
+      for (const lt of allLettaTools as any[]) {
+        lettaToolByName.set(lt.name, lt.id);
+      }
+
+      // Sync tools — replace built-ins with our custom versions, attach missing
+      for (const name of desiredLettaNames) {
+        const sourceCode = await loadToolSourceCode(name);
+
+        // If tool is already attached but we have custom source code, check if it needs replacing
+        if (currentToolNames.has(name) && sourceCode) {
+          const existingTool = (agentLettaTools as any[]).find((t: any) => t.name === name);
+          // Replace if existing tool has no source_code (built-in) or different source
+          if (existingTool && (!existingTool.source_code || !existingTool.source_code.includes("search-mcp-service"))) {
+            try {
+              await lettaAdmin.detachToolFromAgent(agent.lettaAgentId, existingTool.id);
+              // Don't delete shared tools (they may be used by other agents)
+              // Create our custom version with a unique name if needed
+              const bt = BUILTIN_TOOLS.find((b) => b.lettaToolName === name);
+              const created = await lettaAdmin.createTool(sourceCode, {
+                description: bt?.description,
+                tags: ["custom", name],
+                pipRequirements: getToolPipRequirements(name),
+              });
+              await lettaAdmin.attachToolToAgent(agent.lettaAgentId, created.id);
+              log.info("Replaced built-in tool with custom version", { tool: name, newId: created.id });
+            } catch (replaceErr) {
+              log.warn("Could not replace built-in tool", { tool: name, error: String(replaceErr) });
+            }
+          }
+          continue; // Already handled
+        }
+
+        if (!currentToolNames.has(name)) {
+          let lettaId = lettaToolByName.get(name);
+
+          // Auto-create tool from source code if available
+          if (!lettaId && sourceCode) {
+            try {
+              const bt = BUILTIN_TOOLS.find((b) => b.lettaToolName === name);
+              const created = await lettaAdmin.createTool(sourceCode, {
+                description: bt?.description,
+                tags: ["builtin", name],
+                pipRequirements: getToolPipRequirements(name),
+              });
+              lettaId = created.id;
+              lettaToolByName.set(name, lettaId);
+              log.info("Auto-created Letta tool from source", { tool: name, lettaId });
+            } catch (createErr) {
+              log.warn("Failed to create Letta tool", { tool: name, error: String(createErr) });
+            }
+          } else if (!lettaId) {
+            log.warn("Tool not found on Letta server and no source code available", { tool: name });
+          }
+
+          if (lettaId) {
+            await lettaAdmin.attachToolToAgent(agent.lettaAgentId, lettaId);
+            log.info("Attached tool to Letta agent", { tool: name, lettaId });
+          }
+        }
+      }
+
+      // Detach tools that were removed (skip core Letta tools like memory_*)
+      const coreLettaTools = new Set(["memory_replace", "memory_insert", "conversation_search", "archival_memory_search", "archival_memory_insert"]);
+      for (const existing of agentLettaTools as any[]) {
+        if (!desiredLettaNames.has(existing.name) && !coreLettaTools.has(existing.name)) {
+          await lettaAdmin.detachToolFromAgent(agent.lettaAgentId, existing.id);
+          log.info("Detached tool from Letta agent", { tool: existing.name });
+        }
+      }
+
+      log.info("Letta tool sync complete", {
+        agentId: agent.lettaAgentId,
+        desired: [...desiredLettaNames],
+        current: [...currentToolNames],
+      });
+
+      // Set tool execution environment variables on the Letta agent
+      // These are needed by generate_image, generate_pdf, code_interpreter etc.
+      try {
+        const { readPlatformVaultPath } = await import("../vaultClient.js");
+        const { readAppSecret } = await import("../vaultClient.js");
+        const appSecrets = (await readAppSecret(app.slug)) || {};
+        const sharedApiKeys = (await readPlatformVaultPath("shared/api-keys")) || {};
+        const sharedInfra = (await readPlatformVaultPath("shared/infra")) || {};
+
+        const toolEnv: Record<string, string> = {};
+        // Gemini API key for generate_image (check api-keys first, then infra)
+        const geminiKey = sharedApiKeys.gemini_api_key || sharedInfra.gemini_api_key;
+        if (geminiKey) toolEnv.GEMINI_API_KEY = geminiKey;
+        // MinIO credentials for file storage (generate_image, generate_pdf)
+        if (appSecrets.minio_access_key) toolEnv.MINIO_ACCESS_KEY = appSecrets.minio_access_key;
+        if (appSecrets.minio_secret_key) toolEnv.MINIO_SECRET_KEY = appSecrets.minio_secret_key;
+        toolEnv.MINIO_BUCKET = app.slug;
+        toolEnv.MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || "minio-tenant-hl.minio.svc.cluster.local:9000";
+        toolEnv.MINIO_PUBLIC_HOST = process.env.MINIO_EXTERNAL_ENDPOINT || "s3.baisoln.com";
+        // Letta self-reference for archival memory inserts
+        if (appSecrets.letta_api_key) toolEnv.LETTA_API_KEY = appSecrets.letta_api_key;
+        toolEnv.LETTA_BASE_URL = process.env.LETTA_BASE_URL || "http://letta-server.letta.svc.cluster.local:8283";
+        toolEnv.LETTA_AGENT_ID = agent.lettaAgentId;
+        // Search API for web_search tool — use internal K8s service (no API key needed)
+        toolEnv.SEARCH_API_URL = "http://search-mcp-service.mcp.svc.cluster.local:8000/search";
+        // Platform internal API for generate_persona_image tool (avatar update)
+        toolEnv.PLATFORM_API_URL = process.env.PLATFORM_INTERNAL_URL || "http://bionic-platform-server.bionic-platform.svc.cluster.local:3000";
+        toolEnv.AGENT_INTERNAL_TOKEN = sharedInfra.agent_internal_token || process.env.AGENT_INTERNAL_TOKEN || "";
+        toolEnv.AGENT_CONFIG_ID = String(agent.id);
+
+        if (Object.keys(toolEnv).length > 0) {
+          await lettaAdmin.updateAgent(agent.lettaAgentId, {
+            tool_exec_environment_variables: toolEnv,
+          });
+          log.info("Set Letta tool exec env vars", { agentId: agent.lettaAgentId, keys: Object.keys(toolEnv) });
+        }
+      } catch (envErr) {
+        log.warn("Failed to set Letta tool exec env vars (non-fatal)", { error: String(envErr) });
+      }
+    } catch (err) {
+      log.warn("Failed to sync tools to Letta (non-fatal)", { error: String(err) });
+    }
+  }
+
+  // 4. Resolve Vault secrets BEFORE applying ConfigMap so all values are populated.
+
+  // 4a. Letta server password — shared infrastructure secret.
+  try {
+    const { readPlatformVaultPath } = await import("../vaultClient.js");
+    const infraData = (await readPlatformVaultPath("shared/infra")) || {};
+    if (infraData.letta_server_password) {
+      configData.LETTA_SERVER_PASSWORD = infraData.letta_server_password;
+    }
+  } catch (err) {
+    log.warn("Failed to read Letta server password from Vault (non-fatal)", { error: String(err) });
+  }
+
+  // 4b. ExternalSecret (ConfigMap written AFTER presigned URLs are generated below)
   await k8s.createExternalSecret(namespace);
 
-  // 5. Apply Deployment — just agent-{name} since namespace provides isolation
-  await k8s.applyAgentDeployment(namespace, agentName, image, configMapName, secretName);
+  // 5. Resolve per-agent provider API keys from Vault — for ALL three
+  // pipelines (LLM, STT, TTS). setProviderKey writes per-agent keys to
+  // Vault as `agent_${id}_${provider}_api_key`. Look up each pipeline's
+  // configured provider, find the matching key, inject it as the
+  // SDK-standard {PROVIDER}_API_KEY env var on the worker pod.
+  //
+  // Deduped: a single provider used for two pipelines (e.g. openai for
+  // both STT and TTS) only gets one env var injection.
+  const extraEnv: Array<{ name: string; value: string }> = [];
+  const injected = new Set<string>();
+  try {
+    const { readAppSecret, readPlatformVaultPath } = await import("../vaultClient.js");
+    const vault = (await readAppSecret(app.slug)) || {};
+
+    // Load shared fallback keys (secret/shared/api-keys) once — used when
+    // per-agent keys are not configured. This allows agents to work out of
+    // the box with shared org-wide keys while still supporting per-agent
+    // overrides via the UI's "Test & Save" flow.
+    let sharedKeys: Record<string, string> = {};
+    try {
+      sharedKeys = (await readPlatformVaultPath("shared/api-keys")) || {};
+    } catch {
+      log.info("No shared API keys found at secret/shared/api-keys");
+    }
+
+    const pipelines: Array<["llm" | "stt" | "tts", string | null]> = [
+      ["llm", agent.llmProvider],
+      ["stt", agent.sttProvider],
+      ["tts", agent.ttsProvider],
+    ];
+    for (const [kind, raw] of pipelines) {
+      const provider = (raw || "").toLowerCase();
+      if (!provider || provider === "gpu-ai" || provider === "custom") continue;
+      const envName = providerEnvName(provider);
+      if (!envName) continue;
+      if (injected.has(envName)) continue; // already added by another pipeline
+
+      // Priority: per-agent key > shared fallback key
+      const perAgentKey = vault[`agent_${agent.id}_${provider}_api_key`];
+      const sharedKey = sharedKeys[`${provider}_api_key`];
+      const key = perAgentKey || sharedKey;
+
+      if (!key) {
+        log.warn("No provider key found (per-agent or shared)", {
+          agent: agent.id, pipeline: kind, provider,
+        });
+        continue;
+      }
+      extraEnv.push({ name: envName, value: key.trim() });
+      injected.add(envName);
+      log.info("Injected provider key", {
+        agent: agent.id, pipeline: kind, provider, envName,
+        source: perAgentKey ? "per-agent" : "shared",
+      });
+    }
+  } catch (err) {
+    log.warn("Failed to resolve provider keys (non-fatal)", { error: String(err) });
+  }
+
+  // 5c. BitHuman avatar keys — shared across all agents (one GPU server).
+  // These live at secret/shared/bithuman, not per-app.
+  if (agent.avatarEnabled) {
+    try {
+      const { readPlatformVaultPath } = await import("../vaultClient.js");
+      const bhData = (await readPlatformVaultPath("shared/bithuman")) || {};
+      if (bhData.bithuman_api_key) {
+        extraEnv.push({ name: "BITHUMAN_API_KEY", value: bhData.bithuman_api_key });
+      }
+      if (bhData.bithuman_api_secret) {
+        extraEnv.push({ name: "BITHUMAN_API_SECRET", value: bhData.bithuman_api_secret });
+      }
+      // External LiveKit URL for BitHuman (BitHuman is outside K8s, can't use internal URL)
+      if (bhData.bithuman_livekit_url) {
+        extraEnv.push({ name: "BITHUMAN_LIVEKIT_URL", value: bhData.bithuman_livekit_url });
+      }
+      log.info("Injected BitHuman keys from shared Vault", { agentId: agent.id });
+    } catch (err) {
+      log.warn("Failed to read BitHuman keys from shared Vault (non-fatal)", { error: String(err) });
+    }
+
+    // Generate a presigned URL for the avatar image. BitHuman is external
+    // (192.168.0.10), so the URL must be generated with the external MinIO endpoint.
+    if (agent.avatarImageUrl) {
+      try {
+        const Minio = await import("minio");
+        const externalHost = process.env.MINIO_EXTERNAL_ENDPOINT || "s3.baisoln.com";
+        const [extHostname, extPort] = externalHost.split(":");
+        // Create a MinIO client pointing to the external endpoint for presigned URL generation
+        const { getClient } = await import("./minioAdmin.js");
+        const internalClient = await getClient();
+        const externalClient = new Minio.Client({
+          endPoint: extHostname,
+          port: extPort ? parseInt(extPort) : 443,
+          useSSL: true,
+          accessKey: (internalClient as any).accessKey || process.env.MINIO_ROOT_USER || "",
+          secretKey: (internalClient as any).secretKey || process.env.MINIO_ROOT_PASSWORD || "",
+        });
+        const [bucket, ...keyParts] = agent.avatarImageUrl.split("/");
+        const key = keyParts.join("/");
+        const presignedUrl = await externalClient.presignedGetObject(bucket, key, 7 * 24 * 60 * 60);
+        configData.BITHUMAN_AVATAR_IMAGE = presignedUrl;
+        log.info("Generated presigned avatar URL (external)", { agentId: agent.id, bucket, key, host: externalHost });
+      } catch (err) {
+        log.warn("Failed to generate external presigned avatar URL (non-fatal)", { error: String(err) });
+        // Fallback: use internal presigned URL (works for in-cluster access, not BitHuman)
+        try {
+          const { getClient } = await import("./minioAdmin.js");
+          const client = await getClient();
+          const [bucket, ...keyParts] = agent.avatarImageUrl.split("/");
+          const key = keyParts.join("/");
+          configData.BITHUMAN_AVATAR_IMAGE = await client.presignedGetObject(bucket, key, 7 * 24 * 60 * 60);
+        } catch {}
+      }
+    }
+  }
+
+  // 5c. Generate presigned URLs for audio files (ambient/thinking sounds)
+  for (const audioField of ["ambientAudioUrl", "thinkingAudioUrl"] as const) {
+    const minioPath = (agent as any)[audioField];
+    if (minioPath) {
+      try {
+        const { getClient } = await import("./minioAdmin.js");
+        const client = await getClient();
+        const [bucket, ...keyParts] = minioPath.split("/");
+        const key = keyParts.join("/");
+        const presignedUrl = await client.presignedGetObject(bucket, key, 7 * 24 * 60 * 60);
+        const configKey = audioField === "ambientAudioUrl" ? "AMBIENT_AUDIO_URL" : "THINKING_AUDIO_URL";
+        configData[configKey] = presignedUrl;
+        log.info("Generated presigned audio URL", { agentId: agent.id, type: audioField, bucket, key });
+      } catch (err) {
+        log.warn("Failed to generate presigned audio URL (non-fatal)", { type: audioField, error: String(err) });
+      }
+    }
+  }
+
+  // 6. Write ConfigMap with ALL finalized values (presigned URLs, API keys, etc.)
+  await k8s.ensureConfigMap(namespace, configMapName, configData);
+  log.info("ConfigMap written with all resolved values", { namespace, configMapName, keys: Object.keys(configData).length });
+
+  // 7. Apply Deployment — just agent-{name} since namespace provides isolation
+  await k8s.applyAgentDeployment(namespace, agentName, image, configMapName, secretName, extraEnv);
 
   // 6. Update status to deploying
   await db

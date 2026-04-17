@@ -5,13 +5,13 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-COPY vite.config.ts tsconfig.json tsconfig.server.json postcss.config.js ./
+COPY vite.config.ts vite.embed.config.ts tsconfig.json tsconfig.server.json postcss.config.js ./
 COPY client/ ./client/
 COPY shared/ ./shared/
 COPY server/ ./server/
 COPY drizzle/ ./drizzle/
 
-RUN npx vite build
+RUN npx vite build && npx vite build --config vite.embed.config.ts
 
 # ── Production ───────────────────────────────────────────────
 FROM node:22-alpine AS runner
@@ -30,6 +30,8 @@ RUN npm ci
 COPY server/ ./server/
 COPY shared/ ./shared/
 COPY drizzle/ ./drizzle/
+# Agent player UI template — copied into temp build contexts during provisioning (player_ui)
+COPY player-ui/ ./player-ui/
 
 # Copy built frontend
 COPY --from=frontend-builder /app/dist/public ./dist/public

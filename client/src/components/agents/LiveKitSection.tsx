@@ -5,16 +5,33 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Mic, Volume2, Brain, Save } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Mic, Volume2, Brain, Save, User, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 
-function ProviderKeyInput({ agentId, provider }: { agentId: number; provider: string }) {
+function ProviderKeyInput({
+  agentId,
+  provider,
+  onSaved,
+}: {
+  agentId: number;
+  provider: string;
+  onSaved?: () => void;
+}) {
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const mutation = trpc.agentsCrud.setProviderKey.useMutation({
-    onSuccess: () => { toast.success("API key saved to Vault"); setApiKey(""); setSaving(false); },
-    onError: (err: any) => { toast.error(err.message); setSaving(false); },
+    onSuccess: (data: any) => {
+      toast.success(`Key validated • ${data?.modelCount ?? 0} models available`);
+      setApiKey("");
+      setSaving(false);
+      onSaved?.();
+    },
+    onError: (err: any) => {
+      toast.error(err.message);
+      setSaving(false);
+    },
   });
 
   return (
@@ -34,13 +51,242 @@ function ProviderKeyInput({ agentId, provider }: { agentId: number; provider: st
           disabled={!apiKey || saving}
           onClick={() => {
             setSaving(true);
-            mutation.mutate({ agentId, provider, apiKey });
+            mutation.mutate({ agentId, provider, apiKey: apiKey.trim() });
           }}
         >
-          <Save className="h-3 w-3 mr-1" /> Save
+          <Save className="h-3 w-3 mr-1" /> Test & Save
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground mt-1">Stored securely in Vault</p>
+      <p className="text-xs text-muted-foreground mt-1">
+        The key is validated against the provider before saving to Vault.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Live voice/model picker for STT and TTS providers.
+ *
+ * Same shape as LiveModelPicker but uses agentsCrud.listProviderVoices
+ * which understands cartesia / elevenlabs / deepgram / openai TTS. For
+ * gpu-ai (internal) and "custom" providers, falls back to a static list
+ * passed via the `staticOptions` prop.
+ */
+function LiveVoicePicker({
+  agentId,
+  provider,
+  value,
+  onChange,
+  staticOptions,
+}: {
+  agentId: number;
+  provider: string;
+  value: string;
+  onChange: (v: string) => void;
+  staticOptions: Array<{ value: string; label: string }>;
+}) {
+  const [filter, setFilter] = useState("");
+  const { data, isLoading, isError, error } = trpc.agentsCrud.listProviderVoices.useQuery(
+    { agentId, provider },
+    { enabled: !!provider, retry: false },
+  );
+
+  // gpu-ai / custom / unsupported → static fallback list (TTS_VOICES /
+  // STT_MODELS table from shared/providerOptions). Keeps internal-only
+  // providers usable without an API key.
+  if (data?.supported === false || (!isLoading && !isError && data?.hasKey === false && !data?.voices?.length)) {
+    if (staticOptions.length > 0) {
+      return (
+        <Select value={value} onValueChange={onChange}>
+          <SelectTrigger><SelectValue placeholder="Select voice" /></SelectTrigger>
+          <SelectContent>
+            {staticOptions.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      );
+    }
+    return (
+      <div className="text-xs text-amber-600">
+        Add an API key for this provider to load voices.
+      </div>
+    );
+  }
+
+  if (isLoading) {
+    return <Input value="Loading voices…" disabled />;
+  }
+  if (isError) {
+    return (
+      <div className="text-xs text-destructive">
+        {(error as any)?.message || "Failed to load voices"}
+      </div>
+    );
+  }
+
+  const voices: Array<{ id: string; name?: string; description?: string; language?: string }> =
+    data?.voices ?? [];
+  const filtered = filter
+    ? voices.filter((v) => {
+        const haystack = `${v.id} ${v.name || ""} ${v.description || ""}`.toLowerCase();
+        return haystack.includes(filter.toLowerCase());
+      })
+    : voices;
+  const valueInList = filtered.some((v) => v.id === value);
+  const options = !valueInList && value ? [{ id: value }, ...filtered] : filtered;
+
+  return (
+    <div className="space-y-1">
+      {voices.length > 20 && (
+        <Input
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder={`Search ${voices.length} voices…`}
+          className="h-8 text-xs"
+        />
+      )}
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger><SelectValue placeholder="Select voice" /></SelectTrigger>
+        <SelectContent className="max-h-72">
+          {options.length === 0 ? (
+            <div className="px-2 py-1 text-xs text-muted-foreground">No matches</div>
+          ) : (
+            options.map((v: any) => (
+              <SelectItem key={v.id} value={v.id}>
+                <div className="flex flex-col">
+                  <span className="text-sm">{v.name || v.id}</span>
+                  {(v.language || v.description) && (
+                    <span className="text-[10px] text-muted-foreground">
+                      {[v.language, v.description].filter(Boolean).join(" • ")}
+                    </span>
+                  )}
+                </div>
+              </SelectItem>
+            ))
+          )}
+        </SelectContent>
+      </Select>
+      {voices.length > 0 && (
+        <p className="text-[10px] text-muted-foreground">
+          {voices.length} voices available • live from {provider}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Live model picker — sources options from the provider's /v1/models
+ * endpoint using whatever key is in Vault for this agent. Replaces the
+ * old hardcoded LLM_MODELS table so the user can never type a model id
+ * that doesn't exist on the provider.
+ *
+ * For OpenRouter (~350 models) shows a typeahead-style filter; for
+ * smaller providers just renders the full list.
+ */
+function LiveModelPicker({
+  agentId,
+  provider,
+  value,
+  onChange,
+  toolUseOnly,
+}: {
+  agentId: number;
+  provider: string;
+  value: string;
+  onChange: (v: string) => void;
+  /** When true, only show models that support tool/function calling. */
+  toolUseOnly?: boolean;
+}) {
+  const [filter, setFilter] = useState("");
+  const { data, isLoading, isError, error, refetch } = trpc.agentsCrud.listProviderModels.useQuery(
+    { agentId, provider, toolUseOnly },
+    { enabled: !!provider && provider !== "custom", retry: false },
+  );
+
+  if (provider === "custom") {
+    return (
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="model-name"
+      />
+    );
+  }
+
+  if (isLoading) {
+    return <Input value="Loading models…" disabled />;
+  }
+  if (isError) {
+    return (
+      <div className="text-xs text-destructive">
+        {(error as any)?.message || "Failed to load models"}
+      </div>
+    );
+  }
+  if (!data?.hasKey) {
+    return (
+      <div className="text-xs text-amber-600">
+        No API key set for this provider yet. Add one below to load the model list.
+      </div>
+    );
+  }
+
+  const models: Array<{ id: string; description?: string; contextLength?: number; supportsTools?: boolean }> =
+    data?.models ?? [];
+  const filtered = filter
+    ? models.filter((m) => m.id.toLowerCase().includes(filter.toLowerCase()))
+    : models;
+
+  // Always include the currently-saved value as a selectable option even if
+  // it's no longer in the live list (defensive — never silently lose a save).
+  const valueInList = filtered.some((m) => m.id === value);
+  const options = !valueInList && value ? [{ id: value }, ...filtered] : filtered;
+
+  return (
+    <div className="space-y-1">
+      {models.length > 20 && (
+        <Input
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder={`Search ${models.length} models…`}
+          className="h-8 text-xs"
+        />
+      )}
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger>
+          <SelectValue placeholder="Select model" />
+        </SelectTrigger>
+        <SelectContent className="max-h-72">
+          {options.length === 0 ? (
+            <div className="px-2 py-1 text-xs text-muted-foreground">
+              {toolUseOnly ? "No models with tool support found" : "No matches"}
+            </div>
+          ) : (
+            options.map((m) => (
+              <SelectItem key={m.id} value={m.id}>
+                <div className="flex flex-col">
+                  <span className="text-sm flex items-center gap-1">
+                    {m.id}
+                    {m.supportsTools === true && (
+                      <span className="text-[9px] px-1 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">tools</span>
+                    )}
+                  </span>
+                  {m.contextLength && (
+                    <span className="text-[10px] text-muted-foreground">
+                      {Math.round(m.contextLength / 1000)}k context
+                    </span>
+                  )}
+                </div>
+              </SelectItem>
+            ))
+          )}
+        </SelectContent>
+      </Select>
+      <p className="text-[10px] text-muted-foreground">
+        {models.length} models available{toolUseOnly ? " (tool-use only)" : ""} • live from {provider}
+      </p>
     </div>
   );
 }
@@ -65,12 +311,227 @@ interface Props {
   setTtsVoice: (v: string) => void;
   systemPrompt: string;
   setSystemPrompt: (v: string) => void;
+  avatarEnabled: boolean;
+  setAvatarEnabled: (v: boolean) => void;
+  avatarImageUrl: string;
+  visionEnabled: boolean;
+  setVisionEnabled: (v: boolean) => void;
+  backgroundAudioEnabled: boolean;
+  setBackgroundAudioEnabled: (v: boolean) => void;
+  busyAudioEnabled: boolean;
+  setBusyAudioEnabled: (v: boolean) => void;
   agentId: number;
 }
 
+function AvatarUpload({ agentId, currentUrl }: { agentId: number; currentUrl: string }) {
+  const [preview, setPreview] = useState<string>("");
+  const [uploading, setUploading] = useState(false);
+  const [fileName, setFileName] = useState<string>(currentUrl ? currentUrl.split("/").pop() || "" : "");
+  const uploadMutation = trpc.agentsCrud.uploadAvatarImage.useMutation({
+    onSuccess: () => {
+      toast.success("Avatar image saved (replaces previous)");
+      setUploading(false);
+    },
+    onError: (err: any) => {
+      toast.error(err.message);
+      setUploading(false);
+    },
+  });
+
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please select an image file");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Image must be under 5MB");
+      return;
+    }
+    setUploading(true);
+    setFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      setPreview(dataUrl);
+      const base64 = dataUrl.split(",")[1];
+      uploadMutation.mutate({
+        agentId,
+        imageBase64: base64,
+        filename: file.name,
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  return (
+    <div className="flex gap-4 items-start">
+      <div className="w-20 h-20 rounded-lg border-2 border-dashed border-muted-foreground/30 flex items-center justify-center overflow-hidden bg-muted/30 shrink-0">
+        {preview ? (
+          <img src={preview} alt="Avatar" className="w-full h-full object-cover rounded-lg" />
+        ) : currentUrl ? (
+          <div className="text-center">
+            <User className="h-6 w-6 text-green-500 mx-auto" />
+            <span className="text-[9px] text-green-500">Saved</span>
+          </div>
+        ) : (
+          <User className="h-8 w-8 text-muted-foreground/40" />
+        )}
+      </div>
+      <div className="space-y-2">
+        {fileName && (
+          <p className="text-xs text-green-500">✓ {fileName.length > 30 ? fileName.slice(0, 27) + "..." : fileName}</p>
+        )}
+        <p className="text-xs text-muted-foreground">
+          {currentUrl ? "Upload a new image to replace." : "Upload a clear, front-facing face image."}
+        </p>
+        <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer px-3 py-1.5 border rounded-md hover:bg-muted transition-colors">
+          <Upload className="h-3 w-3" />
+          {uploading ? "Uploading..." : currentUrl ? "Replace Image" : "Choose Image"}
+          <input type="file" accept="image/*" className="hidden" onChange={handleFile} disabled={uploading} />
+        </label>
+      </div>
+    </div>
+  );
+}
+
+function AudioUpload({ agentId, audioType, label }: { agentId: number; audioType: "ambient" | "thinking"; label: string }) {
+  const [uploading, setUploading] = useState(false);
+  const [fileName, setFileName] = useState<string>("");
+  const uploadMutation = trpc.agentsCrud.uploadAudioFile.useMutation({
+    onSuccess: () => {
+      toast.success(`${label} saved (replaces previous)`);
+      setUploading(false);
+    },
+    onError: (err: any) => {
+      toast.error(err.message);
+      setUploading(false);
+      setFileName("");
+    },
+  });
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) { toast.error("Max 10MB"); return; }
+    setUploading(true);
+    setFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = (reader.result as string).split(",")[1];
+      uploadMutation.mutate({ agentId, audioBase64: base64, filename: file.name, audioType });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  return (
+    <div className="ml-6">
+      <Label className="text-[10px] text-muted-foreground">{label}</Label>
+      {fileName && (
+        <p className="text-[10px] text-green-500 mt-1">✓ {fileName.length > 35 ? fileName.slice(0, 32) + "..." : fileName}</p>
+      )}
+      <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer px-3 py-1.5 border rounded-md hover:bg-muted transition-colors mt-1">
+        <Upload className="h-3 w-3" />
+        {uploading ? "Uploading..." : fileName ? "Replace Audio File" : "Choose Audio File"}
+        <input type="file" accept="audio/*" className="hidden" onChange={handleFile} disabled={uploading} />
+      </label>
+      <p className="text-[10px] text-muted-foreground mt-1">MP3, WAV, or OGG (max 10MB). Replaces previous file.</p>
+    </div>
+  );
+}
+
 export default function LiveKitSection(props: Props) {
+  const trpcUtils = trpc.useUtils();
   return (
     <div className="space-y-4">
+      {/* Avatar */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <User className="h-4 w-4" /> Avatar (BitHuman)
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="avatar-toggle"
+              checked={props.avatarEnabled}
+              onCheckedChange={(v) => props.setAvatarEnabled(v === true)}
+            />
+            <Label htmlFor="avatar-toggle" className="text-xs cursor-pointer">
+              Enable Avatar
+            </Label>
+          </div>
+          {props.avatarEnabled && (
+            <>
+              <AvatarUpload agentId={props.agentId} currentUrl={props.avatarImageUrl} />
+              <p className="text-[10px] text-muted-foreground">
+                GPU Server: 192.168.0.10:8089 • When avatar is enabled, audio output is handled by the avatar video stream.
+              </p>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Media Capabilities */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Volume2 className="h-4 w-4" /> Media Capabilities
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="vision-toggle"
+              checked={props.visionEnabled}
+              onCheckedChange={(v) => props.setVisionEnabled(v === true)}
+            />
+            <Label htmlFor="vision-toggle" className="text-xs cursor-pointer">
+              Enable Vision (Camera)
+            </Label>
+          </div>
+          <p className="text-[10px] text-muted-foreground ml-6">
+            Allow the agent to see the user's camera feed and respond to visual input.
+          </p>
+
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="bg-audio-toggle"
+              checked={props.backgroundAudioEnabled}
+              onCheckedChange={(v) => props.setBackgroundAudioEnabled(v === true)}
+            />
+            <Label htmlFor="bg-audio-toggle" className="text-xs cursor-pointer">
+              Background Music
+            </Label>
+          </div>
+          <p className="text-[10px] text-muted-foreground ml-6">
+            Play ambient background music during the session.
+          </p>
+          {props.backgroundAudioEnabled && (
+            <AudioUpload agentId={props.agentId} audioType="ambient" label="Ambient Sound File" />
+          )}
+
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="busy-audio-toggle"
+              checked={props.busyAudioEnabled}
+              onCheckedChange={(v) => props.setBusyAudioEnabled(v === true)}
+            />
+            <Label htmlFor="busy-audio-toggle" className="text-xs cursor-pointer">
+              Busy Audio (Thinking)
+            </Label>
+          </div>
+          <p className="text-[10px] text-muted-foreground ml-6">
+            Play a subtle audio cue while the agent is thinking/processing.
+          </p>
+          {props.busyAudioEnabled && (
+            <AudioUpload agentId={props.agentId} audioType="thinking" label="Thinking Sound File" />
+          )}
+        </CardContent>
+      </Card>
+
       {/* STT */}
       <Card>
         <CardHeader className="pb-3">
@@ -93,19 +554,32 @@ export default function LiveKitSection(props: Props) {
             </div>
             <div>
               <Label className="text-xs">Model</Label>
-              <Select value={props.sttModel} onValueChange={props.setSttModel}>
-                <SelectTrigger><SelectValue placeholder="Select model" /></SelectTrigger>
-                <SelectContent>
-                  {(STT_MODELS[props.sttProvider] || []).map((m) => (
-                    <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <LiveVoicePicker
+                agentId={props.agentId}
+                provider={props.sttProvider}
+                value={props.sttModel}
+                onChange={props.setSttModel}
+                staticOptions={(STT_MODELS[props.sttProvider] || []).map((m) => ({
+                  value: m.value, label: m.label,
+                }))}
+              />
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
             {STT_PROVIDERS.find((p) => p.value === props.sttProvider)?.description}
           </p>
+          {props.sttProvider !== "gpu-ai" && props.sttProvider !== "custom" && (
+            <ProviderKeyInput
+              agentId={props.agentId}
+              provider={props.sttProvider}
+              onSaved={() => {
+                trpcUtils.agentsCrud.listProviderVoices.invalidate({
+                  agentId: props.agentId,
+                  provider: props.sttProvider,
+                });
+              }}
+            />
+          )}
         </CardContent>
       </Card>
 
@@ -131,25 +605,35 @@ export default function LiveKitSection(props: Props) {
             </div>
             <div>
               <Label className="text-xs">Model</Label>
-              {props.llmProvider === "custom" ? (
-                <Input value={props.llmModel} onChange={(e) => props.setLlmModel(e.target.value)} placeholder="model-name" />
-              ) : (
-                <Select value={props.llmModel} onValueChange={props.setLlmModel}>
-                  <SelectTrigger><SelectValue placeholder="Select model" /></SelectTrigger>
-                  <SelectContent>
-                    {(LLM_MODELS[props.llmProvider] || []).map((m) => (
-                      <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
+              <LiveModelPicker
+                agentId={props.agentId}
+                provider={props.llmProvider}
+                value={props.llmModel}
+                onChange={props.setLlmModel}
+                toolUseOnly
+              />
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
             {LLM_PROVIDERS.find((p) => p.value === props.llmProvider)?.description}
           </p>
-          {LLM_PROVIDERS.find((p) => p.value === props.llmProvider)?.requiresKey && (
-            <ProviderKeyInput agentId={props.agentId} provider={props.llmProvider} />
+          {/* Always show the key input for non-internal providers — gpu-ai
+              has no key. The validation flow re-fetches the model list on
+              save success so the dropdown above immediately populates. */}
+          {props.llmProvider !== "gpu-ai" && props.llmProvider !== "custom" && (
+            <ProviderKeyInput
+              agentId={props.agentId}
+              provider={props.llmProvider}
+              onSaved={() => {
+                // The query is keyed by (agentId, provider) — invalidate it
+                // so LiveModelPicker re-runs against the new key. The trpc
+                // utils API does this cleanly.
+                trpcUtils.agentsCrud.listProviderModels.invalidate({
+                  agentId: props.agentId,
+                  provider: props.llmProvider,
+                });
+              }}
+            />
           )}
         </CardContent>
       </Card>
@@ -176,38 +660,70 @@ export default function LiveKitSection(props: Props) {
             </div>
             <div>
               <Label className="text-xs">Voice</Label>
-              <Select value={props.ttsVoice} onValueChange={props.setTtsVoice}>
-                <SelectTrigger><SelectValue placeholder="Select voice" /></SelectTrigger>
-                <SelectContent>
-                  {(TTS_VOICES[props.ttsProvider] || []).map((v) => (
-                    <SelectItem key={v.value} value={v.value}>{v.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <LiveVoicePicker
+                agentId={props.agentId}
+                provider={props.ttsProvider}
+                value={props.ttsVoice}
+                onChange={props.setTtsVoice}
+                staticOptions={(TTS_VOICES[props.ttsProvider] || []).map((v) => ({
+                  value: v.value, label: v.label,
+                }))}
+              />
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
             {TTS_PROVIDERS.find((p) => p.value === props.ttsProvider)?.description}
           </p>
+          {props.ttsProvider !== "gpu-ai" && props.ttsProvider !== "custom" && (
+            <ProviderKeyInput
+              agentId={props.agentId}
+              provider={props.ttsProvider}
+              onSaved={() => {
+                trpcUtils.agentsCrud.listProviderVoices.invalidate({
+                  agentId: props.agentId,
+                  provider: props.ttsProvider,
+                });
+              }}
+            />
+          )}
         </CardContent>
       </Card>
 
-      {/* System Prompt */}
+      {/* Agent Persona */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm">System Prompt</CardTitle>
+          <CardTitle className="text-sm">Agent Persona</CardTitle>
         </CardHeader>
         <CardContent>
           <Textarea
             value={props.systemPrompt}
             onChange={(e) => props.setSystemPrompt(e.target.value)}
-            placeholder="You are a helpful AI assistant..."
+            placeholder="You are a friendly physics tutor who uses analogies and real-world examples to make complex concepts accessible..."
             rows={8}
             className="font-mono text-xs"
           />
           <p className="text-xs text-muted-foreground mt-1">
-            Instructions for the LiveKit voice agent (the user-facing conversational agent)
+            Define the agent's personality, speaking style, subject domain, and teaching approach.
+            Behavioral rules (delegation, lecture mode, tool usage, engagement) are enforced automatically and cannot be changed here.
           </p>
+          <details className="mt-3">
+            <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground flex items-center gap-1">
+              <span>View enforced rules (11 rules, always active)</span>
+            </summary>
+            <pre className="mt-2 p-3 bg-muted/50 rounded-md text-[10px] leading-relaxed text-muted-foreground whitespace-pre-wrap font-mono border max-h-64 overflow-y-auto">
+{`1. DELEGATION — use delegate_to_letta for research/analysis/deep work
+2. TOOL SILENCE — no narration before/during/after tool calls
+3. LECTURE MODE — walk through ALL bullet points, explain in depth
+4. SCREEN SYNC — never reference visuals until confirmed visible on screen
+5. NO REPETITION — never repeat covered topics unless user asks
+6. PACING & Q/A — pause between sections, ask substantive questions, wait for answers, max 2 review questions per topic
+7. VOICE CONSTRAINTS — terminal punctuation, no markdown/lists/URLs
+8. GREETING — ask user's name on first interaction
+9. IDENTITY — use their name, not "student"/"professor"
+10. INTERRUPTION — address questions, then resume lecture material
+11. EMAIL COLLECTION — ask for email to send session summary`}
+            </pre>
+          </details>
         </CardContent>
       </Card>
     </div>

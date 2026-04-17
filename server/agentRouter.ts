@@ -2,6 +2,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { router, adminProcedure, protectedProcedure, analystOrAdminProcedure, appScopedProcedure, assertAppMembership } from "./_core/trpc.js";
 import { TRPCError } from "@trpc/server";
+import { getClient as getMinioClient } from "./services/minioAdmin.js";
 import { appMembers } from "../drizzle/platformSchema.js";
 import { createLogger } from "./_core/logger.js";
 import {
@@ -21,62 +22,86 @@ import { and } from "drizzle-orm";
 import { AVAILABLE_CREWS } from "../shared/providerOptions.js";
 import { desc } from "drizzle-orm";
 
-// ── Default System Prompts ──────────────────────────────────────
-// Primary agent (LiveKit voice) — the brain and mouth that converses with the user
-const DEFAULT_PRIMARY_PROMPT = `You are a voice AI assistant — the primary agent that directly converses with users.
+// ── Default Personas (user-editable via UI) ────────────────────
+// These are the personality/style defaults. Users can replace them in the
+// "Agent Persona" / "Assistant Persona" fields. Behavioral rules are
+// appended separately by code and cannot be removed by users.
 
-CORE BEHAVIOR:
-- You are the user's conversational partner. Speak naturally, concisely, and warmly.
-- Always finish sentences with terminal punctuation.
-- Never use markdown, lists, or formatting that cannot be spoken aloud.
+const DEFAULT_PRIMARY_PERSONA = `You are a voice AI assistant. You help users by conversing naturally with a warm, engaging speaking style. Adapt your explanations to the learner's level. Use analogies and real-world examples to make concepts accessible.`;
 
-DELEGATION TO SECONDARY AGENT:
-- You ALWAYS delegate tasks to your secondary agent (Letta) for execution.
-- When the user asks a question or makes a request, you respond conversationally AND simultaneously delegate to the secondary agent to produce supporting output.
-- Example: User asks "Can you show me examples of gravity?" — You start explaining gravity verbally, AND delegate to the secondary agent to generate illustrations, diagrams, summaries, and examples that appear in the chat window.
-- The chat window does NOT transcribe what you say. Instead, it shows the structured output produced by the secondary agent — images, code, data, summaries, maps, charts.
+const DEFAULT_LETTA_PERSONA = `You are the ASSISTANT — the silent helper running the screen behind a live session. You are the second brain in a two-brain system. The primary AI speaks. You run the screen. Keep up.`;
 
-WHAT YOU DO:
-- Explain, teach, discuss, answer — you are the voice and brain.
-- Trigger recall_memory and remember to maintain context across sessions.
-- Call run_crew for complex multi-step workflows.
-- Call show_artifact to display visual content the secondary agent produces.
 
-WHAT THE SECONDARY AGENT DOES (via delegation):
-- Deep reasoning, research, computation, tool execution.
-- Generate visual artifacts (charts, diagrams, code, documents).
-- Search documents, query knowledge bases, call MCP servers.
-- Manage crews for specialized tasks.
-- All output from the secondary agent is pushed to the chat window for the user to see.
+// ── Hardcoded Rules (always appended, never user-editable) ─────
+// These are appended AFTER the user's persona prompt so they override
+// any conflicting instructions. Users cannot remove or modify these.
 
-You are the teacher/guide. The secondary agent is your tireless assistant producing everything the user sees on screen.`;
+const LETTA_HARDCODED_RULES = `
+CRITICAL RULES (always enforced — cannot be overridden by persona):
 
-// Secondary agent (Letta) — the execution arm with memory and tools
-const DEFAULT_LETTA_PROMPT = `You are the secondary execution agent — the behind-the-scenes engine that powers the primary voice agent.
+1. SILENCE: You never speak aloud. Your only output channel is the chat
+   window / presentation screen.
 
-ROLE:
-- You receive delegated tasks from the primary voice agent.
-- You execute tools, search memory, query documents, call MCP servers, and manage crews.
-- Your output is displayed in the chat window — NOT as transcription of the voice agent, but as structured, rich content (summaries, images, code, data, charts, maps).
+2. OUTPUT FORMAT: Produce markdown slides, bullet summaries, definitions,
+   formulas, examples, comparison tables. No preamble ("I am the
+   assistant..."). Get straight to the content.
 
-MEMORY MANAGEMENT:
-- Maintain a 4-tier memory system: core (persona/human), recall (conversation), archival (documents/knowledge), temporal (facts over time).
-- Proactively store important facts, preferences, and context using your memory tools.
-- Search memory before answering to leverage prior knowledge.
+3. PROACTIVITY: React to every meaningful professor turn with supporting
+   content — topic intros (title + 3-5 bullets), explanations (summary
+   card + example), names/terms (brief definition). Skip conversational
+   filler ("hello", "thanks") — output nothing, the system filters short
+   replies.
 
-OUTPUT GUIDELINES:
-- Produce well-structured, visual, informative output for the chat window.
-- Use clear headings, formatted text, and embedded media references.
-- When the primary agent discusses a topic, anticipate what supporting materials would help — generate them proactively.
-- Example: Primary discusses gravity → you produce a summary card, an illustration reference, key formulas, and a "did you know" fact.
+4. TOOLS:
+   - generate_image: image generation. MANDATORY when visual intent is
+     detected.
+   - run_crew: Dify crew for complex research / multi-step workflows.
+   - archival_memory_search, conversation_search: prior session context.
+   - send_session_summary: generate and email a PDF session summary when
+     the session ends.
 
-TOOL USAGE:
-- Use all available tools to fulfill requests completely.
-- Chain tool calls when needed — e.g., search documents first, then synthesize, then create an artifact.
-- Use MCP servers for external data when available.
-- Delegate to crews for complex multi-step workflows.
+5. IMAGE GENERATION RULES (strict — violating any is a failure):
+   a. Trigger detection: scan EVERY incoming transcript message for
+      visual-intent words (show, see, diagram, picture, image, drawing,
+      illustration, visualize, draw, sketch, display, on screen, can I
+      see, what does X look like). If ANY are present, MUST call
+      generate_image FIRST before writing any other output.
+   b. NEVER inline image URLs as markdown ![alt](url). The frontend ONLY
+      renders tool-call results from generate_image. Writing ![...](url)
+      produces NO visible image.
+   c. NEVER reuse URLs from archival memory to fake a visual. Always
+      generate fresh images via generate_image. Exception: user says
+      "show me the same X from before" AND exact match via
+      archival_memory_search.
+   d. Prompt quality: be specific. Include composition, labels, always
+      append "clean educational line art, white background, labels in
+      English" for textbook-style output.
+   e. Never fabricate "Visual Reference: Display Active" or similar claims.
+      If you want a visual, CALL THE TOOL.
+   f. After successful generation, your text may briefly reference the
+      image. On error, apologize and do NOT claim the image exists.
+   g. One image per turn is usually enough.
+   h. Storage is automatic (MinIO + presigned URL + archival metadata).
 
-You are the execution arm. Be thorough, proactive, and produce high-quality output.`;
+6. NOISE SUPPRESSION: Only produce content when topic-relevant. Skip
+   conversational filler entirely. Do not output internal status messages.
+
+7. SESSION SUMMARY: When the session ends (disconnect signal or user says
+   "done" / "that's all"), generate a comprehensive session summary using
+   send_session_summary. Include: (a) session title from main topics,
+   (b) structured summary per topic with bullet points, (c) references to
+   all illustrations generated, (d) key takeaways. The PDF will be emailed
+   to the user's email address (provided by the primary agent).
+`.trim();
+
+// Assemble the full Letta system prompt: persona + hardcoded rules.
+function assembleLettaPrompt(persona: string | null | undefined): string {
+  return (persona || DEFAULT_LETTA_PERSONA) + "\n\n" + LETTA_HARDCODED_RULES;
+}
+
+// For backward compat: combined defaults used when creating new agents.
+const DEFAULT_PRIMARY_PROMPT = DEFAULT_PRIMARY_PERSONA;
+const DEFAULT_LETTA_PROMPT = assembleLettaPrompt(DEFAULT_LETTA_PERSONA);
 import { randomUUID } from "crypto";
 
 const log = createLogger("AgentRouter");
@@ -167,7 +192,7 @@ export const agentRouter = router({
           description: input.description || null,
           lettaAgentName,
           systemPrompt: DEFAULT_PRIMARY_PROMPT,
-          lettaSystemPrompt: DEFAULT_LETTA_PROMPT,
+          lettaSystemPrompt: DEFAULT_LETTA_PERSONA,
         })
         .returning();
 
@@ -182,6 +207,84 @@ export const agentRouter = router({
 
       log.info("Agent created with default tools", { appSlug: app.slug, agentName: input.name, tools: coreToolIds.length });
       return agent;
+    }),
+
+  /**
+   * Provision (or re-sync) the Letta secondary agent for an existing
+   * agent_configs row. Idempotent:
+   * - If lettaAgentId is empty in the DB → call lettaAdmin.createAgent,
+   *   save the returned id, attach the user-memory + crew tools.
+   * - If lettaAgentId is set → call lettaAdmin.updateAgent to push the
+   *   current lettaSystemPrompt + lettaLlmModel to the existing Letta
+   *   agent (use this to sync prompt/model changes without recreating).
+   *
+   * Either way, also calls syncCrewTool to refresh the run_crew tool
+   * source code (the crew registry is baked into the function body).
+   */
+  provisionLetta: protectedProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      if (!ctx.db) throw new Error("Database not available");
+      const [agent] = await ctx.db
+        .select()
+        .from(agentConfigs)
+        .where(eq(agentConfigs.id, input.id))
+        .limit(1);
+      if (!agent) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      await assertAppMembership(ctx, agent.appId);
+
+      const { lettaAdmin } = await import("./services/lettaAdmin.js");
+      const model = agent.lettaLlmModel || "openai-proxy/qwen3.5-27b-fp8";
+      // Assemble: user persona + hardcoded rules (always appended)
+      const systemPrompt = assembleLettaPrompt(agent.lettaSystemPrompt);
+      const name = agent.lettaAgentName || `${agent.name}-letta`;
+
+      let lettaAgentId = agent.lettaAgentId || "";
+
+      if (!lettaAgentId) {
+        // First-time provisioning: create the Letta agent.
+        const created = await lettaAdmin.createAgent(name, model, systemPrompt);
+        lettaAgentId = created.id;
+        await ctx.db
+          .update(agentConfigs)
+          .set({ lettaAgentId, updatedAt: new Date() })
+          .where(eq(agentConfigs.id, agent.id));
+        log.info("Provisioned Letta agent", { id: agent.id, lettaAgentId });
+      } else {
+        // Re-sync existing agent's prompt + model.
+        await lettaAdmin.updateAgent(lettaAgentId, { system: systemPrompt, model });
+        log.info("Re-synced Letta agent", { id: agent.id, lettaAgentId });
+      }
+
+      // Refresh the run_crew tool source so any new/changed crews are
+      // available immediately.
+      try {
+        const assignedCrews = await ctx.db
+          .select()
+          .from(agentCrews)
+          .where(eq(agentCrews.agentConfigId, agent.id));
+        if (assignedCrews.length > 0) {
+          const appCrews = await ctx.db
+            .select()
+            .from(crews)
+            .where(eq(crews.appId, agent.appId));
+          const crewRegistry = appCrews
+            .filter((c) => assignedCrews.some((ac) => ac.crewName === c.name))
+            .filter((c) => c.difyAppApiKey)
+            .map((c) => ({
+              name: c.name,
+              difyAppApiKey: c.difyAppApiKey!,
+              mode: c.mode,
+            }));
+          if (crewRegistry.length > 0) {
+            await lettaAdmin.syncCrewTool(lettaAgentId, crewRegistry);
+          }
+        }
+      } catch (err) {
+        log.warn("Failed to sync crew tool during provision (non-fatal)", { error: String(err) });
+      }
+
+      return { lettaAgentId };
     }),
 
   // ── Update agent config ───────────────────────────────────────
@@ -200,7 +303,9 @@ export const agentRouter = router({
         systemPrompt: z.string().nullable().optional(),
         visionEnabled: z.boolean().optional(),
         avatarEnabled: z.boolean().optional(),
+        avatarImageUrl: z.string().nullable().optional(),
         backgroundAudioEnabled: z.boolean().optional(),
+        busyAudioEnabled: z.boolean().optional(),
         captureMode: z.string().optional(),
         captureInterval: z.number().optional(),
         lettaAgentName: z.string().nullable().optional(),
@@ -212,12 +317,163 @@ export const agentRouter = router({
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
       const { id, ...updates } = input;
-      const [existing] = await ctx.db.select({ appId: agentConfigs.appId }).from(agentConfigs).where(eq(agentConfigs.id, id)).limit(1);
+      const [existing] = await ctx.db.select().from(agentConfigs).where(eq(agentConfigs.id, id)).limit(1);
       if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
       await assertAppMembership(ctx, existing.appId);
+
+      // Validate llm_model against the live provider /v1/models list when
+      // either llmModel OR llmProvider is being changed. Stops the
+      // recurring "user types a model id that doesn't exist on the
+      // provider, voice loop hangs forever, no clear error" failure mode.
+      // Skipped for gpu-ai (internal cluster — no /v1/models we want to
+      // round-trip per save) and skipped if the new value is null/empty.
+      const newProvider = (updates.llmProvider ?? existing.llmProvider ?? "").toLowerCase();
+      const newModel = updates.llmModel === undefined ? existing.llmModel : updates.llmModel;
+      const providerOrModelChanged =
+        updates.llmProvider !== undefined || updates.llmModel !== undefined;
+      if (
+        providerOrModelChanged &&
+        newModel &&
+        newProvider &&
+        newProvider !== "gpu-ai" &&
+        newProvider !== "custom"
+      ) {
+        try {
+          const { isSupportedProvider, listModelsForProvider } = await import(
+            "./services/llmProviders.js"
+          );
+          if (isSupportedProvider(newProvider)) {
+            // Reuse the per-agent key already in Vault if there is one.
+            const [app] = await ctx.db.select().from(apps).where(eq(apps.id, existing.appId)).limit(1);
+            if (app) {
+              const { readAppSecret } = await import("./vaultClient.js");
+              const vault = (await readAppSecret(app.slug)) || {};
+              const apiKey = vault[`agent_${existing.id}_${newProvider}_api_key`];
+              if (apiKey) {
+                const models = await listModelsForProvider(newProvider, apiKey);
+                const ids = new Set(models.map((m) => m.id));
+                if (!ids.has(newModel)) {
+                  // Build a short suggestion list — closest matches by
+                  // substring of the typed name. Helps the user pick the
+                  // right slug without us pulling in a fuzzy-match dep.
+                  const needle = newModel.toLowerCase();
+                  const hints = models
+                    .map((m) => m.id)
+                    .filter((mid) => {
+                      const lower = mid.toLowerCase();
+                      const tokens = needle
+                        .split(/[\s\-_/.]+/)
+                        .filter((t) => t.length >= 3);
+                      return tokens.some((t) => lower.includes(t));
+                    })
+                    .slice(0, 8);
+                  throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message:
+                      `Model '${newModel}' is not available on ${newProvider}.` +
+                      (hints.length > 0
+                        ? ` Did you mean one of: ${hints.join(", ")}?`
+                        : ` Run agentsCrud.listProviderModels to see what is available.`),
+                  });
+                }
+                // Also verify the model supports tool calling — agents
+                // require it for delegate_to_letta and other tools.
+                const selectedModel = models.find((m) => m.id === newModel);
+                if (selectedModel && selectedModel.supportsTools === false) {
+                  throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message:
+                      `Model '${newModel}' does not support tool/function calling on ${newProvider}. ` +
+                      `Agents require tool support for delegate_to_letta. Choose a model that supports tools.`,
+                  });
+                }
+                log.info("Validated llm_model against provider", {
+                  provider: newProvider,
+                  model: newModel,
+                  supportsTools: selectedModel?.supportsTools,
+                });
+              } else {
+                log.warn("Skipping model validation — no provider key in Vault", {
+                  provider: newProvider,
+                });
+              }
+            }
+          }
+        } catch (err) {
+          if (err instanceof TRPCError) throw err;
+          log.warn("Model validation failed (non-fatal)", { error: String(err) });
+        }
+      }
+
+      // Validate tts_voice against the live voice list when either
+      // ttsVoice OR ttsProvider is being changed. Same protection as
+      // llm_model — stops the user from saving a voice ID that doesn't
+      // exist on the chosen TTS provider.
+      const newTtsProvider = (updates.ttsProvider ?? existing.ttsProvider ?? "").toLowerCase();
+      const newTtsVoice = updates.ttsVoice === undefined ? existing.ttsVoice : updates.ttsVoice;
+      const ttsChanged =
+        updates.ttsProvider !== undefined || updates.ttsVoice !== undefined;
+      if (
+        ttsChanged &&
+        newTtsVoice &&
+        newTtsProvider &&
+        newTtsProvider !== "gpu-ai" &&
+        newTtsProvider !== "custom"
+      ) {
+        try {
+          const { isSupportedVoiceProvider, listVoicesForProvider } = await import(
+            "./services/voiceProviders.js"
+          );
+          if (isSupportedVoiceProvider(newTtsProvider)) {
+            const [app2] = await ctx.db.select().from(apps).where(eq(apps.id, existing.appId)).limit(1);
+            if (app2) {
+              const { readAppSecret } = await import("./vaultClient.js");
+              const vault = (await readAppSecret(app2.slug)) || {};
+              const apiKey = vault[`agent_${existing.id}_${newTtsProvider}_api_key`];
+              if (apiKey) {
+                const voices = await listVoicesForProvider(newTtsProvider, apiKey);
+                const ids = new Set(voices.map((v) => v.id));
+                if (!ids.has(newTtsVoice)) {
+                  // Build a short suggestion list — voices that name-match the typed value.
+                  const needle = newTtsVoice.toLowerCase();
+                  const hints = voices
+                    .filter((v) => (v.name || v.id).toLowerCase().includes(needle.slice(0, 5)))
+                    .slice(0, 5)
+                    .map((v) => `${v.id}${v.name ? ` (${v.name})` : ""}`);
+                  throw new TRPCError({
+                    code: "BAD_REQUEST",
+                    message:
+                      `Voice '${newTtsVoice}' is not available on ${newTtsProvider}.` +
+                      (hints.length
+                        ? ` Did you mean: ${hints.join(", ")}?`
+                        : ` Run agentsCrud.listProviderVoices to see what is available.`),
+                  });
+                }
+                log.info("Validated tts_voice against provider", {
+                  provider: newTtsProvider,
+                  voice: newTtsVoice,
+                });
+              } else {
+                log.warn("Skipping voice validation — no provider key in Vault", {
+                  provider: newTtsProvider,
+                });
+              }
+            }
+          }
+        } catch (err) {
+          if (err instanceof TRPCError) throw err;
+          log.warn("Voice validation failed (non-fatal)", { error: String(err) });
+        }
+      }
+
+      // Increment configVersion on every update for optimistic locking
       const [updated] = await ctx.db
         .update(agentConfigs)
-        .set({ ...updates, updatedAt: new Date() })
+        .set({
+          ...updates,
+          configVersion: (existing.configVersion || 1) + 1,
+          updatedAt: new Date(),
+        } as any)
         .where(eq(agentConfigs.id, id))
         .returning();
       return updated;
@@ -258,7 +514,7 @@ export const agentRouter = router({
       z.object({
         agentId: z.number(),
         provider: z.string(),
-        apiKey: z.string(),
+        apiKey: z.string().min(8),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -273,14 +529,263 @@ export const agentRouter = router({
       const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
       if (!app) throw new Error("App not found");
 
+      // Trim whitespace defensively — copy-paste from a UI often picks up
+      // leading/trailing spaces and providers reject those keys outright.
+      const trimmedKey = input.apiKey.trim();
+
+      // Validate the key by hitting the provider's list endpoint:
+      //  - LLM providers (openai, openrouter, gpu-ai): /v1/models
+      //  - TTS providers (cartesia, elevenlabs, openai): /voices
+      //  - STT providers (deepgram): /projects (auth check + static list)
+      // Throws TRPCError on auth failure so the UI shows a real error
+      // before persisting to Vault.
+      const { listModelsForProvider, isSupportedProvider } = await import(
+        "./services/llmProviders.js"
+      );
+      const { listVoicesForProvider, isSupportedVoiceProvider } = await import(
+        "./services/voiceProviders.js"
+      );
+
+      let count = 0;
+      let modelsOrVoices: any[] = [];
+      if (isSupportedProvider(input.provider)) {
+        const models = await listModelsForProvider(input.provider, trimmedKey);
+        count = models.length;
+        modelsOrVoices = models;
+      } else if (isSupportedVoiceProvider(input.provider)) {
+        const voices = await listVoicesForProvider(input.provider, trimmedKey);
+        count = voices.length;
+        modelsOrVoices = voices;
+      } else {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `Provider '${input.provider}' is not supported for key validation`,
+        });
+      }
+
       const { writeAppSecret, readAppSecret } = await import("./vaultClient.js");
       const existing = (await readAppSecret(app.slug)) || {};
       const key = `agent_${agent.id}_${input.provider}_api_key`;
-      existing[key] = input.apiKey;
+      existing[key] = trimmedKey;
       await writeAppSecret(app.slug, existing);
 
-      log.info("Provider key written to Vault", { slug: app.slug, provider: input.provider });
-      return { success: true };
+      log.info("Provider key validated and written to Vault", {
+        slug: app.slug,
+        provider: input.provider,
+        count,
+      });
+      return { success: true, modelCount: count, models: modelsOrVoices };
+    }),
+
+  // ── Upload avatar image to MinIO ──────────────────────────────
+  uploadAvatarImage: protectedProcedure
+    .input(
+      z.object({
+        agentId: z.number(),
+        imageBase64: z.string().min(1),
+        filename: z.string().default("avatar.png"),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (!ctx.db) throw new Error("DB not available");
+      const [agent] = await ctx.db
+        .select()
+        .from(agentConfigs)
+        .where(eq(agentConfigs.id, input.agentId))
+        .limit(1);
+      if (!agent) throw new Error("Agent not found");
+      await assertAppMembership(ctx, agent.appId);
+
+      const [app] = await ctx.db
+        .select()
+        .from(apps)
+        .where(eq(apps.id, agent.appId))
+        .limit(1);
+      if (!app) throw new Error("App not found");
+
+      // Upload to MinIO
+      const client = await getMinioClient();
+      const bucket = app.slug;
+
+      // Ensure bucket exists
+      const exists = await client.bucketExists(bucket);
+      if (!exists) {
+        await client.makeBucket(bucket);
+      }
+
+      // Decode base64 and upload
+      const buf = Buffer.from(input.imageBase64, "base64");
+      const ext = input.filename.split(".").pop() || "png";
+      const key = `avatars/${agent.id}/${randomUUID()}.${ext}`;
+      await client.putObject(bucket, key, buf, buf.length, {
+        "Content-Type": `image/${ext === "jpg" ? "jpeg" : ext}`,
+      });
+
+      // Generate presigned URL for the agent pod to download at runtime
+      const url = await client.presignedGetObject(bucket, key, 7 * 24 * 60 * 60);
+
+      // Store the MinIO object path (not presigned URL) — deployer will
+      // generate a fresh presigned URL at deploy time.
+      const minioPath = `${bucket}/${key}`;
+      await ctx.db
+        .update(agentConfigs)
+        .set({ avatarImageUrl: minioPath, updatedAt: new Date() })
+        .where(eq(agentConfigs.id, input.agentId));
+
+      log.info("Uploaded avatar image", { agentId: input.agentId, key, size: buf.length });
+      return { success: true, path: minioPath, previewUrl: url };
+    }),
+
+  // ── Upload audio file (ambient or thinking) to MinIO ──────────
+  uploadAudioFile: protectedProcedure
+    .input(
+      z.object({
+        agentId: z.number(),
+        audioBase64: z.string().min(1),
+        filename: z.string(),
+        audioType: z.enum(["ambient", "thinking"]),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (!ctx.db) throw new Error("DB not available");
+      const [agent] = await ctx.db
+        .select()
+        .from(agentConfigs)
+        .where(eq(agentConfigs.id, input.agentId))
+        .limit(1);
+      if (!agent) throw new Error("Agent not found");
+      await assertAppMembership(ctx, agent.appId);
+
+      const [app] = await ctx.db
+        .select()
+        .from(apps)
+        .where(eq(apps.id, agent.appId))
+        .limit(1);
+      if (!app) throw new Error("App not found");
+
+      const client = await getMinioClient();
+      const bucket = app.slug;
+      const exists = await client.bucketExists(bucket);
+      if (!exists) await client.makeBucket(bucket);
+
+      const buf = Buffer.from(input.audioBase64, "base64");
+      const ext = input.filename.split(".").pop() || "mp3";
+      const key = `audio/${agent.id}/${input.audioType}-${randomUUID()}.${ext}`;
+      const mime = ext === "mp3" ? "audio/mpeg" : ext === "wav" ? "audio/wav" : ext === "ogg" ? "audio/ogg" : "audio/mpeg";
+      await client.putObject(bucket, key, buf, buf.length, { "Content-Type": mime });
+
+      const minioPath = `${bucket}/${key}`;
+      // Drizzle uses camelCase column names, not snake_case
+      const updateData = input.audioType === "ambient"
+        ? { ambientAudioUrl: minioPath, updatedAt: new Date() }
+        : { thinkingAudioUrl: minioPath, updatedAt: new Date() };
+      await ctx.db
+        .update(agentConfigs)
+        .set(updateData as any)
+        .where(eq(agentConfigs.id, input.agentId));
+
+      log.info("Uploaded audio file", { agentId: input.agentId, type: input.audioType, key, size: buf.length });
+      return { success: true, path: minioPath };
+    }),
+
+  /**
+   * List voices/STT models for a TTS or STT provider. Same flow as
+   * listProviderModels but uses voiceProviders.ts (cartesia, elevenlabs,
+   * openai TTS, deepgram). Errors with FAILED_PRECONDITION if the
+   * provider doesn't have a known voice list.
+   */
+  listProviderVoices: protectedProcedure
+    .input(
+      z.object({
+        agentId: z.number(),
+        provider: z.string(),
+        apiKey: z.string().optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      if (!ctx.db) return { voices: [], hasKey: false as const };
+      const [agent] = await ctx.db
+        .select()
+        .from(agentConfigs)
+        .where(eq(agentConfigs.id, input.agentId))
+        .limit(1);
+      if (!agent) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      await assertAppMembership(ctx, agent.appId);
+
+      const { listVoicesForProvider, isSupportedVoiceProvider } = await import(
+        "./services/voiceProviders.js"
+      );
+      // gpu-ai TTS uses static voice IDs (Sudhir-IndexTTS2 etc.) and is
+      // not in the voiceProviders table — let the UI fall back to a
+      // small static list.
+      if (!isSupportedVoiceProvider(input.provider)) {
+        return { voices: [], hasKey: false as const, supported: false as const };
+      }
+      let apiKey = input.apiKey;
+      if (!apiKey) {
+        const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
+        if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "App not found" });
+        const { readAppSecret } = await import("./vaultClient.js");
+        const vault = (await readAppSecret(app.slug)) || {};
+        apiKey = vault[`agent_${agent.id}_${input.provider}_api_key`];
+      }
+      if (!apiKey) {
+        return { voices: [], hasKey: false as const, supported: true as const };
+      }
+      const voices = await listVoicesForProvider(input.provider, apiKey);
+      return { voices, hasKey: true as const, supported: true as const };
+    }),
+
+  /**
+   * List available models for a provider — pulls live from the provider's
+   * /v1/models endpoint using the saved key. Used by the Agent Builder
+   * model dropdown so users always see what's actually available.
+   *
+   * If apiKey is supplied directly, uses it (validation flow before save).
+   * Otherwise reads the saved per-agent key from Vault.
+   */
+  listProviderModels: protectedProcedure
+    .input(
+      z.object({
+        agentId: z.number(),
+        provider: z.string(),
+        apiKey: z.string().optional(),
+        /** When true, only return models that support tool/function calling. */
+        toolUseOnly: z.boolean().optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      if (!ctx.db) return { models: [] };
+      const [agent] = await ctx.db
+        .select()
+        .from(agentConfigs)
+        .where(eq(agentConfigs.id, input.agentId))
+        .limit(1);
+      if (!agent) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      await assertAppMembership(ctx, agent.appId);
+
+      const { listModelsForProvider, providerNeedsApiKey } = await import(
+        "./services/llmProviders.js"
+      );
+
+      let apiKey = input.apiKey;
+      if (!apiKey) {
+        const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
+        if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "App not found" });
+        const { readAppSecret } = await import("./vaultClient.js");
+        const vault = (await readAppSecret(app.slug)) || {};
+        apiKey = vault[`agent_${agent.id}_${input.provider}_api_key`];
+      }
+      // gpu-ai is internal cluster — no key needed.
+      if (!apiKey && providerNeedsApiKey(input.provider)) {
+        return { models: [], hasKey: false as const };
+      }
+      let models = await listModelsForProvider(input.provider, apiKey || "");
+      // Filter to tool-capable models when requested
+      if (input.toolUseOnly) {
+        models = models.filter((m) => m.supportsTools !== false);
+      }
+      return { models, hasKey: true as const };
     }),
 
   // ── Tools ─────────────────────────────────────────────────────
@@ -309,10 +814,23 @@ export const agentRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
-      const [a] = await ctx.db.select({ appId: agentConfigs.appId }).from(agentConfigs).where(eq(agentConfigs.id, input.agentConfigId)).limit(1);
+      const [a] = await ctx.db
+        .select({ appId: agentConfigs.appId, lettaAgentId: agentConfigs.lettaAgentId })
+        .from(agentConfigs)
+        .where(eq(agentConfigs.id, input.agentConfigId))
+        .limit(1);
       if (!a) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
       await assertAppMembership(ctx, a.appId);
-      // Delete existing, insert new
+
+      // Load previous tool IDs so we know what to attach/detach on Letta.
+      const previous = await ctx.db
+        .select({ toolId: agentTools.toolId })
+        .from(agentTools)
+        .where(eq(agentTools.agentConfigId, input.agentConfigId));
+      const previousSet = new Set(previous.map((p) => p.toolId));
+      const nextSet = new Set(input.toolIds);
+
+      // Update local DB (delete + insert).
       await ctx.db.delete(agentTools).where(eq(agentTools.agentConfigId, input.agentConfigId));
       if (input.toolIds.length > 0) {
         await ctx.db.insert(agentTools).values(
@@ -322,6 +840,62 @@ export const agentRouter = router({
           })),
         );
       }
+
+      // Propagate to Letta for any BUILTIN_TOOLS that map to a registered
+      // Letta tool (have `lettaToolName` set). We resolve tool name → Letta
+      // tool id at runtime so IDs can change without code changes.
+      if (a.lettaAgentId) {
+        try {
+          const { BUILTIN_TOOLS } = await import("./services/toolRegistry.js");
+          const { lettaAdmin } = await import("./services/lettaAdmin.js");
+          const builtinByLocalId = new Map(BUILTIN_TOOLS.map((t) => [t.id, t]));
+
+          // Build list of adds/removes restricted to Letta-mapped tools.
+          const additions: string[] = [];
+          const removals: string[] = [];
+          for (const id of nextSet) {
+            const b = builtinByLocalId.get(id);
+            if (b?.lettaToolName && !previousSet.has(id)) additions.push(b.lettaToolName);
+          }
+          for (const id of previousSet) {
+            const b = builtinByLocalId.get(id);
+            if (b?.lettaToolName && !nextSet.has(id)) removals.push(b.lettaToolName);
+          }
+
+          if (additions.length > 0 || removals.length > 0) {
+            // Resolve tool names → Letta tool IDs
+            const allLettaTools = (await lettaAdmin.listTools()) as Array<{ id: string; name: string }>;
+            const byName = new Map(allLettaTools.map((t) => [t.name, t.id]));
+            for (const name of additions) {
+              const tid = byName.get(name);
+              if (tid) {
+                try {
+                  await lettaAdmin.attachToolToAgent(a.lettaAgentId, tid);
+                } catch (err) {
+                  log.warn("Letta attachTool failed", { name, tid, error: String(err) });
+                }
+              } else {
+                log.warn("Letta tool not registered", { name });
+              }
+            }
+            for (const name of removals) {
+              const tid = byName.get(name);
+              if (tid) {
+                try {
+                  await lettaAdmin.detachToolFromAgent(a.lettaAgentId, tid);
+                } catch (err) {
+                  log.warn("Letta detachTool failed", { name, tid, error: String(err) });
+                }
+              }
+            }
+          }
+        } catch (err) {
+          // Never fail the local DB update because of a Letta sync error;
+          // the user can retry from the UI.
+          log.warn("Letta tool sync failed (local DB updated)", { error: String(err) });
+        }
+      }
+
       return { success: true };
     }),
 
@@ -400,11 +974,15 @@ export const agentRouter = router({
       z.object({
         appId: z.number(),
         name: z.string().min(1).max(100),
-        url: z.string().url(),
-        transport: z.enum(["streamable-http", "sse"]).default("streamable-http"),
+        url: z.string().optional(),
+        transport: z.enum(["streamable-http", "sse", "stdio"]).default("streamable-http"),
         authType: z.enum(["none", "api-key", "bearer"]).default("none"),
         description: z.string().optional(),
         apiKey: z.string().optional(),
+        command: z.string().optional(),
+        args: z.string().optional(),       // JSON array string
+        env: z.string().optional(),        // JSON object string
+        headers: z.string().optional(),    // JSON object string
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -414,8 +992,16 @@ export const agentRouter = router({
       const [server] = await ctx.db
         .insert(mcpServers)
         .values({
-          ...serverData,
+          appId: serverData.appId,
+          name: serverData.name,
+          url: serverData.url || null,
+          transport: serverData.transport,
+          authType: serverData.authType,
           description: serverData.description || null,
+          command: serverData.command || null,
+          args: serverData.args || null,
+          env: serverData.env || null,
+          headers: serverData.headers || null,
         })
         .returning();
 
@@ -812,7 +1398,16 @@ export const agentRouter = router({
       return (query as any).orderBy(desc(crewExecutions.startedAt)).limit(input.limit);
     }),
 
-  /** Get the Dify embed URL for a tenant's crew editor. */
+  /** Get the Dify embed URL for a tenant's crew editor.
+   *
+   *  SECURITY: Previously this also returned a Dify admin session token
+   *  obtained by logging in as the platform-wide Dify admin user. That
+   *  token grants full Dify console access across ALL tenants/apps —
+   *  any single-app member could pivot to Dify admin via the token.
+   *  The client never actually consumed it (it just opens /dify-login
+   *  in a new tab), so it has been removed entirely. If we ever need
+   *  per-app SSO into Dify it must be a per-user, per-app scoped token,
+   *  not the global admin credential. */
   getDifyEmbedUrl: appScopedProcedure
     .input(z.object({ appId: z.number() }))
     .query(async ({ ctx, input }) => {
@@ -821,32 +1416,12 @@ export const agentRouter = router({
       if (!app) return null;
 
       const DIFY_NS = "bionic-platform";
-      const difyApiUrl = `http://dify-api.${DIFY_NS}.svc.cluster.local:5001`;
       const externalDifyUrl = process.env.DIFY_EXTERNAL_BASE_URL || "https://dify.baisoln.com";
-
-      // Get a Dify session token so the user doesn't have to login separately
-      let difyToken: string | null = null;
-      try {
-        const difyEmail = process.env.DIFY_ADMIN_EMAIL || "admin@bionic.local";
-        const difyPassword = process.env.DIFY_ADMIN_PASSWORD || "B10n1cD1fy!2026";
-        const loginRes = await fetch(`${difyApiUrl}/console/api/login`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: difyEmail, password: difyPassword }),
-        });
-        if (loginRes.ok) {
-          const loginData = await loginRes.json() as any;
-          difyToken = loginData?.data?.access_token || null;
-        }
-      } catch {
-        // Dify may not be available — token will be null, user logs in manually
-      }
 
       return {
         internalUrl: `http://dify-web.${DIFY_NS}.svc.cluster.local:3000`,
         externalUrl: externalDifyUrl,
         slug: app.slug,
-        difyToken,
       };
     }),
 
@@ -908,6 +1483,33 @@ export const agentRouter = router({
         })
         .where(eq(agentConfigs.id, input.id));
 
+      // Auto-provision Letta agent if name is set but ID is missing.
+      // This ensures newly created agents get a Letta brain on first deploy.
+      if (agent.lettaAgentName && !agent.lettaAgentId) {
+        try {
+          const { lettaAdmin } = await import("./services/lettaAdmin.js");
+          const model = agent.lettaLlmModel || "openai-proxy/qwen3.5-27b-fp8";
+          const created = await lettaAdmin.createAgent(
+            agent.lettaAgentName,
+            model,
+            agent.lettaSystemPrompt || "",
+          );
+          await ctx.db
+            .update(agentConfigs)
+            .set({ lettaAgentId: created.id, updatedAt: new Date() })
+            .where(eq(agentConfigs.id, input.id));
+          // Update the in-memory agent object so deployer sees the ID
+          (agent as any).lettaAgentId = created.id;
+          log.info("Auto-provisioned Letta agent on deploy", {
+            agentId: agent.id, lettaAgentId: created.id,
+          });
+        } catch (err) {
+          log.warn("Auto-provision Letta failed (non-fatal, deploy continues)", {
+            error: String(err),
+          });
+        }
+      }
+
       // Fire-and-forget deployment
       const { deployAgent } = await import("./services/agentDeployer.js");
       deployAgent(ctx.db, app, agent).catch((err) => {
@@ -963,8 +1565,39 @@ export const agentRouter = router({
 
       try {
         const { getAgentStatus } = await import("./services/agentDeployer.js");
-        return getAgentStatus(app.slug, agent.name);
+        const k8sSt = await getAgentStatus(app.slug, agent.name);
+        const dispatchName = `${app.slug}-${agent.name}`;
+        const k8sDeploymentName = `agent-${agent.name}`;
+        // #region agent log
+        const { emitDebugLog } = await import("./debugSessionLog.js");
+        emitDebugLog({
+          location: "agentRouter.ts:getDeploymentStatus",
+          message: "k8s deployment status vs livekit dispatch",
+          hypothesisId: "H1-H3",
+          data: {
+            agentId: agent.id,
+            dbAgentName: agent.name,
+            appSlug: app.slug,
+            dispatchName,
+            k8sDeploymentName,
+            dbDeploymentStatus: agent.deploymentStatus,
+            k8sStatus: k8sSt.status,
+            k8sReplicas: k8sSt.replicas,
+            k8sMessage: k8sSt.message,
+          },
+        });
+        // #endregion
+        return k8sSt;
       } catch {
+        // #region agent log
+        const { emitDebugLog } = await import("./debugSessionLog.js");
+        emitDebugLog({
+          location: "agentRouter.ts:getDeploymentStatus",
+          message: "getAgentStatus threw",
+          hypothesisId: "H2",
+          data: { agentId: agent.id, agentName: agent.name, appSlug: app.slug },
+        });
+        // #endregion
         return { status: agent.deploymentStatus, replicas: 0, message: "Unable to check status" };
       }
     }),
@@ -996,6 +1629,18 @@ export const agentRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
+
+      // SECURITY: bind input.userId to the caller's Keycloak sub. Without
+      // this, any same-app member could pass another user's sub and create
+      // a Letta block under their identity (horizontal privilege escalation
+      // within the app). Admins bypass — they may legitimately need to
+      // pre-create blocks for other users.
+      if (ctx.user!.role !== "admin" && input.userId !== ctx.user!.sub) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "userId must match the caller's sub (or admin role required)",
+        });
+      }
 
       // Check if block already exists
       const [existing] = await ctx.db

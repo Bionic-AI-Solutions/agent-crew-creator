@@ -15,8 +15,13 @@ Uses official LiveKit patterns:
 
 import asyncio
 import base64
+import json as _json
 import logging
 import os
+import time
+from collections import deque
+from dataclasses import dataclass
+from typing import Optional
 
 import livekit.agents
 livekit.agents.DEFAULT_API_CONNECT_OPTIONS = livekit.agents.APIConnectOptions(
@@ -28,7 +33,7 @@ from livekit.agents import (
     Agent, AgentSession, AutoSubscribe, JobContext, WorkerOptions,
     cli, function_tool, metrics, room_io, RunContext,
 )
-from livekit.agents.voice import MetricsCollectedEvent
+from livekit.agents.voice import MetricsCollectedEvent, ConversationItemAddedEvent
 from livekit.plugins import silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
@@ -39,6 +44,19 @@ from config import settings
 from observability import flush_langfuse, init_langfuse
 
 logger = logging.getLogger("main-agent")
+
+# Bump livekit.agents logger to DEBUG so we can see speech-task scheduling,
+# turn-completion handlers, and LLM call entry points. This is verbose but
+# critical for diagnosing the "STT fires but LLM never runs" silent failure.
+# Override via LIVEKIT_AGENTS_LOG_LEVEL=INFO if it gets too noisy.
+_lk_log_level = os.environ.get("LIVEKIT_AGENTS_LOG_LEVEL", "DEBUG")
+logging.getLogger("livekit.agents").setLevel(_lk_log_level)
+logging.getLogger("livekit").setLevel(_lk_log_level)
+
+# Cooldown for lecture nudges — prevents AI-speaks→Letta→nudge→AI-speaks loop.
+# After a nudge fires, suppress further nudges for this many seconds.
+_NUDGE_COOLDOWN_SECONDS = 45
+_last_nudge_time: float = 0.0
 
 
 # ── Langfuse via OTEL (always on when keys present) ─────────────
@@ -84,6 +102,12 @@ def setup_langfuse_otel(session_id: str):
         except ImportError:
             pass  # Optional — traces still capture LiveKit pipeline
 
+        # Also initialize the langfuse SDK singleton so any @observe-decorated
+        # functions in the codebase find a client. The SDK client is separate
+        # from the OTEL pipeline — without this we get warnings like "No
+        # Langfuse client with public key … has been initialized" on every
+        # decorated call.
+        init_langfuse()
         logger.info("Langfuse OTEL tracing enabled (session=%s)", session_id)
         return trace_provider
     except Exception as e:
@@ -95,12 +119,54 @@ def setup_langfuse_otel(session_id: str):
 # ── Letta client config ─────────────────────────────────────────
 
 LETTA_BASE = settings.letta_base_url.rstrip("/")
-LETTA_TOKEN = settings.letta_api_key or settings.mcp_api_key or ""
+LETTA_TOKEN = settings.letta_api_key or settings.letta_server_password or settings.mcp_api_key or ""
 LETTA_AGENT_ID = settings.letta_agent_id or ""
 LETTA_HEADERS = {
     "Content-Type": "application/json",
     **({"Authorization": f"Bearer {LETTA_TOKEN}"} if LETTA_TOKEN else {}),
 }
+
+
+# ── Delegation contracts ───────────────────────────────────────────
+
+@dataclass
+class DelegationRequest:
+    """Structured payload sent to Letta for delegation tasks."""
+    task: str
+    task_type: str = "general"  # general | research | crew | summarize | expand
+    output_target: str = "chat"  # chat | speaker_brief
+    spoken_context_last_60s: str = ""
+    deadline_ms: int = 0  # 0 = use default HTTP timeout (300s); >0 = registry-level cancel after N ms
+    correlation_id: str = ""
+
+    def to_framed_message(self) -> str:
+        """Convert to a framed message for Letta, embedding structured metadata
+        as a JSON header followed by the natural-language task.
+
+        Letta receives this as a user message. The JSON header lets the
+        assistant extract routing/deadline info; the natural-language task
+        remains readable for the LLM's reasoning.
+        """
+        meta = {
+            "type": "delegation_request",
+            "task_type": self.task_type,
+            "output_target": self.output_target,
+            "deadline_ms": self.deadline_ms,
+            "correlation_id": self.correlation_id,
+        }
+        if self.spoken_context_last_60s:
+            meta["spoken_context_last_60s"] = self.spoken_context_last_60s
+        return (
+            f"[Delegation metadata]: {_json.dumps(meta)}\n\n"
+            f"[Explicit assignment from the primary AI — "
+            f"do this and post the result to the screen]:\n"
+            f"{self.task}"
+        )
+
+
+# NOTE: Structured response parsing (DelegationResponse) is deferred until
+# Letta's run_crew tool returns JSON instead of formatted strings. Currently
+# _parse_letta_response returns str and extracts artifacts opportunistically.
 
 
 # ── Per-user memory isolation ────────────────────────────────────
@@ -124,21 +190,46 @@ async def swap_user_memory_block(user_id: str) -> None:
         return
 
     async with _swap_lock:
+        # Load user block mapping from platform DB (durable across pod restarts)
+        # Falls back to /tmp JSON if platform API is unavailable
         import json
+        platform_url = os.environ.get("PLATFORM_API_URL", "")
+        internal_token = os.environ.get("PLAYER_UI_INTERNAL_TOKEN", "")
+        agent_config_id = os.environ.get("AGENT_CONFIG_ID", "")
+
+        registry: dict = {}
         registry_path = f"/tmp/user_blocks_{settings.agent_name}.json"
+        _use_db_registry = bool(platform_url and agent_config_id)
 
-        # Load registry
-        try:
-            with open(registry_path) as f:
-                registry: dict = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            registry = {}
+        # Try platform DB first, fall back to /tmp
+        if _use_db_registry:
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as db_client:
+                    r = await db_client.get(
+                        f"{platform_url}/api/internal/user-memory/{agent_config_id}/{user_id}",
+                        headers={"X-Internal-Token": internal_token} if internal_token else {},
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        registry[user_id] = data.get("lettaBlockId", "")
+            except Exception as e:
+                logger.info("Platform DB registry unavailable, using /tmp fallback: %s", e)
+                _use_db_registry = False
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        if not registry.get(user_id):
+            try:
+                with open(registry_path) as f:
+                    registry = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                registry = {}
+
+        # Letta returns 307 redirects on trailing-slash URLs in some
+        # versions. follow_redirects=True handles both forms.
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             # Get agent's current blocks
             try:
                 resp = await client.get(
-                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/",
+                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}",
                     headers=LETTA_HEADERS,
                 )
                 resp.raise_for_status()
@@ -180,34 +271,138 @@ async def swap_user_memory_block(user_id: str) -> None:
                     logger.warning("Failed to create user block: %s", e)
                     return
 
-            # Detach current human block (if different)
-            if current_human_id and current_human_id != user_block_id:
+            # Detach + attach with retry (handles concurrent swap race)
+            for attempt in range(3):
+                # Re-read current state to handle concurrent changes
+                if attempt > 0:
+                    try:
+                        resp2 = await client.get(
+                            f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}",
+                            headers=LETTA_HEADERS,
+                        )
+                        resp2.raise_for_status()
+                        current_blocks = resp2.json().get("memory", {}).get("blocks", [])
+                        current_human = next((b for b in current_blocks if b.get("label") == "human"), None)
+                        current_human_id = current_human["id"] if current_human else None
+                        if current_human_id == user_block_id:
+                            logger.info("User block became active during retry: user=%s", user_id)
+                            break
+                    except Exception:
+                        pass
+
+                # Detach current human block (if different)
+                if current_human_id and current_human_id != user_block_id:
+                    try:
+                        await client.patch(
+                            f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/blocks/detach/{current_human_id}/",
+                            headers=LETTA_HEADERS,
+                        )
+                        logger.info("Detached previous human block: %s", current_human_id)
+                    except Exception as e:
+                        logger.warning("Failed to detach block %s (attempt %d): %s", current_human_id, attempt, e)
+
+                # Attach this user's block
                 try:
                     await client.patch(
-                        f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/blocks/detach/{current_human_id}/",
+                        f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/blocks/attach/{user_block_id}/",
                         headers=LETTA_HEADERS,
                     )
-                    logger.info("Detached previous human block: %s", current_human_id)
+                    logger.info("Attached user block: user=%s block=%s (attempt %d)", user_id, user_block_id, attempt)
+                    break
                 except Exception as e:
-                    logger.warning("Failed to detach block %s: %s", current_human_id, e)
+                    if attempt < 2:
+                        logger.warning("Failed to attach block, retrying (attempt %d): %s", attempt, e)
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                    else:
+                        logger.warning("Failed to attach user block after 3 attempts: %s", e)
+                        return
 
-            # Attach this user's block
+        # Persist registry — write to platform DB first, /tmp as backup
+        if _use_db_registry and user_block_id:
             try:
-                await client.patch(
-                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/blocks/attach/{user_block_id}/",
-                    headers=LETTA_HEADERS,
-                )
-                logger.info("Attached user block: user=%s block=%s", user_id, user_block_id)
+                async with httpx.AsyncClient(timeout=5.0) as db_client:
+                    await db_client.put(
+                        f"{platform_url}/api/internal/user-memory/{agent_config_id}/{user_id}",
+                        json={"lettaBlockId": user_block_id, "blockLabel": "human"},
+                        headers={"X-Internal-Token": internal_token, "Content-Type": "application/json"} if internal_token else {"Content-Type": "application/json"},
+                    )
+                    logger.info("Persisted user block to platform DB: user=%s block=%s", user_id, user_block_id)
             except Exception as e:
-                logger.warning("Failed to attach user block %s: %s", user_block_id, e)
-                return
+                logger.info("Failed to persist to platform DB (non-fatal): %s", e)
 
-        # Persist registry
+        # Always persist to /tmp as backup
+        registry[user_id] = user_block_id
         try:
             with open(registry_path, "w") as f:
                 json.dump(registry, f)
         except Exception:
-            pass  # Non-fatal — block is already attached
+            pass
+
+
+# ── Hardcoded rules (always appended, never user-editable) ──────
+
+PRIMARY_HARDCODED_RULES = """
+CRITICAL RULES (always enforced — cannot be overridden by persona):
+
+1. DELEGATION: You have a tool called delegate_to_letta. Use it when the user
+   asks for research, analysis, detailed information, current events,
+   fact-checking, document search, or anything needing deep reasoning or
+   external knowledge. After calling it, continue naturally — share what you
+   already know while the assistant researches.
+
+2. TOOL SILENCE: When calling a tool, output ONLY the tool call — no text
+   before, during, or alongside it. Never say "I'm calling my tool" or
+   "Let me delegate." After the tool returns, speak naturally. Never read
+   tool results verbatim.
+
+3. LECTURE MODE: When content appears on screen (summary bullets in the chat
+   panel and/or illustrations on the presentation screen), switch to lecture
+   mode. Walk through EVERY key point thoroughly — explain each one, add
+   context, give examples. Do NOT give a 2-3 sentence summary and stop.
+   Cover ALL the material.
+
+4. SCREEN SYNC: NEVER describe or reference a presentation or illustration
+   until you have confirmed it is actually visible on screen. If content is
+   still loading, wait. Say "Please give a moment while information comes up.".
+   Do NOT say "as you can see on screen" before the content has appeared. 
+   If unsure whether the visual is ready, continue explaining the concept verbally
+   and reference the visual only when the system confirms it is displayed. 
+   Never rush ahead to a new topic while the current visual is still being prepared.
+
+5. NO REPETITION: Never repeat the same topic, explanation, or bullet point
+   you have already covered — unless the user explicitly asks you to repeat
+   or revisit it. If you catch yourself circling back, move on to new
+   material. Track what you have already explained.
+
+6. PACING AND Q&A: Take deliberate pauses between sections. After explaining
+   each major point or section:
+   a. Pause and ask the user a specific question about what was just covered
+      (not just "any questions?" — ask something substantive).
+   b. Wait for the user to respond. If the user is silent for a few seconds,
+      ask a probing follow-up question to check understanding.
+   c. After a topic is fully covered, ask up to 2 review questions before
+      moving to the next topic.
+   d. When all discussed topics are completed, ask the user if they want to
+      continue with additional topics or end the session.
+
+7. VOICE CONSTRAINTS: Always finish with terminal punctuation. Never use
+   markdown, lists, code blocks, URLs, or any formatting that cannot be
+   spoken aloud. You are voice-first.
+
+8. GREETING: Your first interaction should include asking the user their name
+   so you can address them personally going forward.
+
+9. IDENTITY: Do not refer to the user as "student" or "professor." Use their
+   name once you learn it.
+
+10. INTERRUPTION HANDLING: If the user interrupts during a lecture, address
+    their question fully. Then resume where you left off in the material —
+    do not drop the remaining points.
+
+11. EMAIL COLLECTION: Early in the session, ask the user for their email
+    address so a session summary can be sent after the session ends. If the
+    user's email is already known from login, confirm it with them.
+""".strip()
 
 
 # ── Agent definition ─────────────────────────────────────────────
@@ -215,38 +410,101 @@ async def swap_user_memory_block(user_id: str) -> None:
 class MainAgent(Agent):
     """Voice agent with two-brain architecture."""
 
+    # Patterns that indicate the LLM is narrating a tool call — these
+    # should be stripped from TTS output so the user doesn't hear them.
+    _TOOL_NARRATION_PATTERNS = [
+        "delegate_to_letta",
+        "calling the",
+        "using my tool",
+        "let me delegate",
+        "i'll delegate",
+        "i will delegate",
+        "invoking",
+        "function call",
+        "tool call",
+    ]
+
     def __init__(self) -> None:
+        from agent.delegation import DelegationRegistry
+        self._delegations = DelegationRegistry()
+        self._recent_turns: deque[str] = deque(maxlen=10)
+        self._is_delegating = False  # Set during tool execution
+        self._user_email: str | None = None  # Collected during session
+
+        # Prompt = user persona (or default) + hardcoded rules (always last).
+        persona = settings.system_prompt or self._default_persona()
         super().__init__(
-            instructions=settings.system_prompt or self._default_prompt(),
-            turn_detection=MultilingualModel(),
+            instructions=persona + "\n\n" + PRIMARY_HARDCODED_RULES,
         )
 
+    def tts_node(self, text, model_settings):
+        """Override tts_node to strip tool-call narration from the TTS stream.
+
+        When the LLM generates text like "I'm going to call delegate_to_letta
+        to research..." before a tool call, this filter detects it and yields
+        silence instead, so the user never hears the tool-call preamble.
+        """
+
+        async def _filtered_text():
+            async for chunk in text:
+                if not chunk:
+                    continue
+                lower = chunk.lower()
+                # If any tool-narration pattern appears, suppress the chunk
+                if any(p in lower for p in self._TOOL_NARRATION_PATTERNS):
+                    logger.debug("[tts_filter] suppressed tool narration: %s", chunk[:80])
+                    continue
+                # If we're mid-delegation, suppress generic preamble
+                if self._is_delegating:
+                    logger.debug("[tts_filter] suppressed during delegation: %s", chunk[:80])
+                    continue
+                yield chunk
+
+        # Pass filtered text to the parent — tts_node returns an async
+        # generator or coroutine depending on TTS type, so don't await.
+        return super().tts_node(_filtered_text(), model_settings)
+
     async def on_enter(self):
-        self.session.generate_reply()
+        # IMPORTANT: do NOT call generate_reply() here. _create_speech_task
+        # treats on_enter as a foreground speech task; if its LLM call
+        # hangs (and ours has been hanging silently against the gpu-ai
+        # endpoint in the streaming preemptive path), every subsequent
+        # user_turn_completed task awaits the stuck on_enter via
+        #   if old_task is not None: await old_task
+        # in agent_activity.py, deadlocking the entire pipeline. Symptom:
+        # STT fires, EOU fires, [chain] user committed fires, then
+        # complete silence — no LLM, no TTS, no conversation_item_added.
+        #
+        # Letting the user speak first is fine. Once we have a known-good
+        # session say(...) call we can re-add a static greeting via
+        # session.say("Hello!") which uses the TTS pipeline directly
+        # without requiring an LLM completion.
+        logger.info("[chain] MainAgent.on_enter — waiting for user to speak first")
 
     @staticmethod
-    def _default_prompt() -> str:
+    def _default_persona() -> str:
+        """Default persona prompt — personality/style only, no behavioral rules.
+
+        Users can replace this entirely via the "Agent Persona" field in the UI.
+        Behavioral rules (delegation, lecture mode, tool silence, etc.) are
+        always appended separately via PRIMARY_HARDCODED_RULES.
+        """
         vision_line = ""
         if settings.vision_enabled:
-            vision_line = """
-VISION:
-You can see the user's camera or screen. Describe what you see when asked.
-Use visual context to give more relevant, specific answers.
-"""
-        return f"""You are a voice AI assistant for {settings.app_slug}.
-You help users by conversing naturally.
-Keep responses concise and conversational (voice-first).
-Always finish with terminal punctuation.
-Never use markdown, lists, or formatting that cannot be spoken aloud.
-{vision_line}
-DELEGATION:
-When the user asks for research, analysis, complex tasks, or anything requiring
-deep reasoning, tools, memory recall, or multi-step workflows, call the
-delegate_to_letta tool. The secondary agent handles memory, document search,
-web research, and crew execution on your behalf.
-While waiting, keep the user engaged with brief conversational responses.
-When the result comes back, summarize it in spoken-friendly language.
-"""
+            vision_line = (
+                "\nYou can see the user's camera or screen. "
+                "Use visual context to give more relevant, specific answers."
+            )
+        return (
+            f"You are a voice AI assistant for {settings.app_slug}. "
+            f"You help users by conversing naturally with a warm, engaging "
+            f"speaking style. Adapt your explanations to the learner's level. "
+            f"Use analogies and real-world examples to make concepts accessible. "
+            f"If a lesson plan or curriculum document is loaded via RAG, follow "
+            f"its topic sequence — when one topic is completed, check the lesson "
+            f"plan for the next scheduled topic and suggest it to the user."
+            f"{vision_line}"
+        )
 
     @function_tool
     async def delegate_to_letta(self, context: RunContext, task: str) -> str:
@@ -255,54 +513,403 @@ When the result comes back, summarize it in spoken-friendly language.
         Use this for: research, analysis, crew execution, document search,
         memory operations, or any task requiring tools and deep reasoning.
 
+        The Letta call runs in the background so the primary AI can keep
+        speaking. Results are published directly to the chat channel when
+        ready; the primary AI gets a short bridge phrase to say now.
+
         Args:
             task: A clear description of what needs to be done.
 
         Returns:
-            The result from the secondary agent.
+            A brief verbal bridge for the primary AI to speak while
+            the secondary agent works in the background.
         """
         if not LETTA_AGENT_ID:
             return "Secondary agent not configured. Please set LETTA_AGENT_ID."
 
-        logger.info("Delegating to Letta: %s...", task[:100])
+        logger.info("[chain] primary AI → assistant (explicit assignment): %s",
+                    task[:200])
 
+        # Capture room + session references before spawning the background task
+        room = None
+        session = None
         try:
+            room = context.session.room_io.room if context.session.room_io else None
+            session = context.session
+        except Exception:
+            pass
+
+        # Two-step: reserve a task ID first (cancels stale work), then
+        # build the request with the correlation ID, then launch.
+        spoken_context = "\n".join(list(self._recent_turns)[-5:]) if self._recent_turns else ""
+        entry = self._delegations.reserve(task[:200])
+
+        request = DelegationRequest(
+            task=task,
+            task_type="general",
+            output_target="chat",
+            spoken_context_last_60s=spoken_context,
+            correlation_id=entry.task_id,
+        )
+
+        self._delegations.launch(
+            entry, _delegation_worker(request, room, session, self),
+            deadline_ms=request.deadline_ms,
+        )
+
+        self._is_delegating = True
+
+        # Return a prompt that tells the LLM to keep the conversation going
+        # while the background research runs. The LLM will naturally continue
+        # speaking about the topic from its own knowledge.
+        return (
+            f"Your research assistant is looking into this now. "
+            f"While waiting for the detailed results, share what you "
+            f"already know about: {task[:100]}. Keep it brief and "
+            f"conversational — the full findings will appear on screen shortly."
+        )
+
+
+async def _delegation_worker(
+    request: DelegationRequest,
+    room,
+    session=None,
+    agent_ref=None,
+) -> None:
+    """Background worker: sends a delegation task to Letta and publishes
+    the result to the chat channel when complete, then nudges the primary AI
+    to give a brief spoken summary.
+
+    Runs as an asyncio.Task so the voice loop never blocks on Letta latency.
+    If the request takes >10s, speaks a reassurance message.
+    """
+    try:
+        timeout_s = (request.deadline_ms / 1000) if request.deadline_ms > 0 else 300.0
+
+        async def _letta_call():
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=15.0, read=300.0, write=15.0, pool=15.0),
+                timeout=httpx.Timeout(connect=15.0, read=timeout_s, write=15.0, pool=15.0),
+                follow_redirects=True,
             ) as client:
-                response = await client.post(
-                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages/",
-                    json={"messages": [{"role": "user", "content": task}]},
+                resp = await client.post(
+                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages",
+                    json={"messages": [{"role": "user", "content": request.to_framed_message()}]},
                     headers=LETTA_HEADERS,
                 )
-                response.raise_for_status()
-                return _parse_letta_response(response.json())
+                resp.raise_for_status()
+                return _parse_letta_response(resp.json())
 
-        except httpx.TimeoutException:
-            logger.error("Letta delegation timed out")
-            return "The secondary agent is still processing. It may take a moment for complex tasks."
-        except httpx.HTTPStatusError as e:
-            logger.error("Letta delegation HTTP error: %s", e.response.status_code)
-            return "Secondary agent encountered an error. Please try again."
-        except Exception as e:
-            logger.error("Letta delegation failed: %s", e)
-            return "Failed to reach secondary agent. Please try again shortly."
+        # Try to get result in 10s; if not, speak a reassurance and keep waiting
+        result = None
+        try:
+            result = await asyncio.wait_for(_letta_call(), timeout=10.0)
+        except asyncio.TimeoutError:
+            # Still working — reassure the user
+            if session:
+                try:
+                    session.say("Still working on that. One moment please.", allow_interruptions=True)
+                except Exception:
+                    pass
+            logger.info("[chain] delegation >10s, spoke reassurance")
+            # Continue waiting for the full timeout
+            result = await _letta_call()
+
+        if room and result:
+            summary = _filter_letta_noise(result.get("summary", ""))
+            presentation = _filter_letta_noise(result.get("presentation", ""))
+
+            # Send summary bullets to chat panel
+            if summary:
+                await room.local_participant.send_text(
+                    summary, topic="lk.chat.summary",
+                )
+                logger.info("[chain] assistant → chat panel (%d chars)", len(summary))
+
+            # Send artifacts/illustrations to presentation area
+            if presentation:
+                await room.local_participant.send_text(
+                    presentation, topic="lk.chat.presentation",
+                )
+                logger.info("[chain] assistant → presentation (%d chars)", len(presentation))
+
+            # Clear delegation flag so the TTS filter stops suppressing
+            if agent_ref:
+                agent_ref._is_delegating = False
+
+            # Nudge the primary AI to deliver a full lecture-style narration.
+            # It acts as a professor: walking through each bullet point,
+            # explaining the concepts, and referencing the illustrations
+            # on the presentation screen as visual aids. NOT a brief teaser.
+            if session:
+                try:
+                    # Give the LLM the full content so it can cover everything.
+                    # Cap at 4000 chars to stay within context but large enough
+                    # to cover a full research page worth of bullets + artifacts.
+                    summary_full = summary[:4000].strip()
+                    pres_full = presentation[:2000].strip()
+
+                    nudge_parts = []
+                    if summary_full:
+                        nudge_parts.append(
+                            f"SUMMARY BULLETS (displayed in the chat panel on the right):\n{summary_full}"
+                        )
+                    if pres_full:
+                        nudge_parts.append(
+                            f"ILLUSTRATIONS (displayed on the presentation screen):\n{pres_full}"
+                        )
+
+                    session.generate_reply(
+                        user_input=(
+                            "[System: your research assistant has posted detailed "
+                            "findings. Summary bullets are in the chat panel on the "
+                            "right, and illustrations/visuals are on the presentation "
+                            "screen.\n\n"
+                            "You are the professor. Deliver a THOROUGH spoken "
+                            "walk-through of ALL the material — do NOT summarize in "
+                            "2-3 sentences and stop. Go through each bullet point, "
+                            "explain the concepts in depth, and reference the "
+                            "illustrations on screen as visual aids (e.g. 'as you "
+                            "can see in the diagram on screen...', 'the illustration "
+                            "shows...'). Teach the audience as if giving a lecture. "
+                            "Cover every key point from the summary. After walking "
+                            "through everything, invite questions.\n\n"
+                            + "\n\n".join(nudge_parts)
+                        ),
+                        allow_interruptions=True,
+                    )
+                    logger.info("[chain] primary AI nudged for full lecture narration")
+                except Exception as e:
+                    logger.warning("Failed to nudge primary AI: %s", e)
+        elif result:
+            logger.warning("Delegation result ready but no room to publish to")
+
+    except httpx.TimeoutException:
+        logger.error("Letta delegation timed out for task: %s", request.task[:100])
+        if room:
+            try:
+                await room.local_participant.send_text(
+                    "[The assistant is still working on this — results may appear shortly.]",
+                    topic="lk.chat.summary",
+                )
+            except Exception:
+                pass
+    except httpx.HTTPStatusError as e:
+        logger.error("Letta delegation HTTP error: %s", e.response.status_code)
+        if room:
+            try:
+                await room.local_participant.send_text(
+                    "[The assistant encountered an error processing that request.]",
+                    topic="lk.chat.summary",
+                )
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error("Letta delegation failed: %s", e)
+        if room:
+            try:
+                await room.local_participant.send_text(
+                    "[Could not reach the assistant. Please try again.]",
+                    topic="lk.chat.summary",
+                )
+            except Exception:
+                pass
+    finally:
+        # Always clear the delegation flag so TTS isn't permanently suppressed
+        if agent_ref:
+            agent_ref._is_delegating = False
 
 
-def _parse_letta_response(data: dict | list) -> str:
-    """Parse Letta API response, handling known message_type variants.
+def _filter_letta_noise(text: str) -> str:
+    """Remove Letta internal noise lines from text before sending to the UI.
+
+    Letta emits lines like '*(No output ...)*', '*(Waiting ...)*', etc.
+    that are internal status indicators, not user-facing content.
+    """
+    if not text:
+        return text
+    lines = text.split("\n")
+    filtered = []
+    for line in lines:
+        stripped = line.strip()
+        # Skip Letta internal status lines
+        if stripped.startswith("*(No output") or stripped.startswith("*(Waiting"):
+            continue
+        if stripped.startswith("*(") and stripped.endswith(")*"):
+            continue
+        # Skip empty artifact-like noise
+        if stripped == "---" or stripped == "":
+            # Keep blank lines between real content but skip standalone dashes
+            if stripped == "" and filtered and filtered[-1].strip():
+                filtered.append(line)
+            continue
+        filtered.append(line)
+    result = "\n".join(filtered).strip()
+    return result
+
+
+async def forward_to_assistant_async(
+    role: str,
+    text: str,
+    room,
+    session=None,
+) -> None:
+    """Forward a primary AI turn to the secondary (Letta) agent so it can
+    proactively prepare supporting visual material — summaries, illustrations,
+    crew results — and publish them to the LiveKit chat data channel (`lk.chat`).
+
+    Only PROFESSOR (assistant-role) turns are forwarded here — user STT is
+    filtered in the conversation_item_added handler before this function is
+    called. This enforces the chain of command: user → primary AI → Letta → chat.
+
+    Notes for callers:
+    - Fire-and-forget — never block the primary voice loop on Letta latency.
+    - Only "assistant_message" content from Letta is treated as a slide;
+      reasoning / tool-call internals are filtered by `_parse_letta_response`.
+    - Empty / trivial Letta replies are dropped (no chat noise).
+    - The user-side appears under participant identity = the agent worker;
+      the chat panel groups them under "Secondary Agent Output".
+    """
+    if not LETTA_AGENT_ID or not text or not text.strip():
+        return
+    if not room:
+        return
+    try:
+        # Frame the turn for Letta. For user messages with visual intent,
+        # send as a direct instruction (no transcript prefix) so the model
+        # treats it as a command and calls generate_image. For primary AI
+        # turns, keep the transcript framing for passive context.
+        lowered = text.strip().lower()
+        has_visual_intent = role == "user" and any(
+            kw in lowered for kw in (
+                "show", "image", "picture", "diagram", "illustration",
+                "draw", "sketch", "visualize", "display", "see",
+            )
+        )
+        if has_visual_intent:
+            framed = text.strip()
+        else:
+            speaker = "Primary AI" if role == "assistant" else "User"
+            framed = f"[Live transcript — {speaker}]: {text.strip()}"
+
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
+            follow_redirects=True,
+        ) as client:
+            response = await client.post(
+                f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages",
+                json={"messages": [{"role": "user", "content": framed}]},
+                headers=LETTA_HEADERS,
+            )
+            response.raise_for_status()
+            result = _parse_letta_response(response.json())
+
+        summary = result.get("summary", "")
+        presentation = result.get("presentation", "")
+        combined = result.get("combined", "")
+
+        if not combined or len(combined.strip()) < 10:
+            # No substantive output — assistant chose not to react.
+            logger.info("[chain] assistant chose silence (in=%d, out=%d)",
+                        len(text), len(combined))
+            return
+
+        # Filter out Letta internal noise from summary before sending
+        if summary:
+            summary = _filter_letta_noise(summary)
+        if presentation:
+            presentation = _filter_letta_noise(presentation)
+
+        # Send to separate channels
+        if summary:
+            await room.local_participant.send_text(summary, topic="lk.chat.summary")
+        if presentation:
+            await room.local_participant.send_text(presentation, topic="lk.chat.presentation")
+        logger.info(
+            "[chain] assistant → panels (proactive, in=%d, summary=%d, pres=%d)",
+            len(text), len(summary), len(presentation),
+        )
+
+        # When substantial content appears on screen, nudge the primary AI
+        # to deliver a lecture-style walk-through of the material.
+        # Cooldown prevents infinite loop: AI speaks → Letta → nudge → AI speaks → ...
+        global _last_nudge_time
+        now = time.monotonic()
+        cooldown_ok = (now - _last_nudge_time) > _NUDGE_COOLDOWN_SECONDS
+        if session and cooldown_ok and len(summary) > 100:
+            try:
+                summary_full = summary[:4000].strip()
+                pres_full = presentation[:2000].strip()
+
+                nudge_parts = []
+                if summary_full:
+                    nudge_parts.append(
+                        f"SUMMARY BULLETS (now visible in the chat panel):\n{summary_full}"
+                    )
+                if pres_full:
+                    nudge_parts.append(
+                        f"ILLUSTRATIONS (now on the presentation screen):\n{pres_full}"
+                    )
+
+                _last_nudge_time = now
+                session.generate_reply(
+                    user_input=(
+                        "[System: your research assistant has posted new findings "
+                        "to the screen. Summary bullets are in the chat panel, "
+                        "and any illustrations are on the presentation screen.\n\n"
+                        "You are the professor. Walk through EVERY key point in "
+                        "the summary — explain each one, add context, give examples. "
+                        "If there are illustrations, reference them as visual aids "
+                        "(e.g. 'as you can see on screen...'). Do NOT just say "
+                        "'I've put some information on screen' — actually teach "
+                        "the material. After covering each major section, pause "
+                        "and ask the student if they have questions or want to "
+                        "go deeper on that topic before moving on. Keep the "
+                        "student engaged.]\n\n"
+                        + "\n\n".join(nudge_parts)
+                    ),
+                    allow_interruptions=True,
+                )
+                logger.info("[chain] primary AI nudged for lecture (proactive path)")
+            except Exception as e:
+                logger.warning("Failed to nudge primary AI (proactive): %s", e)
+    except httpx.TimeoutException:
+        logger.warning("Proactive Letta forward timed out (role=%s)", role)
+    except Exception as e:
+        # Never break the voice loop on a Letta error.
+        logger.warning("Proactive Letta forward failed: %s", e)
+
+
+def _parse_letta_response(data: dict | list) -> dict:
+    """Parse Letta API response into a structured dict with separate channels.
+
+    Returns:
+        {
+            "summary": str,        # bullet-point text for the chat panel
+            "presentation": str,   # artifact JSON blocks for the presentation area
+            "combined": str,       # legacy: both combined (used for the primary AI nudge)
+        }
 
     Known message_type values:
       reasoning_message — internal chain-of-thought (skipped)
       tool_call_message — tool invocation (skipped)
       tool_return_message — tool result (included if substantial)
       assistant_message — spoken output (always included)
+
+    Also extracts structured artifacts from tool_return_message payloads
+    when the content is JSON with a recognized schema (crew results,
+    artifact references, etc.).
     """
     messages = data if isinstance(data, list) else data.get("messages", [])
     if not messages:
-        return "Secondary agent returned no output."
+        return {
+            "summary": "Secondary agent returned no output.",
+            "presentation": "",
+            "combined": "Secondary agent returned no output.",
+        }
 
     result_parts = []
+    artifacts = []
+
     for msg in messages:
         if not isinstance(msg, dict):
             continue
@@ -320,11 +927,149 @@ def _parse_letta_response(data: dict | list) -> str:
             if status == "error":
                 result_parts.append(f"[Tool error]: {str(tool_return)[:500]}")
             elif tool_return and len(str(tool_return)) > 20:
-                result_parts.append(f"[Tool result]: {str(tool_return)[:2000]}")
+                # Try to extract structured crew results
+                try:
+                    parsed = _json.loads(str(tool_return)) if isinstance(tool_return, str) else tool_return
+                    if isinstance(parsed, dict):
+                        # Skip posting an error object as "summary" if the tool
+                        # reported {"error": "..."}; fall through to error branch.
+                        if "error" in parsed and "artifacts" not in parsed:
+                            result_parts.append(f"[Tool error]: {parsed.get('error','')[:500]}")
+                        # Crew / image artifact result with summary + artifacts
+                        elif "artifacts" in parsed and isinstance(parsed["artifacts"], list):
+                            if "summary" in parsed:
+                                result_parts.append(str(parsed["summary"]))
+                            artifacts.extend(parsed["artifacts"])
+                        elif "summary" in parsed:
+                            result_parts.append(str(parsed["summary"]))
+                        else:
+                            result_parts.append(f"[Tool result]: {str(tool_return)[:2000]}")
+                    else:
+                        result_parts.append(f"[Tool result]: {str(tool_return)[:2000]}")
+                except (ValueError, TypeError):
+                    result_parts.append(f"[Tool result]: {str(tool_return)[:2000]}")
 
-    if result_parts:
-        return "\n\n".join(result_parts)
-    return "Task delegated. Secondary agent processed but produced no text output."
+    summary_text = "\n\n".join(result_parts) if result_parts else ""
+
+    # Build artifact JSON blocks for the presentation area
+    presentation_parts = []
+    if artifacts:
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            subtype = artifact.get("subtype") or (
+                "image" if str(artifact.get("content_type", "")).startswith("image/") else "file"
+            )
+            image_url = artifact.get("url") or artifact.get("path") or ""
+            internal_s3_url = artifact.get("internal_s3_url") or ""
+            # Regenerate the presigned URL if this is a recall of a previously
+            # stored artifact (internal_s3_url present but URL is empty/stale).
+            if subtype == "image" and internal_s3_url and not image_url:
+                try:
+                    image_url = _regenerate_presigned_url(internal_s3_url)
+                except Exception:
+                    image_url = ""
+            artifact_msg = _json.dumps({
+                "type": "artifact",
+                "subtype": subtype,
+                "title": artifact.get("title", "Artifact"),
+                "image_url": image_url if subtype == "image" else "",
+                "download_url": image_url,
+                "url": image_url,
+                "internal_s3_url": internal_s3_url,
+                "content_type": artifact.get("content_type", ""),
+                "summary": artifact.get("summary", ""),
+            })
+            presentation_parts.append(artifact_msg)
+
+    presentation_text = "\n\n".join(presentation_parts)
+
+    # Combined for the primary AI nudge (backward compat)
+    combined = summary_text
+    if presentation_text:
+        combined = f"{combined}\n\n{presentation_text}" if combined else presentation_text
+
+    return {
+        "summary": summary_text or "Task delegated. Secondary agent processed but produced no text output.",
+        "presentation": presentation_text,
+        "combined": combined or "Task delegated. Secondary agent processed but produced no text output.",
+    }
+
+
+def _regenerate_presigned_url(s3_url: str, expires_seconds: int = 86400) -> str:
+    """Regenerate a fresh 24h presigned GET URL for an internal S3 URL.
+
+    Called when the agent pod receives an artifact reference (e.g. from
+    archival memory recall) that has a permanent s3://bucket/key URL but
+    no valid presigned URL. Signs using the MinIO credentials from the
+    agent pod's env (MINIO_ACCESS_KEY / MINIO_SECRET_KEY) and the public
+    hostname from MINIO_PUBLIC_HOST (default: s3.baisoln.com).
+
+    Args:
+        s3_url: "s3://bucket/key/path.png"
+        expires_seconds: URL validity in seconds (default 24h)
+
+    Returns:
+        A fresh https URL with X-Amz-Signature, or "" on failure.
+    """
+    import datetime as _dt
+    import hashlib
+    import hmac
+    import os
+    import urllib.parse
+
+    if not s3_url.startswith("s3://"):
+        return ""
+    try:
+        rest = s3_url[len("s3://"):]
+        bucket, _, key = rest.partition("/")
+    except Exception:
+        return ""
+    if not bucket or not key:
+        return ""
+
+    access_key = os.environ.get("MINIO_ACCESS_KEY", "").strip()
+    secret_key = os.environ.get("MINIO_SECRET_KEY", "").strip()
+    host = os.environ.get("MINIO_PUBLIC_HOST", "s3.baisoln.com").strip()
+    region = os.environ.get("MINIO_REGION", "us-east-1").strip()
+    if not (access_key and secret_key and host):
+        return ""
+
+    service = "s3"
+    now = _dt.datetime.utcnow()
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    datestamp = now.strftime("%Y%m%d")
+    canonical_uri = "/" + bucket + "/" + urllib.parse.quote(key, safe="/")
+    credential_scope = f"{datestamp}/{region}/{service}/aws4_request"
+    qp = {
+        "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+        "X-Amz-Credential": f"{access_key}/{credential_scope}",
+        "X-Amz-Date": amz_date,
+        "X-Amz-Expires": str(expires_seconds),
+        "X-Amz-SignedHeaders": "host",
+    }
+    canonical_query = "&".join(
+        f"{urllib.parse.quote(k, safe='')}={urllib.parse.quote(v, safe='')}"
+        for k, v in sorted(qp.items())
+    )
+    canonical_headers = f"host:{host}\n"
+    signed_headers = "host"
+    payload_hash = "UNSIGNED-PAYLOAD"
+    canonical_request = (
+        f"GET\n{canonical_uri}\n{canonical_query}\n"
+        f"{canonical_headers}\n{signed_headers}\n{payload_hash}"
+    )
+    algorithm = "AWS4-HMAC-SHA256"
+    string_to_sign = (
+        f"{algorithm}\n{amz_date}\n{credential_scope}\n"
+        f"{hashlib.sha256(canonical_request.encode()).hexdigest()}"
+    )
+    k_date = hmac.new(("AWS4" + secret_key).encode("utf-8"), datestamp.encode("utf-8"), hashlib.sha256).digest()
+    k_region = hmac.new(k_date, region.encode("utf-8"), hashlib.sha256).digest()
+    k_service = hmac.new(k_region, service.encode("utf-8"), hashlib.sha256).digest()
+    k_signing = hmac.new(k_service, b"aws4_request", hashlib.sha256).digest()
+    signature = hmac.new(k_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"https://{host}{canonical_uri}?{canonical_query}&X-Amz-Signature={signature}"
 
 
 # ── Capture: periodic frame storage ──────────────────────────────
@@ -529,25 +1274,140 @@ async def entrypoint(ctx: JobContext):
     """LiveKit agent entrypoint — two-brain architecture."""
     room_name = ctx.job.room.name if ctx.job and ctx.job.room else "unknown"
     try:
-        user_label = ctx.token_claims().identity or room_name
-    except Exception:
+        claims = ctx.token_claims()
+        user_label = claims.identity or room_name
+        # LiveKit SDK exposes 'name' on claims for the participant display name
+        user_display_name = getattr(claims, 'name', '') or getattr(claims, 'metadata', '') or ""
+        logger.info("Session user: identity=%s, display_name=%s", user_label, user_display_name)
+    except Exception as e:
+        logger.info("Could not read token claims: %s", e)
         user_label = room_name
+        user_display_name = ""
 
     # ── Langfuse OTEL tracing (always on) ────────────────────
     trace_provider = setup_langfuse_otel(session_id=room_name)
 
     # ── Build session with FallbackAdapters ──────────────────
+    # turn_detection lives on the AgentSession (NOT on Agent.__init__).
+    #
+    # preemptive_generation=True — re-enabled now that the primary LLM
+    # is OpenRouter (claude-sonnet-4.6) instead of gpu-ai. The original
+    # silent hang was specific to gpu-ai's streaming endpoint; OpenRouter
+    # streams correctly. Saves ~1s per turn by starting the LLM call
+    # during STT instead of after EOU.
+    #
+    # min_endpointing_delay=0.4 — drop from default ~1.0 so the framework
+    # decides 'user is done speaking' faster. Saves ~0.6s per turn at the
+    # cost of slightly more interruption mid-thought.
     session = AgentSession(
         stt=create_stt_with_fallback(),
         llm=create_llm_with_fallback(),
         tts=create_tts_with_fallback(),
         vad=silero.VAD.load(),
+        turn_detection=MultilingualModel(),
+        preemptive_generation=True,
+        min_endpointing_delay=0.8,
     )
 
     # ── Metrics logging ──────────────────────────────────────
     @session.on("metrics_collected")
     def _on_metrics(ev: MetricsCollectedEvent):
         metrics.log_metrics(ev.metrics)
+
+    # ── Pipeline visibility ──────────────────────────────────
+    # Log committed user turns so we can tell from logs whether STT events
+    # are actually reaching the LLM. If you see "[chain] user committed"
+    # but no "LLM metrics" line shortly after, the LLM call is the problem;
+    # if you don't see it at all, the turn-commit path is broken.
+    @session.on("user_input_transcribed")
+    def _on_user_transcribed(ev):
+        try:
+            if getattr(ev, "is_final", False):
+                logger.info("[chain] user committed: %s",
+                            (getattr(ev, "transcript", "") or "")[:200])
+        except Exception:
+            pass
+
+    # ── Create agent early so handlers can reference it ───────
+    agent = MainAgent()
+    _primary_turn_count = 0  # Track turns to skip greeting forward
+
+    # ── Strict chain-of-command: Primary AI → Assistant ───────
+    #
+    # The architecture is: the primary voice agent is a Primary AI whose
+    # ONLY job is to listen, decide, and speak. The Letta secondary agent
+    # is the Assistant — the only entity that does knowledge work and the
+    # only entity allowed to publish to the screen (chat data channel).
+    #
+    # We enforce this by forwarding ONLY the primary AI's spoken turn to
+    # Letta (not the raw user STT). That way:
+    #   - Letta reacts to what the primary AI decided to teach, not raw input
+    #   - The chain of command is unambiguous: user → primary AI → letta → chat
+    #   - Letta is never racing the primary AI on user turns
+    #
+    # Also tracks recent turns for conversation state (Phase 5).
+    # Forwarded as a fire-and-forget background task so the voice loop
+    # never blocks on Letta latency.
+    # Visual-intent keywords that should trigger forwarding of user turns to
+    # Letta so it can call generate_image. The primary AI's paraphrase often
+    # softens or omits the explicit "show me" request, so we forward the raw
+    # user turn as an additional signal when these phrases appear.
+    VISUAL_INTENT_KEYWORDS = (
+        "show me", "show us", "show ", "see ", "look at", "diagram", "picture",
+        "image", "illustration", "drawing", "visualize", "visualise", "draw",
+        "sketch", "display", "on screen", "can i see", "what does", "look like",
+        "graph", "chart", "plot", "figure",
+    )
+
+    @session.on("conversation_item_added")
+    def _on_conversation_item(ev: ConversationItemAddedEvent):
+        try:
+            msg = ev.item
+            role = getattr(msg, "role", None)
+            text = getattr(msg, "text_content", None)
+            if not text or not text.strip():
+                return
+
+            # Track all turns (primary AI + user) for conversation context
+            label = "Primary AI" if role == "assistant" else "User"
+            agent._recent_turns.append(f"[{label}]: {text.strip()[:300]}")
+
+            if role != "assistant":
+                # USER turn: normally not forwarded (the chain of command flows
+                # user → primary AI → Letta). But when the user explicitly asks
+                # for a visual, we forward a marker turn so Letta has the raw
+                # intent word-for-word and can call generate_image deterministically.
+                lowered = text.strip().lower()
+                if any(kw in lowered for kw in VISUAL_INTENT_KEYWORDS):
+                    logger.info(
+                        "[chain] user visual-intent detected → forwarding to assistant (chars=%d)",
+                        len(text),
+                    )
+                    asyncio.create_task(
+                        forward_to_assistant_async("user", text, ctx.room, session),
+                        name="letta-forward-user-visual",
+                    )
+                return
+
+            nonlocal _primary_turn_count
+            _primary_turn_count += 1
+
+            # Skip forwarding the first primary AI turn (greeting) to Letta.
+            if _primary_turn_count <= 1:
+                logger.info("[chain] primary AI greeting (turn %d) — not forwarding to assistant",
+                            _primary_turn_count)
+                return
+
+            logger.info(
+                "[chain] primary AI spoke → forwarding to assistant (chars=%d)",
+                len(text),
+            )
+            asyncio.create_task(
+                forward_to_assistant_async("assistant", text, ctx.room, session),
+                name="letta-forward-primary",
+            )
+        except Exception as e:
+            logger.warning("Failed to schedule proactive forward: %s", e)
 
     # ── Auto-subscribe mode ──────────────────────────────────
     need_video = (
@@ -559,53 +1419,326 @@ async def entrypoint(ctx: JobContext):
 
     await ctx.connect(auto_subscribe=auto_sub)
 
-    # ── Per-user memory isolation ────────────────────────────
-    # Swap the Letta agent's "human" block to this user's block
-    # so each user gets isolated memory within the shared agent.
-    await swap_user_memory_block(user_label)
+    # ── Interview mode: extract client_id from participant metadata ──
+    client_id = ""
+    if settings.interview_mode:
+        # Wait for user participant to appear so we can read metadata
+        for attempt in range(10):  # 5 seconds
+            for p in ctx.room.remote_participants.values():
+                if not p.identity.startswith("agent-") and not p.identity.startswith("bithuman"):
+                    p_metadata = getattr(p, 'metadata', '') or ''
+                    if p_metadata:
+                        try:
+                            import json as _json
+                            meta = _json.loads(p_metadata)
+                            client_id = meta.get("client_id", "")
+                        except Exception:
+                            pass
+                    if client_id:
+                        logger.info("Interview mode: client_id=%s (from participant %s)", client_id, p.identity)
+                    else:
+                        logger.info("Interview mode: participant %s has no client_id (metadata=%s)", p.identity, p_metadata[:80])
+                    break
+            if client_id:
+                break
+            await asyncio.sleep(0.5)
+
+        if not client_id:
+            logger.info("Interview mode: no client_id found — using default memory key")
+
+    # ── Extract user email from participant metadata (Keycloak) ──
+    user_email = ""
+    for p in ctx.room.remote_participants.values():
+        if not p.identity.startswith("agent-") and not p.identity.startswith("bithuman"):
+            p_metadata = getattr(p, 'metadata', '') or ''
+            if p_metadata:
+                try:
+                    meta = _json.loads(p_metadata)
+                    user_email = meta.get("email", "") or ""
+                except Exception:
+                    pass
+            break
+    if user_email:
+        logger.info("User email from metadata: %s", user_email)
+    # Set on agent instance so the shutdown handler can use it
+    if agent:
+        agent._user_email = user_email or None
+
+    # ── Per-user/client memory isolation ─────────────────────
+    # In interview mode with a client_id, swap to client-specific block.
+    # Otherwise, swap to user-specific block (default behavior).
+    memory_key = client_id if client_id else user_label
+    await swap_user_memory_block(memory_key)
 
     # ── Avatar (BitHuman, configurable) ──────────────────────
+    avatar_active = False
     if settings.avatar_enabled and settings.bithuman_api_key:
         try:
             from livekit.plugins import bithuman
-            avatar = bithuman.AvatarSession(
-                api_secret=settings.bithuman_api_secret or settings.bithuman_api_key,
-            )
-            await avatar.start(session, room=ctx.room)
-            logger.info("BitHuman avatar started")
+            avatar_kwargs: dict = {
+                "api_secret": settings.bithuman_api_secret or settings.bithuman_api_key,
+            }
+            if settings.bithuman_api_url:
+                avatar_kwargs["api_url"] = settings.bithuman_api_url
+            if settings.bithuman_avatar_image:
+                # Download avatar image to a local file (BitHuman self-hosted may not
+                # be able to fetch presigned URLs due to network/hairpin NAT issues)
+                try:
+                    import tempfile
+                    import urllib.request
+                    avatar_tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+                    urllib.request.urlretrieve(settings.bithuman_avatar_image, avatar_tmp.name)
+                    from PIL import Image
+                    avatar_kwargs["avatar_image"] = Image.open(avatar_tmp.name).convert("RGB")
+                    logger.info("Downloaded avatar image to %s", avatar_tmp.name)
+                except Exception as dl_err:
+                    logger.warning("Failed to download avatar image, passing URL: %s", dl_err)
+                    avatar_kwargs["avatar_image"] = settings.bithuman_avatar_image
+            # Check BitHuman health before starting
+            health_ok = False
+            try:
+                import urllib.request
+                health_url = (settings.bithuman_api_url or "").replace("/launch", "/ready")
+                with urllib.request.urlopen(health_url, timeout=5) as r:
+                    import json as _json
+                    health = _json.loads(r.read())
+                    health_ok = health.get("status") == "ready" and health.get("model_ready", False)
+                    logger.info("BitHuman health: %s", health)
+            except Exception as he:
+                logger.warning("BitHuman health check failed: %s", he)
+
+            if health_ok:
+                # Temporarily set LIVEKIT_URL to external URL for BitHuman
+                # (BitHuman is outside K8s and can't resolve internal service names)
+                original_lk_url = os.environ.get("LIVEKIT_URL", "")
+                if settings.bithuman_livekit_url:
+                    os.environ["LIVEKIT_URL"] = settings.bithuman_livekit_url
+                    logger.info("Set LIVEKIT_URL to external for BitHuman: %s", settings.bithuman_livekit_url)
+
+                avatar = bithuman.AvatarSession(**avatar_kwargs)
+                await avatar.start(session, room=ctx.room)
+
+                # Restore original LIVEKIT_URL
+                if original_lk_url:
+                    os.environ["LIVEKIT_URL"] = original_lk_url
+                # Wait for the BitHuman avatar worker to actually join the room
+                avatar_joined = False
+                for _ in range(30):  # 15 seconds
+                    for p in ctx.room.remote_participants.values():
+                        if "bithuman" in p.identity.lower() or "avatar" in p.identity.lower():
+                            avatar_joined = True
+                            break
+                    if avatar_joined:
+                        break
+                    await asyncio.sleep(0.5)
+
+                if avatar_joined:
+                    avatar_active = True
+                    logger.info("BitHuman avatar joined room successfully")
+                else:
+                    # Avatar didn't join — clean up to avoid broken audio pipeline
+                    logger.warning("BitHuman avatar worker did not join room within 15s — disabling avatar")
+                    try:
+                        await avatar.close()
+                    except Exception:
+                        pass
+            else:
+                logger.warning("BitHuman not ready — skipping avatar, audio mode ON")
         except ImportError:
-            logger.warning("livekit-plugins-bithuman not installed — avatar disabled")
+            logger.warning("livekit-plugins-bithuman not installed — avatar disabled, audio fallback ON")
         except Exception as e:
-            logger.warning("Avatar start failed: %s", e)
+            logger.warning("Avatar start failed: %s — audio fallback ON", e)
 
     # ── Room options ─────────────────────────────────────────
     room_opts = room_io.RoomOptions(
         # Vision: feed camera/screen frames to the primary LLM (e.g., Gemma 4 E4B)
         video_input=settings.vision_enabled,
-        # If avatar is active, it handles audio output
-        audio_output=not settings.avatar_enabled,
+        # Only disable audio output if avatar actually started successfully.
+        # If avatar failed, we MUST keep audio output enabled or the agent is mute.
+        audio_output=not avatar_active,
     )
 
     await session.start(
-        agent=MainAgent(),
+        agent=agent,
         room=ctx.room,
         room_options=room_opts,
     )
 
+    # ── Greeting — primary AI speaks first ────────────────────
+    # Try to get user's display name from room participants (more reliable than claims)
+    # Wait briefly for user to join the room
+    if not user_display_name:
+        for _ in range(5):  # Wait up to 2.5s
+            for p in ctx.room.remote_participants.values():
+                if p.name and not p.identity.startswith("agent-"):
+                    user_display_name = p.name
+                    logger.info("Got user name from room participant: %s", user_display_name)
+                    break
+            if user_display_name:
+                break
+            await asyncio.sleep(0.5)
+
+    is_returning_user = False
+    user_name = user_display_name or ""
+    user_context = ""
+    prior_session_summary = ""
+
+    try:
+        if LETTA_AGENT_ID:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as hc:
+                resp = await hc.get(
+                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}",
+                    headers=LETTA_HEADERS,
+                )
+                if resp.status_code < 300:
+                    blocks = resp.json().get("memory", {}).get("blocks", [])
+                    human_block = next((b for b in blocks if b.get("label") == "human"), None)
+                    if human_block:
+                        block_text = human_block.get("value", "")
+                        if "Preferences:" in block_text and "(none yet)" not in block_text:
+                            is_returning_user = True
+                            user_context = block_text
+
+                # Interview mode: search archival for prior session summary
+                if client_id:
+                    search_resp = await hc.post(
+                        f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/archival-memory/search",
+                        headers=LETTA_HEADERS,
+                        json={"query": f"client:{client_id}", "count": 5},
+                    )
+                    if search_resp.status_code < 300:
+                        passages = search_resp.json()
+                        # Find the most recent structured summary, or fall back to quick summary
+                        for p in passages:
+                            text = p.get("text", "")
+                            if f"[source:client:{client_id}:structured]" in text:
+                                prior_session_summary = text
+                                break
+                        if not prior_session_summary:
+                            for p in passages:
+                                text = p.get("text", "")
+                                if f"[source:client:{client_id}]" in text:
+                                    prior_session_summary = text
+                                    break
+                        if prior_session_summary:
+                            is_returning_user = True
+                            logger.info("Found prior session summary for client %s (%d chars)", client_id, len(prior_session_summary))
+    except Exception as e:
+        logger.info("Could not read user/client context for greeting (non-fatal): %s", e)
+
+    # Inject context into the primary AI's chat context
+    if user_context or user_name or prior_session_summary:
+        context_msg = "[SYSTEM] User session context:\n"
+        if user_name:
+            context_msg += f"- User's name: {user_name}\n"
+        if client_id:
+            context_msg += f"- Client reference: {client_id}\n"
+        if user_context:
+            context_msg += f"- User memory from previous sessions:\n{user_context}\n"
+        if prior_session_summary:
+            context_msg += (
+                f"\n[CONTINUING SESSION] This is a follow-up session for client {client_id}.\n"
+                f"Previous session summary:\n{prior_session_summary}\n"
+                f"Resume naturally from where you left off. Do not repeat questions already covered.\n"
+            )
+        context_msg += "Use this context naturally. Do NOT ask for information you already have."
+        try:
+            session.chat_ctx.add_message(role="system", content=context_msg)
+            logger.info("[chain] injected user context into primary AI (%d chars)", len(context_msg))
+        except Exception as e:
+            logger.info("Could not inject user context (non-fatal): %s", e)
+
+    if client_id and prior_session_summary:
+        greeting = f"Welcome back! Let's continue where we left off with {client_id}."
+    elif client_id:
+        greeting = f"Hello{' ' + user_name if user_name else ''}! Starting a new session for client {client_id}. How can I help?"
+    elif is_returning_user and user_name:
+        greeting = f"Welcome back, {user_name}! Great to see you again. What would you like to explore today?"
+    elif user_name:
+        greeting = f"Hello {user_name}! Welcome. How can I help you today?"
+    else:
+        greeting = "Hello! Welcome. How can I help you today?"
+
+    try:
+        await session.say(greeting, allow_interruptions=True)
+        logger.info("[chain] primary AI greeting: %s", greeting[:60])
+    except Exception as e:
+        logger.warning("Greeting failed (non-fatal): %s", e)
+
+    # ── Warm up LLM and TTS in parallel with the user's first words.
+    # First-turn latency is dominated by cold paths: OpenRouter takes ~4s
+    # TTFT on the first request, gpu-ai TTS pages the model into VRAM on
+    # the first synthesize. By kicking off a tiny throwaway request to
+    # both at session start (before the user speaks), we eat the cold
+    # cost during the otherwise-silent on_enter window.
+    async def _warmup_llm() -> None:
+        try:
+            from livekit.agents import llm as _llm
+            # generate one token via a tiny user message — discard result
+            ctx_msgs = _llm.ChatContext()
+            ctx_msgs.add_message(role="user", content="hi")
+            stream = session.llm.chat(chat_ctx=ctx_msgs)
+            async for _ in stream:
+                pass
+            logger.info("[warmup] LLM ready")
+        except Exception as e:
+            logger.info("[warmup] LLM warmup skipped: %s", e)
+
+    async def _warmup_tts() -> None:
+        try:
+            stream = session.tts.synthesize("hi")
+            async for _ in stream:
+                pass
+            logger.info("[warmup] TTS ready")
+        except Exception as e:
+            logger.info("[warmup] TTS warmup skipped: %s", e)
+
+    asyncio.create_task(_warmup_llm(), name="warmup-llm")
+    asyncio.create_task(_warmup_tts(), name="warmup-tts")
+
     if settings.vision_enabled:
         logger.info("Vision enabled — primary LLM receives video frames from user")
 
-    # ── Background audio (configurable) ──────────────────────
+    # ── Background audio ────────────────────────────────────
     if settings.background_audio_enabled:
         try:
             from livekit.agents import BackgroundAudioPlayer, AudioConfig, BuiltinAudioClip
-            bg_audio = BackgroundAudioPlayer(
-                thinking_sound=[
-                    AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING, volume=0.5),
-                ],
-            )
+
+            bg_kwargs: dict = {}
+
+            # Ambient sound: download custom URL to temp file, or None
+            if settings.ambient_audio_url:
+                try:
+                    import tempfile
+                    import urllib.request
+                    ambient_tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+                    urllib.request.urlretrieve(settings.ambient_audio_url, ambient_tmp.name)
+                    bg_kwargs["ambient_sound"] = AudioConfig(ambient_tmp.name, volume=0.1)
+                    logger.info("Downloaded custom ambient audio to %s (volume=0.3)", ambient_tmp.name)
+                except Exception as dl_err:
+                    logger.warning("Failed to download ambient audio: %s", dl_err)
+
+            # Thinking sound: download custom URL to temp file, or built-in keyboard typing
+            if settings.thinking_audio_url:
+                try:
+                    import tempfile
+                    import urllib.request
+                    thinking_tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+                    urllib.request.urlretrieve(settings.thinking_audio_url, thinking_tmp.name)
+                    bg_kwargs["thinking_sound"] = thinking_tmp.name
+                    logger.info("Downloaded custom thinking audio to %s", thinking_tmp.name)
+                except Exception as dl_err:
+                    logger.warning("Failed to download thinking audio, using builtin: %s", dl_err)
+            else:
+                bg_kwargs["thinking_sound"] = [
+                    AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING, volume=0.4),
+                ]
+
+            bg_audio = BackgroundAudioPlayer(**bg_kwargs)
             await bg_audio.start(room=ctx.room, agent_session=session)
-            logger.info("Background audio enabled (thinking sounds)")
+            logger.info("Background audio started (ambient=%s, thinking=%s)",
+                         "custom" if settings.ambient_audio_url else "none",
+                         "custom" if settings.thinking_audio_url else "builtin")
         except Exception as e:
             logger.warning("Background audio failed: %s", e)
 
@@ -618,6 +1751,160 @@ async def entrypoint(ctx: JobContext):
     # ── Shutdown cleanup ─────────────────────────────────────
     async def _shutdown(_reason: str = ""):
         await capture_mgr.stop()
+
+        # Interview mode: persist conversation summary on disconnect
+        if client_id and settings.auto_summarize_on_disconnect and LETTA_AGENT_ID:
+            try:
+                # Collect conversation from primary LLM context
+                messages = []
+                try:
+                    for msg in session.chat_ctx.items:
+                        role = getattr(msg, 'role', 'unknown')
+                        content = getattr(msg, 'content', '')
+                        if content and role in ('user', 'assistant'):
+                            messages.append(f"{role}: {content}")
+                except Exception:
+                    pass
+
+                if messages:
+                    conversation_text = "\n".join(messages[-30:])  # last 30 turns max
+
+                    # Layer 1: Quick summary via primary LLM
+                    try:
+                        from livekit.agents import llm as _llm
+                        summary_ctx = _llm.ChatContext()
+                        summary_ctx.add_message(role="system", content="Summarize this conversation in 2-3 sentences. Focus on: what was discussed, key decisions, and what remains pending.")
+                        summary_ctx.add_message(role="user", content=conversation_text)
+                        summary_stream = session.llm.chat(chat_ctx=summary_ctx)
+                        quick_summary_parts = []
+                        async for chunk in summary_stream:
+                            if hasattr(chunk, 'content') and chunk.content:
+                                quick_summary_parts.append(chunk.content)
+                            elif hasattr(chunk, 'choices'):
+                                for c in chunk.choices:
+                                    if hasattr(c, 'delta') and hasattr(c.delta, 'content') and c.delta.content:
+                                        quick_summary_parts.append(c.delta.content)
+                        quick_summary = "".join(quick_summary_parts)
+
+                        if quick_summary:
+                            # Store in Letta archival
+                            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as hc:
+                                await hc.post(
+                                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/archival-memory",
+                                    headers=LETTA_HEADERS,
+                                    json={"text": f"[source:client:{client_id}] {quick_summary}"},
+                                )
+                            logger.info("[interview] Quick summary stored for client %s (%d chars)", client_id, len(quick_summary))
+                    except Exception as e:
+                        logger.warning("[interview] Quick summary failed: %s", e)
+
+                    # Layer 2: Structured summary via Letta (async, fire-and-forget)
+                    async def _structured_summary():
+                        try:
+                            structured_prompt = (
+                                f"Analyze this interview conversation for client {client_id}. "
+                                f"Provide a structured summary with these sections:\n"
+                                f"1. Facts gathered (name, income, employment, etc.)\n"
+                                f"2. Documents requested or provided\n"
+                                f"3. Decisions made\n"
+                                f"4. Pending items / next steps\n\n"
+                                f"Conversation:\n{conversation_text}"
+                            )
+                            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as hc:
+                                resp = await hc.post(
+                                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages",
+                                    headers=LETTA_HEADERS,
+                                    json={"role": "user", "content": structured_prompt},
+                                )
+                                if resp.status_code < 300:
+                                    # Extract assistant reply
+                                    result_messages = resp.json().get("messages", [])
+                                    assistant_text = ""
+                                    for m in result_messages:
+                                        if m.get("role") == "assistant" and m.get("content"):
+                                            assistant_text = m["content"]
+                                    if not assistant_text:
+                                        # Try message_type format
+                                        for m in result_messages:
+                                            if m.get("message_type") == "assistant_message":
+                                                assistant_text = m.get("content", "")
+                                    if assistant_text:
+                                        await hc.post(
+                                            f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/archival-memory",
+                                            headers=LETTA_HEADERS,
+                                            json={"text": f"[source:client:{client_id}:structured] {assistant_text}"},
+                                        )
+                                        logger.info("[interview] Structured summary stored for client %s", client_id)
+                        except Exception as e:
+                            logger.warning("[interview] Structured summary failed (non-fatal): %s", e)
+
+                    asyncio.create_task(_structured_summary(), name="structured-summary")
+
+            except Exception as e:
+                logger.warning("[interview] Summary persistence failed: %s", e)
+
+        # ── Session summary email ──────────────────────────────
+        # If the primary agent collected a user email, generate a session
+        # summary and email it via the platform API.
+        user_email = getattr(agent, '_user_email', None) if agent else None
+        platform_api = os.environ.get("PLATFORM_API_URL", "")
+        if user_email and platform_api and LETTA_AGENT_ID:
+            try:
+                # Collect conversation turns for the summary
+                messages = []
+                try:
+                    for msg in session.chat_ctx.items:
+                        role = getattr(msg, 'role', 'unknown')
+                        content = getattr(msg, 'content', '')
+                        if content and role in ('user', 'assistant'):
+                            messages.append(f"{role}: {content}")
+                except Exception:
+                    pass
+
+                if messages:
+                    conversation_text = "\n".join(messages[-50:])
+
+                    # Ask Letta to produce a structured session summary
+                    summary_prompt = (
+                        "[System: The session is ending. Generate a comprehensive session summary "
+                        "for email delivery. Structure it as:\n"
+                        "# Session Summary\n"
+                        "## Topics Covered\n"
+                        "(list each topic as a section with bullet points)\n"
+                        "## Key Takeaways\n"
+                        "(3-5 key points the user should remember)\n\n"
+                        f"Session conversation:\n{conversation_text}"
+                    )
+                    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as hc:
+                        resp = await hc.post(
+                            f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages",
+                            headers=LETTA_HEADERS,
+                            json={"messages": [{"role": "user", "content": summary_prompt}]},
+                        )
+                        if resp.status_code < 300:
+                            parsed = _parse_letta_response(resp.json())
+                            summary_md = parsed.get("summary", "")
+                            if summary_md and len(summary_md) > 50:
+                                # Send to platform API for email delivery
+                                await hc.post(
+                                    f"{platform_api}/api/session-summary/send",
+                                    json={
+                                        "email": user_email,
+                                        "sessionTitle": f"{settings.agent_name} - Session Summary",
+                                        "summaryMarkdown": summary_md,
+                                        "agentName": settings.agent_name,
+                                        "userName": user_email.split("@")[0],
+                                    },
+                                    timeout=15.0,
+                                )
+                                logger.info("[session] Summary emailed to %s", user_email)
+                            else:
+                                logger.info("[session] Letta summary too short, skipping email")
+                        else:
+                            logger.warning("[session] Letta summary request failed: %s", resp.status_code)
+            except Exception as e:
+                logger.warning("[session] Session summary email failed (non-fatal): %s", e)
+
         if trace_provider and hasattr(trace_provider, 'force_flush'):
             trace_provider.force_flush()
         flush_langfuse()

@@ -23,6 +23,20 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
+  # Service + Ingress (agent player UI per app namespace)
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  # In-cluster health checks for player_ui verification (API server proxy)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["services/proxy", "pods/proxy"]
+    verbs: ["get", "create"]
   # ExternalSecrets management
   - apiGroups: ["external-secrets.io"]
     resources: ["externalsecrets"]

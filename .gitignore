@@ -7,3 +7,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 node_modules
+
+# Local Letta / IDE session artifacts
+.letta/
+agent-template/.letta/
