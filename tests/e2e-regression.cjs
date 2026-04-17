@@ -649,7 +649,7 @@ async function runPlayerUiTest() {
       if (sessionStarted) {
         // ── 5. SEND CHAT MESSAGE ──
         section("5. SEND CHAT MESSAGE");
-        const chatInput = page.locator('input[placeholder="Type a message..."]');
+        const chatInput = page.locator('input[placeholder="Ask a question..."]');
         if (await chatInput.count() > 0) {
           await chatInput.fill("Hello, this is a test message.");
           await chatInput.press("Enter");

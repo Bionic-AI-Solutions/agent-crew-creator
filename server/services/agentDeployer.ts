@@ -41,6 +41,7 @@ function getToolPipRequirements(toolName: string): { name: string }[] {
     code_interpreter: [],
     generate_pdf: [{ name: "reportlab" }, { name: "minio" }],
     generate_image: [],
+    generate_persona_image: [],
     web_search: [],
     run_crew: [{ name: "requests" }],
   };
@@ -343,6 +344,10 @@ export async function deployAgent(
         toolEnv.LETTA_AGENT_ID = agent.lettaAgentId;
         // Search API for web_search tool — use internal K8s service (no API key needed)
         toolEnv.SEARCH_API_URL = "http://search-mcp-service.mcp.svc.cluster.local:8000/search";
+        // Platform internal API for generate_persona_image tool (avatar update)
+        toolEnv.PLATFORM_API_URL = process.env.PLATFORM_INTERNAL_URL || "http://bionic-platform-server.bionic-platform.svc.cluster.local:3000";
+        toolEnv.AGENT_INTERNAL_TOKEN = sharedInfra.agent_internal_token || process.env.AGENT_INTERNAL_TOKEN || "";
+        toolEnv.AGENT_CONFIG_ID = String(agent.id);
 
         if (Object.keys(toolEnv).length > 0) {
           await lettaAdmin.updateAgent(agent.lettaAgentId, {

@@ -46,4 +46,10 @@ export const BUILTIN_TOOLS: BuiltinToolDef[] = [
     description: "Generate a formatted PDF document from structured content, store in MinIO, return download URL",
     lettaToolName: "generate_pdf",
   },
+  {
+    id: "generate_persona_image",
+    name: "Generate Persona Image",
+    description: "Generate a photorealistic avatar image from persona parameters (profession, appearance, environment) and set it as the agent's BitHuman avatar",
+    lettaToolName: "generate_persona_image",
+  },
 ];

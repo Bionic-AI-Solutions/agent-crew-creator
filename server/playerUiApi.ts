@@ -81,10 +81,14 @@ export function registerPlayerUiRoutes(app: Express): void {
   });
 
   // ── Internal auth middleware for agent-pod endpoints ─────────
+  // Accepts either PLAYER_UI_INTERNAL_TOKEN or AGENT_INTERNAL_TOKEN
+  // so both player-ui pods and Letta tool sandbox calls can authenticate.
   const internalAuth = (req: Request, res: Response, next: NextFunction) => {
-    const internalToken = process.env.PLAYER_UI_INTERNAL_TOKEN;
-    if (internalToken) {
-      if (req.header("X-Internal-Token") !== internalToken) {
+    const playerToken = process.env.PLAYER_UI_INTERNAL_TOKEN;
+    const agentToken = process.env.AGENT_INTERNAL_TOKEN;
+    const got = req.header("X-Internal-Token") || "";
+    if (playerToken || agentToken) {
+      if (got !== playerToken && got !== agentToken) {
         res.status(401).json({ error: "unauthorized" });
         return;
       }
@@ -153,6 +157,37 @@ export function registerPlayerUiRoutes(app: Express): void {
       }
       res.json({ success: true });
     } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ── POST /api/internal/agent/:agentConfigId/avatar ─────────
+  // Called by the generate_persona_image Letta tool to update the
+  // agent's avatar image after generating a new persona portrait.
+  app.post("/api/internal/agent/:agentConfigId/avatar", internalAuth, async (req, res) => {
+    const db = await getDb();
+    if (!db) { res.status(500).json({ error: "DB unavailable" }); return; }
+    try {
+      const agentConfigId = parseInt(req.params.agentConfigId, 10);
+      const { minioPath } = req.body as { minioPath: string };
+      if (!minioPath) { res.status(400).json({ error: "minioPath required" }); return; }
+
+      const [agent] = await db
+        .select({ id: agentConfigs.id })
+        .from(agentConfigs)
+        .where(eq(agentConfigs.id, agentConfigId))
+        .limit(1);
+      if (!agent) { res.status(404).json({ error: "agent not found" }); return; }
+
+      await db
+        .update(agentConfigs)
+        .set({ avatarImageUrl: minioPath, updatedAt: new Date() })
+        .where(eq(agentConfigs.id, agentConfigId));
+
+      log.info("Avatar updated via internal API", { agentConfigId, minioPath });
+      res.json({ success: true });
+    } catch (err) {
+      log.error("Failed to update avatar", { error: String(err) });
       res.status(500).json({ error: String(err) });
     }
   });
