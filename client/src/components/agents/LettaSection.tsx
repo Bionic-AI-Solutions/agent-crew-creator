@@ -80,7 +80,7 @@ export default function LettaSection(props: Props) {
       <McpServerSelector agentId={props.agentId} appId={props.appId} />
 
       {/* Crews */}
-      <CrewSelector agentId={props.agentId} />
+      <CrewSelector agentId={props.agentId} appId={props.appId} />
     </div>
   );
 }

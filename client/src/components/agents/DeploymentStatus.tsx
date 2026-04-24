@@ -49,6 +49,7 @@ export default function DeploymentStatus({ agentId, agent }: Props) {
       toast.success("Deployment started");
       utils.agentsCrud.getById.invalidate({ id: agentId });
       utils.agentsCrud.getDeploymentStatus.invalidate({ id: agentId });
+      utils.agentsCrud.list.invalidate();
     },
     onError: (err) => toast.error(err.message),
   });
@@ -57,6 +58,8 @@ export default function DeploymentStatus({ agentId, agent }: Props) {
     onSuccess: () => {
       toast.success("Agent stopped");
       utils.agentsCrud.getById.invalidate({ id: agentId });
+      utils.agentsCrud.getDeploymentStatus.invalidate({ id: agentId });
+      utils.agentsCrud.list.invalidate();
     },
     onError: (err) => toast.error(err.message),
   });

@@ -38,6 +38,9 @@ export interface AgentConfigFull {
   ttsVoice: string | null;
   systemPrompt: string | null;
   avatarEnabled: boolean;
+  avatarProvider: string | null;
+  avatarReferenceImage: string | null;
+  avatarName: string | null;
   captureMode: string;
   captureInterval: number | null;
 

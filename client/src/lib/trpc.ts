@@ -9,4 +9,4 @@ import { createTRPCReact } from "@trpc/react-query";
  *
  * Type safety is maintained via tsconfig paths in the IDE.
  */
-export const trpc = createTRPCReact<any>();
+export const trpc = createTRPCReact<any>() as any;

@@ -33,7 +33,13 @@ export default function AppManagement({ slug, onDelete }: Props) {
   );
   const { data: agents } = trpc.agentsCrud.list.useQuery(
     { appId: app?.id || 0 },
-    { enabled: !!app?.id },
+    {
+      enabled: !!app?.id,
+      refetchInterval: (query) => {
+        const rows = (query.state.data as any[]) || [];
+        return rows.some((agent) => agent.deploymentStatus === "deploying") ? 3000 : false;
+      },
+    },
   );
 
   const deleteMutation = trpc.appsCrud.delete.useMutation({

@@ -27,6 +27,10 @@ export default function AgentConfigForm({ agentId }: Props) {
   const [ttsProvider, setTtsProvider] = useState("");
   const [ttsVoice, setTtsVoice] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [avatarEnabled, setAvatarEnabled] = useState(false);
+  const [avatarProvider, setAvatarProvider] = useState("flashhead");
+  const [avatarReferenceImage, setAvatarReferenceImage] = useState("");
+  const [avatarName, setAvatarName] = useState("");
   const [lettaAgentName, setLettaAgentName] = useState("");
   const [lettaLlmModel, setLettaLlmModel] = useState("");
   const [lettaSystemPrompt, setLettaSystemPrompt] = useState("");
@@ -41,6 +45,10 @@ export default function AgentConfigForm({ agentId }: Props) {
       setTtsProvider(agent.ttsProvider);
       setTtsVoice(agent.ttsVoice || "");
       setSystemPrompt(agent.systemPrompt || "");
+      setAvatarEnabled(Boolean(agent.avatarEnabled));
+      setAvatarProvider(agent.avatarProvider || "flashhead");
+      setAvatarReferenceImage(agent.avatarReferenceImage || "");
+      setAvatarName(agent.avatarName || "");
       setLettaAgentName(agent.lettaAgentName || "");
       setLettaLlmModel(agent.lettaLlmModel || "");
       setLettaSystemPrompt(agent.lettaSystemPrompt || "");
@@ -59,6 +67,8 @@ export default function AgentConfigForm({ agentId }: Props) {
     onSuccess: () => {
       toast.success("Deployment started");
       utils.agentsCrud.getById.invalidate({ id: agentId });
+      utils.agentsCrud.getDeploymentStatus.invalidate({ id: agentId });
+      utils.agentsCrud.list.invalidate();
     },
     onError: (err) => toast.error(err.message),
   });
@@ -82,6 +92,10 @@ export default function AgentConfigForm({ agentId }: Props) {
       ttsProvider,
       ttsVoice: ttsVoice || null,
       systemPrompt: systemPrompt || null,
+      avatarEnabled,
+      avatarProvider: avatarProvider || "flashhead",
+      avatarReferenceImage: avatarReferenceImage || null,
+      avatarName: avatarName || null,
       lettaAgentName: lettaAgentName || null,
       lettaLlmModel: lettaLlmModel || null,
       lettaSystemPrompt: lettaSystemPrompt || null,
@@ -129,6 +143,14 @@ export default function AgentConfigForm({ agentId }: Props) {
             setTtsVoice={setTtsVoice}
             systemPrompt={systemPrompt}
             setSystemPrompt={setSystemPrompt}
+            avatarEnabled={avatarEnabled}
+            setAvatarEnabled={setAvatarEnabled}
+            avatarProvider={avatarProvider}
+            setAvatarProvider={setAvatarProvider}
+            avatarReferenceImage={avatarReferenceImage}
+            setAvatarReferenceImage={setAvatarReferenceImage}
+            avatarName={avatarName}
+            setAvatarName={setAvatarName}
             agentId={agentId}
           />
         </TabsContent>

@@ -21,7 +21,13 @@ export default function AgentListPanel() {
   const { data: apps } = trpc.appsCrud.list.useQuery();
   const { data: agents, refetch: refetchAgents } = trpc.agentsCrud.list.useQuery(
     { appId: selectedAppId || 0 },
-    { enabled: !!selectedAppId },
+    {
+      enabled: !!selectedAppId,
+      refetchInterval: (query) => {
+        const rows = (query.state.data as any[]) || [];
+        return rows.some((agent) => agent.deploymentStatus === "deploying") ? 3000 : false;
+      },
+    },
   );
 
   const [showCreate, setShowCreate] = useState(false);
