@@ -19,6 +19,7 @@ import {
   TrackToggle,
   useChat,
   useConnectionState,
+  useTextStream,
   useTranscriptions,
   useVoiceAssistant,
   VideoTrack,
@@ -31,7 +32,7 @@ import { rewriteS3UrlsInHtml, toBrowserS3ProxyUrl } from "@/lib/s3ProxyUrl";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { FlaskConical, AlertCircle, Loader2, Mic, PhoneOff, Video } from "lucide-react";
+import { FlaskConical, AlertCircle, FileText, ImageIcon, Loader2, Mic, PhoneOff, Video } from "lucide-react";
 import { toast } from "sonner";
 
 interface Bundle {
@@ -44,6 +45,96 @@ interface Bundle {
   agent: { id: number; name: string; visionEnabled: boolean; avatarEnabled: boolean };
 }
 
+interface Artifact {
+  type: "artifact";
+  subtype?: "image" | "file" | "presentation" | string;
+  title?: string;
+  filename?: string;
+  image_url?: string;
+  download_url?: string;
+  url?: string;
+  content_type?: string;
+  summary?: string;
+  internal_s3_url?: string;
+}
+
+type SupportSegment =
+  | { kind: "text"; value: string; html: string }
+  | { kind: "artifact"; value: Artifact; url: string; isImage: boolean; isAccessible: boolean };
+
+interface SupportEntry {
+  id: string;
+  sender: string;
+  message: string;
+  channel: "summary" | "presentation" | "chat";
+  segments: SupportSegment[];
+}
+
+function renderMarkdown(value: string): string {
+  try {
+    const raw = marked.parse(value, { breaks: true, gfm: true }) as string;
+    return rewriteS3UrlsInHtml(raw);
+  } catch {
+    return value;
+  }
+}
+
+function normalizeArtifactUrl(artifact: Artifact): string {
+  const rawUrl = artifact.image_url || artifact.url || artifact.download_url || "";
+  return rawUrl ? toBrowserS3ProxyUrl(rawUrl) : "";
+}
+
+function isImageArtifact(artifact: Artifact, url: string): boolean {
+  return (
+    artifact.subtype === "image" ||
+    (artifact.content_type ?? "").startsWith("image/") ||
+    /\.(png|jpg|jpeg|gif|webp|svg)(\?|$)/i.test(url)
+  );
+}
+
+function isAccessibleBrowserUrl(url: string): boolean {
+  return (
+    url.startsWith("/api/s3-proxy") ||
+    ((url.startsWith("http://") || url.startsWith("https://")) && !url.includes(".svc.cluster.local"))
+  );
+}
+
+function parseSupportMessage(message: string): SupportSegment[] {
+  const segments: SupportSegment[] = [];
+  const blocks = message.split(/\n\n+/);
+
+  for (const block of blocks) {
+    const trimmed = block.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        const parsed = JSON.parse(trimmed) as Artifact;
+        if (parsed && parsed.type === "artifact") {
+          const url = normalizeArtifactUrl(parsed);
+          segments.push({
+            kind: "artifact",
+            value: parsed,
+            url,
+            isImage: isImageArtifact(parsed, url),
+            isAccessible: url ? isAccessibleBrowserUrl(url) : false,
+          });
+          continue;
+        }
+      } catch {
+        // Treat malformed or partial JSON as ordinary text.
+      }
+    }
+    segments.push({ kind: "text", value: trimmed, html: renderMarkdown(trimmed) });
+  }
+
+  return segments;
+}
+
+function getSegmentTitle(segment: SupportSegment): string {
+  if (segment.kind === "text") return "Support Notes";
+  return segment.value.title || segment.value.filename || segment.value.summary || "Support Artifact";
+}
+
 /**
  * Live transcription side panel — uses the @livekit/components-react
  * useTranscriptions() hook to surface STT events from the agent worker.
@@ -54,7 +145,7 @@ interface Bundle {
  * useTranscriptions() to display them — the VideoConference prefab on
  * its own renders chat messages but NOT transcription events.
  */
-function AgentTranscriptPanel() {
+function AgentTranscriptPanel({ supportEntries }: { supportEntries: SupportEntry[] }) {
   // Two independent streams need to be rendered side-by-side:
   //  1. Voice transcriptions (lk.transcription topic) — streaming STT text
   //     from both the user and the primary voice agent.
@@ -63,8 +154,6 @@ function AgentTranscriptPanel() {
   //     publishes via send_text(..., topic='lk.chat') from inside its
   //     delegate_to_letta tool.
   const transcriptions = useTranscriptions();
-  const { chatMessages } = useChat();
-
   return (
     <aside className="w-full border-l bg-card overflow-y-auto p-4 text-sm flex flex-col gap-4 lg:w-[26rem]">
       <section>
@@ -94,18 +183,18 @@ function AgentTranscriptPanel() {
         <div className="font-semibold text-xs uppercase text-muted-foreground tracking-wide mb-2">
           Secondary Agent Output
         </div>
-        {chatMessages.length === 0 ? (
+        {supportEntries.length === 0 ? (
           <p className="text-muted-foreground text-xs italic">
             Letta-delegated results will appear here.
           </p>
         ) : (
           <div className="space-y-3">
-            {chatMessages.map((m, i) => (
-              <div key={i} className="border-b pb-3 last:border-b-0">
+            {supportEntries.map((entry) => (
+              <div key={entry.id} className="border-b pb-3 last:border-b-0">
                 <div className="text-[10px] uppercase text-muted-foreground tracking-wide mb-1">
-                  {m.from?.identity ?? "agent"}
+                  {entry.sender}
                 </div>
-                <SecondaryAgentMessage message={m.message} />
+                <SupportMessage segments={entry.segments} />
               </div>
             ))}
           </div>
@@ -118,8 +207,39 @@ function AgentTranscriptPanel() {
 function AgentSessionSurface({ bundle, onDisconnect }: { bundle: Bundle; onDisconnect: () => void }) {
   const voice = useVoiceAssistant();
   const connectionState = useConnectionState();
+  const { chatMessages } = useChat();
+  const { textStreams: summaryStreams } = useTextStream("lk.chat.summary");
+  const { textStreams: presentationStreams } = useTextStream("lk.chat.presentation");
   const connected = connectionState === ConnectionState.Connected;
   const agentState = String(voice.state || "initializing").replace(/_/g, " ");
+  const supportEntries: SupportEntry[] = [
+    ...summaryStreams.map((stream: any, index: number) => ({
+      id: `summary-${stream.streamInfo?.id || index}`,
+      sender: stream.participantInfo?.identity ?? "agent",
+      message: stream.text || "",
+      channel: "summary" as const,
+      segments: parseSupportMessage(stream.text || ""),
+    })),
+    ...presentationStreams.map((stream: any, index: number) => ({
+      id: `presentation-${stream.streamInfo?.id || index}`,
+      sender: stream.participantInfo?.identity ?? "agent",
+      message: stream.text || "",
+      channel: "presentation" as const,
+      segments: parseSupportMessage(stream.text || ""),
+    })),
+    ...chatMessages.map((m, index) => ({
+      id: `${m.timestamp || index}-${m.from?.identity || "agent"}`,
+      sender: m.from?.identity ?? "agent",
+      message: m.message,
+      channel: "chat" as const,
+      segments: parseSupportMessage(m.message),
+    })),
+  ].filter((entry) => entry.segments.length > 0);
+  const presentationSegments = supportEntries.flatMap((entry) =>
+    entry.segments
+      .filter((segment) => entry.channel === "presentation" || segment.kind === "artifact")
+      .map((segment) => ({ ...segment, entryId: entry.id })),
+  );
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -149,134 +269,84 @@ function AgentSessionSurface({ bundle, onDisconnect }: { bundle: Bundle; onDisco
       </div>
 
       <div className="grid flex-1 min-h-0 grid-cols-1 lg:grid-cols-[1fr_26rem]">
-        <main className="flex min-h-0 flex-col items-center justify-center gap-6 p-6">
-          <div className="relative flex aspect-square w-full max-w-[28rem] items-center justify-center overflow-hidden rounded-3xl border bg-card shadow-sm">
-            {bundle.agent.avatarEnabled && voice.videoTrack ? (
-              <VideoTrack trackRef={voice.videoTrack} className="h-full w-full object-cover" />
-            ) : (
-              <div className="flex h-full w-full flex-col items-center justify-center gap-5 bg-gradient-to-br from-background via-muted/50 to-background p-8">
-                <div className="flex h-28 w-28 items-center justify-center rounded-full border bg-background shadow-inner">
-                  <FlaskConical className="h-12 w-12 text-muted-foreground" />
+        <main className="grid min-h-0 grid-cols-1 gap-4 p-4 xl:grid-cols-[18rem_1fr]">
+          <section className="flex min-h-0 flex-col gap-4">
+            <div className="relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-3xl border bg-card shadow-sm">
+              {bundle.agent.avatarEnabled && voice.videoTrack ? (
+                <VideoTrack trackRef={voice.videoTrack} className="h-full w-full object-cover" />
+              ) : (
+                <div className="flex h-full w-full flex-col items-center justify-center gap-5 bg-gradient-to-br from-background via-muted/50 to-background p-8">
+                  <div className="flex h-24 w-24 items-center justify-center rounded-full border bg-background shadow-inner">
+                    <FlaskConical className="h-10 w-10 text-muted-foreground" />
+                  </div>
+                  <div className="text-center">
+                    <div className="text-lg font-semibold">{bundle.agent.name}</div>
+                    <div className="mt-1 text-sm capitalize text-muted-foreground">{agentState}</div>
+                  </div>
                 </div>
-                <div className="text-center">
-                  <div className="text-xl font-semibold">{bundle.agent.name}</div>
-                  <div className="mt-1 text-sm capitalize text-muted-foreground">{agentState}</div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="w-full max-w-xl rounded-2xl border bg-card p-5">
-            <div className="mb-3 flex items-center justify-between">
-              <div>
-                <div className="text-sm font-medium">Agent audio</div>
-                <div className="text-xs capitalize text-muted-foreground">{agentState}</div>
-              </div>
-              <StartAudio
-                label="Enable audio"
-                className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted"
-              />
+              )}
             </div>
-            <BarVisualizer
-              state={voice.state}
-              trackRef={voice.audioTrack}
-              barCount={7}
-              className="mx-auto flex h-20 items-center justify-center gap-2"
-            >
-              <span className="block w-2 rounded-full bg-primary/80 data-[lk-highlighted=true]:bg-primary" />
-            </BarVisualizer>
-          </div>
 
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <TrackToggle
-              source={Track.Source.Microphone}
-              className="inline-flex h-10 items-center rounded-md border px-4 text-sm hover:bg-muted data-[lk-enabled=true]:bg-primary data-[lk-enabled=true]:text-primary-foreground"
-            >
-              <Mic className="mr-2 h-4 w-4" /> Microphone
-            </TrackToggle>
-            {bundle.agent.visionEnabled && (
+            <div className="rounded-2xl border bg-card p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium">Agent audio</div>
+                  <div className="text-xs capitalize text-muted-foreground">{agentState}</div>
+                </div>
+                <StartAudio
+                  label="Enable audio"
+                  className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted"
+                />
+              </div>
+              <BarVisualizer
+                state={voice.state}
+                trackRef={voice.audioTrack}
+                barCount={7}
+                className="mx-auto flex h-16 items-center justify-center gap-2"
+              >
+                <span className="block w-2 rounded-full bg-primary/80 data-[lk-highlighted=true]:bg-primary" />
+              </BarVisualizer>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
               <TrackToggle
-                source={Track.Source.Camera}
+                source={Track.Source.Microphone}
                 className="inline-flex h-10 items-center rounded-md border px-4 text-sm hover:bg-muted data-[lk-enabled=true]:bg-primary data-[lk-enabled=true]:text-primary-foreground"
               >
-                <Video className="mr-2 h-4 w-4" /> Camera
+                <Mic className="mr-2 h-4 w-4" /> Microphone
               </TrackToggle>
-            )}
-          </div>
+              {bundle.agent.visionEnabled && (
+                <TrackToggle
+                  source={Track.Source.Camera}
+                  className="inline-flex h-10 items-center rounded-md border px-4 text-sm hover:bg-muted data-[lk-enabled=true]:bg-primary data-[lk-enabled=true]:text-primary-foreground"
+                >
+                  <Video className="mr-2 h-4 w-4" /> Camera
+                </TrackToggle>
+              )}
+            </div>
+          </section>
+
+          <PresentationStage agentName={bundle.agent.name} segments={presentationSegments} />
         </main>
 
-        <AgentTranscriptPanel />
+        <AgentTranscriptPanel supportEntries={supportEntries} />
       </div>
     </div>
   );
 }
 
-/**
- * Renders a Letta secondary-agent message. The message is a mix of plain
- * markdown text and embedded JSON artifact blocks (one per line) of the form:
- *   {"type":"artifact","subtype":"image","title":"...","image_url":"https://..."}
- *
- * We scan each line; if it parses to an artifact JSON, render it as a card
- * (image for subtype=image, download link otherwise). Non-JSON text is
- * rendered as markdown.
- */
-
-function SecondaryAgentMessage({ message }: { message: string }) {
-  interface Artifact {
-    type: "artifact";
-    subtype?: "image" | "file" | string;
-    title?: string;
-    image_url?: string;
-    download_url?: string;
-    url?: string;
-    content_type?: string;
-    summary?: string;
-    internal_s3_url?: string;
-  }
-
-  // Split message into segments — plain text and artifact JSON objects.
-  // Artifacts are separated by blank lines in _parse_letta_response output.
-  const segments: Array<{ kind: "text"; value: string } | { kind: "artifact"; value: Artifact }> = [];
-  const blocks = message.split(/\n\n+/);
-  for (const block of blocks) {
-    const trimmed = block.trim();
-    if (!trimmed) continue;
-    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-      try {
-        const parsed = JSON.parse(trimmed) as Artifact;
-        if (parsed && parsed.type === "artifact") {
-          segments.push({ kind: "artifact", value: parsed });
-          continue;
-        }
-      } catch {
-        // fall through — treat as text
-      }
-    }
-    segments.push({ kind: "text", value: trimmed });
-  }
-
+function SupportMessage({ segments }: { segments: SupportSegment[] }) {
   return (
     <div className="space-y-2">
       {segments.map((seg, idx) => {
         if (seg.kind === "artifact") {
           const a = seg.value;
-          const rawUrl = a.image_url || a.url || a.download_url || "";
-          const imageUrl = rawUrl ? toBrowserS3ProxyUrl(rawUrl) : "";
-          const isImage =
-            a.subtype === "image" ||
-            (a.content_type ?? "").startsWith("image/") ||
-            /\.(png|jpg|jpeg|gif|webp|svg)(\?|$)/i.test(imageUrl);
-          if (isImage && imageUrl) {
-            // Same-origin /api/s3-proxy or public https — not raw s3 (PNA) or internal K8s DNS
-            const isAccessible =
-              imageUrl.startsWith("/api/s3-proxy") ||
-              ((imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) &&
-                !imageUrl.includes(".svc.cluster.local"));
+          if (seg.isImage && seg.url) {
             return (
               <figure key={idx} className="rounded border bg-background overflow-hidden">
-                {isAccessible ? (
+                {seg.isAccessible ? (
                   <img
-                    src={imageUrl}
+                    src={seg.url}
                     alt={a.title || "Generated image"}
                     className="w-full h-auto block"
                     loading="lazy"
@@ -299,7 +369,7 @@ function SecondaryAgentMessage({ message }: { message: string }) {
           return (
             <a
               key={idx}
-              href={imageUrl || "#"}
+              href={seg.url || "#"}
               target="_blank"
               rel="noopener noreferrer"
               className="block rounded border bg-background px-2 py-1.5 text-xs hover:bg-muted"
@@ -312,25 +382,94 @@ function SecondaryAgentMessage({ message }: { message: string }) {
             </a>
           );
         }
-        // Plain text segment — render as markdown for rich formatting.
         return (
           <div
             key={idx}
             className="text-sm prose prose-sm dark:prose-invert max-w-none"
-            dangerouslySetInnerHTML={{
-              __html: (() => {
-                try {
-                  const raw = marked.parse(seg.value, { breaks: true, gfm: true }) as string;
-                  return rewriteS3UrlsInHtml(raw);
-                } catch {
-                  return seg.value;
-                }
-              })(),
-            }}
+            dangerouslySetInnerHTML={{ __html: seg.html }}
           />
         );
       })}
     </div>
+  );
+}
+
+function PresentationStage({
+  agentName,
+  segments,
+}: {
+  agentName: string;
+  segments: Array<SupportSegment & { entryId: string }>;
+}) {
+  const active = segments[segments.length - 1];
+
+  return (
+    <section className="flex min-h-0 flex-col rounded-3xl border bg-card shadow-sm">
+      <div className="flex items-center justify-between border-b px-5 py-3">
+        <div>
+          <div className="text-sm font-semibold">Presentation Screen</div>
+          <div className="text-xs text-muted-foreground">
+            Letta support material for {agentName}
+          </div>
+        </div>
+        <div className="rounded-full border px-2 py-1 text-xs text-muted-foreground">
+          {segments.length ? `${segments.length} item${segments.length === 1 ? "" : "s"}` : "Waiting"}
+        </div>
+      </div>
+
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-6">
+        {!active ? (
+          <div className="max-w-md text-center">
+            <div className="mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-2xl border bg-background">
+              <ImageIcon className="h-9 w-9 text-muted-foreground" />
+            </div>
+            <h2 className="text-xl font-semibold">Presentation material will appear here</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Ask the agent for diagrams, examples, supporting images, or documentation. The latest
+              visual aid will be centered here while the conversation continues.
+            </p>
+          </div>
+        ) : active.kind === "artifact" && active.isImage && active.url ? (
+          <figure className="flex h-full w-full flex-col items-center justify-center gap-3 text-center">
+            {active.isAccessible ? (
+              <img
+                src={active.url}
+                alt={getSegmentTitle(active)}
+                className="max-h-[65vh] max-w-full rounded-2xl border object-contain shadow-sm"
+              />
+            ) : (
+              <div className="rounded-xl border bg-background p-8 text-sm text-muted-foreground">
+                Image generated but is not browser-accessible.
+              </div>
+            )}
+            <figcaption className="max-w-3xl text-sm text-muted-foreground">
+              {getSegmentTitle(active)}
+            </figcaption>
+          </figure>
+        ) : active.kind === "artifact" ? (
+          <a
+            href={active.url || "#"}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex max-w-xl flex-col items-center rounded-2xl border bg-background p-8 text-center hover:bg-muted/50"
+          >
+            <FileText className="mb-4 h-12 w-12 text-muted-foreground" />
+            <div className="text-lg font-semibold">{getSegmentTitle(active)}</div>
+            {active.value.summary && (
+              <p className="mt-2 text-sm text-muted-foreground">{active.value.summary}</p>
+            )}
+            {active.value.content_type && (
+              <p className="mt-3 text-xs text-muted-foreground">{active.value.content_type}</p>
+            )}
+          </a>
+        ) : (
+          <article
+            className="prose prose-lg max-w-4xl dark:prose-invert"
+            dangerouslySetInnerHTML={{ __html: active.html }}
+          />
+        )}
+      </div>
+    </section>
   );
 }
 

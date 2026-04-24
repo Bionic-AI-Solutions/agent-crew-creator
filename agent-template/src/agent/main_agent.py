@@ -15,8 +15,11 @@ Uses official LiveKit patterns:
 
 import asyncio
 import base64
+import json as _json
 import logging
 import os
+from dataclasses import dataclass
+from uuid import uuid4
 
 import livekit.agents
 livekit.agents.DEFAULT_API_CONNECT_OPTIONS = livekit.agents.APIConnectOptions(
@@ -28,7 +31,7 @@ from livekit.agents import (
     Agent, AgentSession, AutoSubscribe, JobContext, WorkerOptions,
     cli, function_tool, metrics, room_io, RunContext,
 )
-from livekit.agents.voice import MetricsCollectedEvent
+from livekit.agents.voice import ConversationItemAddedEvent, MetricsCollectedEvent
 from livekit.plugins import silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
@@ -101,6 +104,36 @@ LETTA_HEADERS = {
     "Content-Type": "application/json",
     **({"Authorization": f"Bearer {LETTA_TOKEN}"} if LETTA_TOKEN else {}),
 }
+
+
+# ── Delegation contracts ─────────────────────────────────────────
+
+@dataclass
+class DelegationRequest:
+    """Structured payload sent to Letta for background support work."""
+
+    task: str
+    spoken_context_last_60s: str = ""
+    correlation_id: str = ""
+
+    def to_framed_message(self) -> str:
+        meta = {
+            "type": "delegation_request",
+            "task_type": "research",
+            "output_target": "summary_and_presentation",
+            "correlation_id": self.correlation_id,
+        }
+        if self.spoken_context_last_60s:
+            meta["spoken_context_last_60s"] = self.spoken_context_last_60s
+        return (
+            f"[Delegation metadata]: {_json.dumps(meta)}\n\n"
+            "[Assignment from the primary voice agent]\n"
+            "Research this in depth, then return two kinds of output:\n"
+            "1. Concise categorized bullets for the primary agent to explain aloud.\n"
+            "2. Presentation-ready visual/support material. If you generate images or files, "
+            "include artifact JSON blocks with type=artifact and image_url/download_url.\n\n"
+            f"{self.task}"
+        )
 
 
 # ── Per-user memory isolation ────────────────────────────────────
@@ -216,6 +249,7 @@ class MainAgent(Agent):
     """Voice agent with two-brain architecture."""
 
     def __init__(self) -> None:
+        self._recent_turns: list[str] = []
         super().__init__(
             instructions=settings.system_prompt or self._default_prompt(),
             turn_detection=MultilingualModel(),
@@ -244,8 +278,9 @@ When the user asks for research, analysis, complex tasks, or anything requiring
 deep reasoning, tools, memory recall, or multi-step workflows, call the
 delegate_to_letta tool. The secondary agent handles memory, document search,
 web research, and crew execution on your behalf.
-While waiting, keep the user engaged with brief conversational responses.
-When the result comes back, summarize it in spoken-friendly language.
+Delegation runs in the background. Keep talking naturally while Letta works.
+Do not read raw research aloud. When support material appears on screen, explain
+the key points in spoken-friendly language and use the visuals as teaching aids.
 """
 
     @function_tool
@@ -264,33 +299,122 @@ When the result comes back, summarize it in spoken-friendly language.
         if not LETTA_AGENT_ID:
             return "Secondary agent not configured. Please set LETTA_AGENT_ID."
 
-        logger.info("Delegating to Letta: %s...", task[:100])
+        logger.info("Delegating to Letta in background: %s...", task[:100])
 
+        room = None
+        session = None
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=15.0, read=300.0, write=15.0, pool=15.0),
-            ) as client:
-                response = await client.post(
-                    f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages/",
-                    json={"messages": [{"role": "user", "content": task}]},
-                    headers=LETTA_HEADERS,
-                )
-                response.raise_for_status()
-                return _parse_letta_response(response.json())
-
-        except httpx.TimeoutException:
-            logger.error("Letta delegation timed out")
-            return "The secondary agent is still processing. It may take a moment for complex tasks."
-        except httpx.HTTPStatusError as e:
-            logger.error("Letta delegation HTTP error: %s", e.response.status_code)
-            return "Secondary agent encountered an error. Please try again."
+            room = context.session.room_io.room if context.session.room_io else None
+            session = context.session
         except Exception as e:
-            logger.error("Letta delegation failed: %s", e)
-            return "Failed to reach secondary agent. Please try again shortly."
+            logger.debug("Could not capture room/session for delegation: %s", e)
+
+        request = DelegationRequest(
+            task=task,
+            spoken_context_last_60s="\n".join(self._recent_turns[-5:]),
+            correlation_id=uuid4().hex[:12],
+        )
+        asyncio.create_task(
+            _delegation_worker(request, room, session),
+            name=f"letta-delegation-{request.correlation_id}",
+        )
+
+        return (
+            "I am asking the research assistant to prepare the deeper material now. "
+            "I will keep explaining while the supporting details and visuals appear on screen."
+        )
 
 
-def _parse_letta_response(data: dict | list) -> str:
-    """Parse Letta API response, handling known message_type variants.
+async def _delegation_worker(
+    request: DelegationRequest,
+    room,
+    session=None,
+) -> None:
+    """Run Letta work off the voice path and publish split UI channels."""
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=15.0, read=300.0, write=15.0, pool=15.0),
+            follow_redirects=True,
+        ) as client:
+            response = await client.post(
+                f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages",
+                json={"messages": [{"role": "user", "content": request.to_framed_message()}]},
+                headers=LETTA_HEADERS,
+            )
+            response.raise_for_status()
+            result = _parse_letta_response(response.json())
+
+        summary = _filter_letta_noise(result.get("summary", ""))
+        presentation = _filter_letta_noise(result.get("presentation", ""))
+        combined = _filter_letta_noise(result.get("combined", ""))
+
+        if room:
+            if summary:
+                await room.local_participant.send_text(summary, topic="lk.chat.summary")
+            if presentation:
+                await room.local_participant.send_text(presentation, topic="lk.chat.presentation")
+            if not summary and not presentation and combined:
+                await room.local_participant.send_text(combined, topic="lk.chat.summary")
+            logger.info(
+                "Letta support published: summary=%d presentation=%d",
+                len(summary),
+                len(presentation),
+            )
+
+        if session and summary:
+            session.generate_reply(
+                user_input=(
+                    "[System: Letta has produced support material for the current discussion. "
+                    "Categorized bullets are visible in the side panel and visuals/documents are "
+                    "on the presentation screen. Explain the key bullets naturally, use the "
+                    "presentation visuals as teaching aids, and avoid reading raw research verbatim.]\n\n"
+                    f"{summary[:3500]}"
+                ),
+                allow_interruptions=True,
+            )
+
+    except httpx.TimeoutException:
+        logger.error("Letta delegation timed out for task: %s", request.task[:100])
+        if room:
+            await room.local_participant.send_text(
+                "[The research assistant is still working on this. Results may appear shortly.]",
+                topic="lk.chat.summary",
+            )
+    except httpx.HTTPStatusError as e:
+        logger.error("Letta delegation HTTP error: %s", e.response.status_code)
+        if room:
+            await room.local_participant.send_text(
+                "[The research assistant encountered an error processing that request.]",
+                topic="lk.chat.summary",
+            )
+    except Exception as e:
+        logger.error("Letta delegation failed: %s", e)
+        if room:
+            await room.local_participant.send_text(
+                "[Could not reach the research assistant. Please try again.]",
+                topic="lk.chat.summary",
+            )
+
+
+def _filter_letta_noise(text: str) -> str:
+    """Remove Letta internal status lines before sending content to the UI."""
+    if not text:
+        return text
+    filtered: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("*(No output") or stripped.startswith("*(Waiting"):
+            continue
+        if stripped.startswith("*(") and stripped.endswith(")*"):
+            continue
+        if stripped == "---":
+            continue
+        filtered.append(line)
+    return "\n".join(filtered).strip()
+
+
+def _parse_letta_response(data: dict | list) -> dict:
+    """Parse Letta API response into summary and presentation channels.
 
     Known message_type values:
       reasoning_message — internal chain-of-thought (skipped)
@@ -300,9 +424,14 @@ def _parse_letta_response(data: dict | list) -> str:
     """
     messages = data if isinstance(data, list) else data.get("messages", [])
     if not messages:
-        return "Secondary agent returned no output."
+        return {
+            "summary": "Secondary agent returned no output.",
+            "presentation": "",
+            "combined": "Secondary agent returned no output.",
+        }
 
     result_parts = []
+    artifacts = []
     for msg in messages:
         if not isinstance(msg, dict):
             continue
@@ -320,11 +449,51 @@ def _parse_letta_response(data: dict | list) -> str:
             if status == "error":
                 result_parts.append(f"[Tool error]: {str(tool_return)[:500]}")
             elif tool_return and len(str(tool_return)) > 20:
-                result_parts.append(f"[Tool result]: {str(tool_return)[:2000]}")
+                try:
+                    parsed = _json.loads(str(tool_return)) if isinstance(tool_return, str) else tool_return
+                    if isinstance(parsed, dict):
+                        if "summary" in parsed:
+                            result_parts.append(str(parsed["summary"]))
+                        if isinstance(parsed.get("artifacts"), list):
+                            artifacts.extend(parsed["artifacts"])
+                        elif any(k in parsed for k in ("url", "download_url", "image_url")):
+                            artifacts.append(parsed)
+                        if "summary" not in parsed and not artifacts:
+                            result_parts.append(f"[Tool result]: {str(tool_return)[:2000]}")
+                    else:
+                        result_parts.append(f"[Tool result]: {str(tool_return)[:2000]}")
+                except (ValueError, TypeError):
+                    result_parts.append(f"[Tool result]: {str(tool_return)[:2000]}")
 
-    if result_parts:
-        return "\n\n".join(result_parts)
-    return "Task delegated. Secondary agent processed but produced no text output."
+    summary = "\n\n".join(result_parts).strip()
+    presentation_parts: list[str] = []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        url = artifact.get("image_url") or artifact.get("url") or artifact.get("download_url") or artifact.get("path") or ""
+        content_type = artifact.get("content_type") or ""
+        subtype = artifact.get("subtype") or ("image" if str(content_type).startswith("image/") else "file")
+        presentation_parts.append(
+            _json.dumps({
+                "type": "artifact",
+                "subtype": subtype,
+                "title": artifact.get("title") or artifact.get("filename") or "Support material",
+                "filename": artifact.get("filename", ""),
+                "summary": artifact.get("summary", ""),
+                "image_url": url if subtype == "image" else "",
+                "download_url": url,
+                "url": url,
+                "content_type": content_type,
+                "internal_s3_url": artifact.get("internal_s3_url", ""),
+            })
+        )
+
+    if not summary and not presentation_parts:
+        summary = "Task delegated. Secondary agent processed but produced no displayable output."
+
+    presentation = "\n\n".join(presentation_parts)
+    combined = "\n\n".join(part for part in (summary, presentation) if part)
+    return {"summary": summary, "presentation": presentation, "combined": combined}
 
 
 # ── Capture: periodic frame storage ──────────────────────────────
@@ -567,6 +736,21 @@ async def entrypoint(ctx: JobContext):
     def _on_metrics(ev: MetricsCollectedEvent):
         metrics.log_metrics(ev.metrics)
 
+    primary_agent = MainAgent()
+
+    @session.on("conversation_item_added")
+    def _on_conversation_item(ev: ConversationItemAddedEvent):
+        try:
+            msg = ev.item
+            role = getattr(msg, "role", None)
+            text = getattr(msg, "text_content", None)
+            if not text or not text.strip():
+                return
+            label = "Primary" if role == "assistant" else "User"
+            primary_agent._recent_turns.append(f"[{label}]: {text.strip()[:300]}")
+        except Exception as e:
+            logger.debug("Could not track conversation turn: %s", e)
+
     # ── Auto-subscribe mode ──────────────────────────────────
     need_video = (
         settings.vision_enabled
@@ -668,7 +852,7 @@ async def entrypoint(ctx: JobContext):
     )
 
     await session.start(
-        agent=MainAgent(),
+        agent=primary_agent,
         room=ctx.room,
         room_options=room_opts,
     )
