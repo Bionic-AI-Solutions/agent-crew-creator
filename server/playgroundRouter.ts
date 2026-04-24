@@ -19,7 +19,6 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { AccessToken } from "livekit-server-sdk";
-import { RoomAgentDispatch, RoomConfiguration } from "@livekit/protocol";
 import { router, appScopedProcedure, assertAppMembership } from "./_core/trpc.js";
 import { createLogger } from "./_core/logger.js";
 import { apps, agentConfigs } from "../drizzle/platformSchema.js";
@@ -151,9 +150,13 @@ export const playgroundRouter = router({
       // Dispatch the named worker into this fresh room. The worker registers
       // with AGENT_NAME from agentDeployer, which is the agent config name.
       const dispatchName = agent.name;
-      at.roomConfig = new RoomConfiguration({
-        agents: [new RoomAgentDispatch({ agentName: dispatchName })],
-      });
+      // Use a plain object instead of @livekit/protocol's generated class.
+      // The current protocol package emits newer default fields such as
+      // restartPolicy, which older running LiveKit servers reject during
+      // token validation even though the dispatch only needs agentName.
+      at.roomConfig = {
+        agents: [{ agentName: dispatchName, metadata: "" }],
+      } as any;
 
       // #region agent log
       const { emitDebugLog } = await import("./debugSessionLog.js");

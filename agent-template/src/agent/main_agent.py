@@ -15,9 +15,12 @@ Uses official LiveKit patterns:
 
 import asyncio
 import base64
+import hashlib
+import io
 import json as _json
 import logging
 import os
+import socket
 from dataclasses import dataclass
 from uuid import uuid4
 
@@ -42,6 +45,151 @@ from config import settings
 from observability import flush_langfuse, init_langfuse
 
 logger = logging.getLogger("main-agent")
+
+
+def _flashhead_engine_url() -> str:
+    """Normalize legacy deployments to the current shared FlashHead service."""
+    engine_url = settings.flashhead_engine_url
+    if "flashhead-engine.flashhead.svc.cluster.local" in engine_url:
+        logger.warning(
+            "Legacy FLASHHEAD_ENGINE_URL %s detected; using live-avatar service",
+            engine_url,
+        )
+        return "ws://avatar-service.live-avatar.svc.cluster.local:8080/v1/session"
+    return engine_url
+
+
+async def _prepare_flashhead_reference_image(source: str) -> tuple[str, object | None]:
+    """Serve a tight face crop so FlashHead lip motion is visible in clients."""
+    if not source.startswith(("http://", "https://")):
+        return source, None
+
+    try:
+        from aiohttp import web
+        from PIL import Image
+
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            response = await client.get(source)
+            response.raise_for_status()
+
+        image = Image.open(io.BytesIO(response.content)).convert("RGB")
+        width, height = image.size
+        side = int(min(width, height) * 0.58)
+        center_x = int(width * 0.5)
+        center_y = int(height * 0.34)
+        left = max(0, min(width - side, center_x - side // 2))
+        top = max(0, min(height - side, center_y - side // 2))
+        crop = image.crop((left, top, left + side, top + side)).resize((512, 512), Image.Resampling.LANCZOS)
+
+        output = io.BytesIO()
+        crop.save(output, format="JPEG", quality=92)
+        crop_bytes = output.getvalue()
+
+        async def _serve_avatar(_request):
+            return web.Response(body=crop_bytes, content_type="image/jpeg")
+
+        app = web.Application()
+        app.router.add_get("/flashhead-reference.jpg", _serve_avatar)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", 0)
+        await site.start()
+
+        sockets = getattr(site, "_server", None).sockets  # type: ignore[union-attr]
+        port = sockets[0].getsockname()[1]
+        pod_ip = socket.gethostbyname(socket.gethostname())
+        crop_url = f"http://{pod_ip}:{port}/flashhead-reference.jpg"
+        logger.info(
+            "Prepared FlashHead face-crop reference: source_size=%sx%s crop=%s,%s,%s,%s url=%s",
+            width,
+            height,
+            left,
+            top,
+            left + side,
+            top + side,
+            crop_url,
+        )
+        return crop_url, runner
+    except Exception:
+        logger.exception("FlashHead face-crop preparation failed; using original reference image")
+        return source, None
+
+
+def _instrument_flashhead_avatar(avatar) -> None:
+    """Log FlashHead audio/video flow without changing plugin behavior."""
+    generator = getattr(avatar, "_generator", None)
+    if generator is None:
+        return
+
+    original_push_audio = getattr(generator, "push_audio", None)
+    if original_push_audio is not None and not getattr(generator, "_bionic_push_logged", False):
+        generator._bionic_push_logged = True
+        push_counts = {"audio": 0, "segment_end": 0, "bytes": 0}
+
+        async def _logged_push_audio(frame):
+            frame_type = type(frame).__name__
+            if frame_type == "AudioSegmentEnd":
+                push_counts["segment_end"] += 1
+                logger.info(
+                    "FlashHead bridge sent segment_end: audio_frames=%d audio_bytes=%d",
+                    push_counts["audio"],
+                    push_counts["bytes"],
+                )
+            else:
+                payload = getattr(frame, "data", b"") or b""
+                frame_bytes = len(payload)
+                push_counts["audio"] += 1
+                push_counts["bytes"] += frame_bytes
+                if push_counts["audio"] == 1:
+                    logger.info(
+                        "FlashHead bridge sent audio frame: count=%d sample_rate=%s "
+                        "channels=%s samples=%s bytes=%d",
+                        push_counts["audio"],
+                        getattr(frame, "sample_rate", None),
+                        getattr(frame, "num_channels", None),
+                        getattr(frame, "samples_per_channel", None),
+                        frame_bytes,
+                    )
+            return await original_push_audio(frame)
+
+        generator.push_audio = _logged_push_audio
+
+    recv_queue = getattr(generator, "_recv_queue", None)
+    original_put = getattr(recv_queue, "put", None)
+    if recv_queue is not None and original_put is not None and not getattr(generator, "_bionic_recv_logged", False):
+        generator._bionic_recv_logged = True
+        recv_counts = {"video": 0, "audio": 0, "segment_end": 0}
+        video_hashes: set[str] = set()
+
+        async def _logged_put(item):
+            item_type = type(item).__name__ if item is not None else "None"
+            if item_type == "VideoFrame":
+                recv_counts["video"] += 1
+                if recv_counts["video"] <= 20:
+                    try:
+                        video_hashes.add(hashlib.sha256(bytes(item.data)).hexdigest()[:12])
+                    except Exception:
+                        pass
+                if recv_counts["video"] == 1:
+                    logger.info(
+                        "FlashHead bridge received video frame: count=%d unique_hashes=%d",
+                        recv_counts["video"],
+                        len(video_hashes),
+                    )
+            elif item_type == "AudioFrame":
+                recv_counts["audio"] += 1
+            elif item_type == "AudioSegmentEnd":
+                recv_counts["segment_end"] += 1
+                logger.info(
+                    "FlashHead bridge received segment_end: video_frames=%d audio_frames=%d "
+                    "unique_video_hashes=%d",
+                    recv_counts["video"],
+                    recv_counts["audio"],
+                    len(video_hashes),
+                )
+            return await original_put(item)
+
+        recv_queue.put = _logged_put
 
 
 # ── Langfuse via OTEL (always on when keys present) ─────────────
@@ -256,7 +404,13 @@ class MainAgent(Agent):
         )
 
     async def on_enter(self):
-        self.session.generate_reply()
+        self.session.generate_reply(
+            user_input=(
+                "[System: The user has just joined the live session. "
+                "Start the conversation now according to your configured persona "
+                "and opening instructions. Keep it warm, brief, and spoken-friendly.]"
+            )
+        )
 
     @staticmethod
     def _default_prompt() -> str:
@@ -772,20 +926,23 @@ async def entrypoint(ctx: JobContext):
     # Per-session reference image can be injected via dispatch metadata:
     #   metadata={"reference_image": "https://...", "avatar_name": "Alice"}
     avatar = None
+    avatar_reference_runner = None
     if settings.avatar_enabled:
         provider = (settings.avatar_provider or "flashhead").lower()
 
         if provider == "flashhead":
-            reference_image = (
+            original_reference_image = (
                 dispatch_meta.get("reference_image")
                 or settings.flashhead_reference_image
             )
+            reference_image = original_reference_image
             avatar_name = (
                 dispatch_meta.get("avatar_name")
                 or settings.flashhead_avatar_name
                 or "Avatar"
             )
-            if not settings.flashhead_engine_url:
+            flashhead_engine_url = _flashhead_engine_url()
+            if not flashhead_engine_url:
                 logger.warning(
                     "avatar_provider=flashhead but FLASHHEAD_ENGINE_URL not set — avatar disabled"
                 )
@@ -797,19 +954,49 @@ async def entrypoint(ctx: JobContext):
                 )
             else:
                 try:
-                    from livekit.plugins import flashhead
-                    avatar = flashhead.AvatarSession(
-                        api_url=settings.flashhead_engine_url,
-                        reference_image=reference_image,
-                        avatar_participant_identity=f"{settings.agent_name}-avatar",
-                        avatar_participant_name=avatar_name,
+                    reference_image, avatar_reference_runner = await _prepare_flashhead_reference_image(
+                        reference_image
                     )
-                    await avatar.start(session, room=ctx.room)
+                    from livekit.plugins import flashhead
+                    try:
+                        avatar = flashhead.AvatarSession(
+                            api_url=flashhead_engine_url,
+                            reference_image=reference_image,
+                            avatar_participant_identity=f"{settings.agent_name}-avatar",
+                            avatar_participant_name=avatar_name,
+                        )
+                        await avatar.start(session, room=ctx.room)
+                    except Exception:
+                        if reference_image != original_reference_image:
+                            logger.exception(
+                                "FlashHead avatar start failed with face-crop reference; "
+                                "retrying original reference image"
+                            )
+                            if avatar_reference_runner is not None:
+                                try:
+                                    await avatar_reference_runner.cleanup()
+                                except Exception:
+                                    logger.exception("avatar crop server cleanup failed")
+                                avatar_reference_runner = None
+                            avatar = flashhead.AvatarSession(
+                                api_url=flashhead_engine_url,
+                                reference_image=original_reference_image,
+                                avatar_participant_identity=f"{settings.agent_name}-avatar",
+                                avatar_participant_name=avatar_name,
+                            )
+                            await avatar.start(session, room=ctx.room)
+                        else:
+                            raise
                     logger.info(
                         "FlashHead avatar started: engine=%s name=%s",
-                        settings.flashhead_engine_url,
+                        flashhead_engine_url,
                         avatar_name,
                     )
+                    logger.info(
+                        "FlashHead avatar attached TTS audio output before session.start: %s",
+                        type(session.output.audio).__name__ if session.output.audio else "none",
+                    )
+                    _instrument_flashhead_avatar(avatar)
                 except ImportError:
                     logger.warning(
                         "livekit-plugins-flashhead not installed — avatar disabled. "
@@ -841,20 +1028,29 @@ async def entrypoint(ctx: JobContext):
                 provider,
             )
 
-    # ── Room options ─────────────────────────────────────────
-    # Route audio through the session unless a real avatar was started —
-    # `avatar` is None if avatar_enabled was set but the provider failed
-    # to initialize. Without this check, a failed avatar start would
-    # leave the user hearing silence.
-    room_opts = room_io.RoomOptions(
-        video_input=settings.vision_enabled,
-        audio_output=(avatar is None),
-    )
+    # ── Start voice session ──────────────────────────────────
+    # Match the avatar plugin examples in livekit-plugins:
+    #   1. create AgentSession with TTS
+    #   2. await avatar.start(session, room=ctx.room)
+    #   3. await session.start(agent=..., room=ctx.room)
+    #
+    # avatar.start() sets session.output.audio to the plugin output
+    # (QueueAudioOutput/DataStreamAudioOutput). Do not configure RoomIO
+    # audio output here; LiveKit will detect the existing avatar output and
+    # avoid replacing it. Only pass RoomOptions when we actually need video
+    # input for vision.
+    session_start_kwargs = {
+        "agent": primary_agent,
+        "room": ctx.room,
+    }
+    if settings.vision_enabled:
+        session_start_kwargs["room_options"] = room_io.RoomOptions(video_input=True)
 
-    await session.start(
-        agent=primary_agent,
-        room=ctx.room,
-        room_options=room_opts,
+    await session.start(**session_start_kwargs)
+    logger.info(
+        "Agent session started: avatar_active=%s audio_output=%s",
+        avatar is not None,
+        type(session.output.audio).__name__ if session.output.audio else "none",
     )
 
     if settings.vision_enabled:
@@ -888,6 +1084,11 @@ async def entrypoint(ctx: JobContext):
                 await avatar.aclose()
             except Exception:
                 logger.exception("avatar aclose failed (non-fatal)")
+        if avatar_reference_runner is not None:
+            try:
+                await avatar_reference_runner.cleanup()
+            except Exception:
+                logger.exception("avatar reference server cleanup failed (non-fatal)")
         if trace_provider and hasattr(trace_provider, 'force_flush'):
             trace_provider.force_flush()
         flush_langfuse()

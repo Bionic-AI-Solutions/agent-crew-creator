@@ -32,20 +32,31 @@ const LETTA_MCP_URL = process.env.LETTA_INTERNAL_URL
 const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || "minio-tenant-hl.minio.svc.cluster.local:9000";
 const LANGFUSE_HOST = process.env.LANGFUSE_INTERNAL_URL || "http://langfuse-web.langfuse.svc.cluster.local:3000";
 const GPU_AI_MCP_URL = process.env.GPU_AI_MCP_INTERNAL_URL || "http://mcp-ai-mcp-server.mcp.svc.cluster.local:8009/mcp";
+const GPU_AI_LLM_BASE_URL =
+  process.env.GPU_AI_LLM_BASE_URL || "http://llm-deep.mcp.svc.cluster.local:8005/v1";
+const GPU_AI_STT_BASE_URL =
+  process.env.GPU_AI_STT_BASE_URL || "http://mcp-api-server.mcp.svc.cluster.local:8000/v1";
+const GPU_AI_TTS_BASE_URL =
+  process.env.GPU_AI_TTS_BASE_URL || "http://mcp-api-server.mcp.svc.cluster.local:8000/v1";
+const GENIMAGE_MCP_URL = process.env.GENIMAGE_MCP_INTERNAL_URL || "http://mcp-genimage-server.mcp.svc.cluster.local:8008/mcp";
+const PDF_MCP_URL = process.env.PDF_MCP_INTERNAL_URL || "http://mcp-pdf-generator-server.mcp.svc.cluster.local:8003/mcp";
+const MAIL_MCP_URL = process.env.MAIL_MCP_INTERNAL_URL || "http://mcp-mail-server.mcp.svc.cluster.local:8005/mcp";
 const LIVEKIT_INTERNAL_URL = process.env.LIVEKIT_INTERNAL_URL || "ws://livekit-server.livekit.svc.cluster.local:7880";
 // Shared flashhead-engine for realtime talking-head avatars. Agents
 // with avatarEnabled connect here over WebSocket. Default assumes the
 // engine is deployed in the `flashhead` namespace.
 const FLASHHEAD_ENGINE_URL =
-  process.env.FLASHHEAD_ENGINE_URL || "ws://flashhead-engine.flashhead.svc.cluster.local:8080/v1/session";
+  process.env.FLASHHEAD_ENGINE_URL || "ws://avatar-service.live-avatar.svc.cluster.local:8080/v1/session";
 const FLASHHEAD_DEFAULT_REFERENCE_IMAGE = process.env.FLASHHEAD_DEFAULT_REFERENCE_IMAGE || "";
 const BIONIC_INTERNAL_BASE_URL =
   process.env.BIONIC_INTERNAL_BASE_URL || "http://bionic-platform.bionic-platform.svc.cluster.local";
+const FLASHHEAD_AVATAR_IMAGE_BASE_URL =
+  process.env.FLASHHEAD_AVATAR_IMAGE_BASE_URL || process.env.WEBHOOK_BASE_URL || BIONIC_INTERNAL_BASE_URL;
 
 function getAvatarReferenceImage(appSlug: string, agent: AgentConfig): string {
   const referenceImage = (agent as any).avatarReferenceImage || "";
   if (referenceImage.startsWith("data:image/")) {
-    return signAvatarImageUrl(BIONIC_INTERNAL_BASE_URL, appSlug, agent.name);
+    return signAvatarImageUrl(FLASHHEAD_AVATAR_IMAGE_BASE_URL, appSlug, agent.name);
   }
   return referenceImage || FLASHHEAD_DEFAULT_REFERENCE_IMAGE;
 }
@@ -106,6 +117,12 @@ export async function deployAgent(
     LETTA_MCP_URL: LETTA_MCP_URL,
     LETTA_BASE_URL: LETTA_MCP_URL.replace("/mcp", ""),
     GPU_AI_MCP_URL: GPU_AI_MCP_URL,
+    GPU_AI_LLM_BASE_URL,
+    GPU_AI_STT_BASE_URL,
+    GPU_AI_TTS_BASE_URL,
+    GENIMAGE_MCP_URL,
+    PDF_MCP_URL,
+    MAIL_MCP_URL,
     MINIO_ENDPOINT: MINIO_ENDPOINT,
     MINIO_USE_SSL: "false",
     MINIO_BUCKET: app.slug,
@@ -141,24 +158,39 @@ export async function deployAgent(
     ),
   };
 
-  // 3. Sync Letta run_crew tool with current crew registry
-  const assignedCrews = appCrews
-    .filter((c) => agentCrewLinks.some((ac) => ac.crewName === c.name))
-    .filter((c) => c.difyAppApiKey); // only crews with API keys
-  if (agent.lettaAgentId && assignedCrews.length > 0) {
+  // 3. Sync reusable Letta tools for support artifacts, PDFs/email, and crews.
+  if (agent.lettaAgentId) {
     try {
       const { lettaAdmin } = await import("./lettaAdmin.js");
-      await lettaAdmin.syncCrewTool(
-        agent.lettaAgentId,
-        assignedCrews.map((c) => ({
-          name: c.name,
-          difyAppApiKey: c.difyAppApiKey!,
-          mode: c.mode,
-        })),
-      );
-      log.info("Synced Letta run_crew tool", { agentId: agent.lettaAgentId, crews: assignedCrews.length });
+      await lettaAdmin.syncSupportTools(agent.lettaAgentId, {
+        tenantId: app.slug,
+        genimageMcpUrl: GENIMAGE_MCP_URL,
+        pdfMcpUrl: PDF_MCP_URL,
+        mailMcpUrl: MAIL_MCP_URL,
+      });
+      log.info("Synced Letta support tools", { agentId: agent.lettaAgentId });
     } catch (err) {
-      log.warn("Failed to sync Letta run_crew tool (non-fatal)", { error: String(err) });
+      log.warn("Failed to sync Letta support tools (non-fatal)", { error: String(err) });
+    }
+
+    const assignedCrews = appCrews
+      .filter((c) => agentCrewLinks.some((ac) => ac.crewName === c.name))
+      .filter((c) => c.difyAppApiKey); // only crews with API keys
+    if (assignedCrews.length > 0) {
+      try {
+        const { lettaAdmin } = await import("./lettaAdmin.js");
+        await lettaAdmin.syncCrewTool(
+          agent.lettaAgentId,
+          assignedCrews.map((c) => ({
+            name: c.name,
+            difyAppApiKey: c.difyAppApiKey!,
+            mode: c.mode,
+          })),
+        );
+        log.info("Synced Letta run_crew tool", { agentId: agent.lettaAgentId, crews: assignedCrews.length });
+      } catch (err) {
+        log.warn("Failed to sync Letta run_crew tool (non-fatal)", { error: String(err) });
+      }
     }
   }
 

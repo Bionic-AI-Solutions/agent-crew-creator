@@ -9,16 +9,16 @@
  * 3. Render an agent-focused LiveKit room UI with voice controls,
  *    audio visualization, transcript, and delegated output.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BarVisualizer,
   DisconnectButton,
   LiveKitRoom,
   RoomAudioRenderer,
   StartAudio,
-  TrackToggle,
   useChat,
   useConnectionState,
+  useLocalParticipant,
   useTextStream,
   useTranscriptions,
   useVoiceAssistant,
@@ -29,6 +29,7 @@ import { ConnectionState, Track } from "livekit-client";
 import { marked } from "marked";
 import { trpc } from "@/lib/trpc";
 import { rewriteS3UrlsInHtml, toBrowserS3ProxyUrl } from "@/lib/s3ProxyUrl";
+import { cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -94,6 +95,7 @@ function isImageArtifact(artifact: Artifact, url: string): boolean {
 
 function isAccessibleBrowserUrl(url: string): boolean {
   return (
+    url.startsWith("data:image/") ||
     url.startsWith("/api/s3-proxy") ||
     ((url.startsWith("http://") || url.startsWith("https://")) && !url.includes(".svc.cluster.local"))
   );
@@ -308,22 +310,7 @@ function AgentSessionSurface({ bundle, onDisconnect }: { bundle: Bundle; onDisco
               </BarVisualizer>
             </div>
 
-            <div className="flex flex-wrap gap-2">
-              <TrackToggle
-                source={Track.Source.Microphone}
-                className="inline-flex h-10 items-center rounded-md border px-4 text-sm hover:bg-muted data-[lk-enabled=true]:bg-primary data-[lk-enabled=true]:text-primary-foreground"
-              >
-                <Mic className="mr-2 h-4 w-4" /> Microphone
-              </TrackToggle>
-              {bundle.agent.visionEnabled && (
-                <TrackToggle
-                  source={Track.Source.Camera}
-                  className="inline-flex h-10 items-center rounded-md border px-4 text-sm hover:bg-muted data-[lk-enabled=true]:bg-primary data-[lk-enabled=true]:text-primary-foreground"
-                >
-                  <Video className="mr-2 h-4 w-4" /> Camera
-                </TrackToggle>
-              )}
-            </div>
+            <LocalMediaControls visionEnabled={bundle.agent.visionEnabled} />
           </section>
 
           <PresentationStage agentName={bundle.agent.name} segments={presentationSegments} />
@@ -331,6 +318,103 @@ function AgentSessionSurface({ bundle, onDisconnect }: { bundle: Bundle; onDisco
 
         <AgentTranscriptPanel supportEntries={supportEntries} />
       </div>
+    </div>
+  );
+}
+
+function LocalMediaControls({ visionEnabled }: { visionEnabled: boolean }) {
+  const {
+    localParticipant,
+    isMicrophoneEnabled,
+    isCameraEnabled,
+    cameraTrack,
+    lastMicrophoneError,
+    lastCameraError,
+  } = useLocalParticipant();
+  const [pendingSource, setPendingSource] = useState<Track.Source | null>(null);
+  const previewRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    const mediaTrack = cameraTrack?.track;
+    const element = previewRef.current;
+    if (!mediaTrack || !element) return;
+    mediaTrack.attach(element);
+    return () => {
+      mediaTrack.detach(element);
+    };
+  }, [cameraTrack?.track]);
+
+  async function toggleMicrophone() {
+    setPendingSource(Track.Source.Microphone);
+    try {
+      await localParticipant.setMicrophoneEnabled(!isMicrophoneEnabled);
+    } catch (error) {
+      toast.error(`Could not toggle microphone: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setPendingSource(null);
+    }
+  }
+
+  async function toggleCamera() {
+    setPendingSource(Track.Source.Camera);
+    try {
+      await localParticipant.setCameraEnabled(!isCameraEnabled);
+    } catch (error) {
+      toast.error(`Could not toggle camera: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setPendingSource(null);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-col gap-2">
+        <Button
+          type="button"
+          variant={isMicrophoneEnabled ? "default" : "outline"}
+          className="h-10 w-full justify-start"
+          onClick={toggleMicrophone}
+          disabled={pendingSource === Track.Source.Microphone}
+        >
+          {pendingSource === Track.Source.Microphone ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : (
+            <Mic className="mr-2 h-4 w-4" />
+          )}
+          {isMicrophoneEnabled ? "Mute microphone" : "Start microphone"}
+        </Button>
+        {visionEnabled && (
+          <Button
+            type="button"
+            variant={isCameraEnabled ? "default" : "outline"}
+            className="h-10 w-full justify-start"
+            onClick={toggleCamera}
+            disabled={pendingSource === Track.Source.Camera}
+          >
+            {pendingSource === Track.Source.Camera ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Video className="mr-2 h-4 w-4" />
+            )}
+            {isCameraEnabled ? "Stop camera" : "Start camera"}
+          </Button>
+        )}
+      </div>
+
+      {visionEnabled && (
+        <div className={cn(
+          "overflow-hidden rounded-xl border bg-muted/40",
+          isCameraEnabled ? "block" : "hidden",
+        )}>
+          <video ref={previewRef} className="aspect-video w-full bg-black object-cover" muted playsInline />
+        </div>
+      )}
+
+      {(lastMicrophoneError || lastCameraError) && (
+        <p className="text-xs text-destructive">
+          {lastMicrophoneError?.message || lastCameraError?.message}
+        </p>
+      )}
     </div>
   );
 }
@@ -523,8 +607,8 @@ export default function Playground() {
             token={bundle.token}
             serverUrl={bundle.livekitUrl}
             connect={true}
-            audio={true}
-            video={bundle.agent.visionEnabled}
+            audio={false}
+            video={false}
             data-lk-theme="default"
             style={{ height: "100%" }}
             onDisconnected={handleDisconnect}

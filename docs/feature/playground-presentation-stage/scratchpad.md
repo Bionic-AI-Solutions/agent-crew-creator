@@ -23,10 +23,80 @@
 - Updated Playground to subscribe to `lk.chat.summary` and `lk.chat.presentation` via `useTextStream`, while preserving legacy `lk.chat` parsing.
 - Updated `agent-template/src/agent/main_agent.py` so `delegate_to_letta` returns immediately, runs Letta work in the background, publishes categorized summary and presentation streams, and nudges the primary agent with concise talking points.
 - Ran Python syntax check for `agent-template/src/agent/main_agent.py`.
+- Verified live MCP tool names from in-cluster MCP servers:
+  - GenImage: `gi_generate_image`
+  - PDF: `pdf_generate_pdf`
+  - Mail: `mail_send_email_with_attachments`
+- Added reusable Letta deploy-time support tools:
+  - `generate_support_image`: calls `gi_generate_image` and returns presentation artifacts.
+  - `send_storybook_email`: calls `pdf_generate_pdf`, then `mail_send_email_with_attachments`.
+- Added GenImage/PDF/Mail MCP internal URLs to agent ConfigMaps.
+- Updated Playground image accessibility to allow `data:image/...` artifacts.
+- Fixed Playground media controls after live verification showed the presentation panel intercepting the camera button click. Replaced generic `TrackToggle` controls with explicit local participant microphone/camera buttons and a local camera preview.
+- Fixed STT/TTS endpoint routing. Live probes from the Krishna pod confirmed OpenAI-compatible audio endpoints at `http://mcp-api-server.mcp.svc.cluster.local:8000/v1`; the old `mcp-ai-mcp-server` route returned 404 for audio.
+- Updated GPU-AI voice options to currently available gateway voices and mapped retired `Indic-Parler-*` aliases to working voices for existing agent configs.
+- Re-enabled the Agent Builder `Embed` tab for demo use. The tab now calls the same Playground connection bundle mutation to mint a fresh agent-dispatch LiveKit token, shows the LiveKit URL, room, expiry, token, and a `meet.livekit.io` link.
+- Corrected the `meet.livekit.io` link format to use `liveKitUrl` instead of `url`, and to leave the `wss://...` URL unencoded as required by LiveKit Meet's custom join URL.
+- Verified avatar-enabled routing. Krishna was configured with `AVATAR_ENABLED=true` but `FLASHHEAD_ENGINE_URL` pointed to the empty/nonexistent `flashhead` namespace, so avatar startup failed and the session fell back to direct audio output. The working engine is exposed through `avatar-service.live-avatar.svc.cluster.local:8080`, backed by `192.168.0.10:8080`.
+- Updated avatar wiring so future deployments use `ws://avatar-service.live-avatar.svc.cluster.local:8080/v1/session`. For the host-docker engine, signed avatar image URLs must be reachable without Kubernetes DNS; for the demo we set `FLASHHEAD_AVATAR_IMAGE_BASE_URL` to the platform service ClusterIP `http://10.43.5.156` and patched Krishna's current signed image URL accordingly.
+- Aligned Krishna's avatar startup flow with the FlashHead reference pattern. `avatar.start(session, room=ctx.room)` now attaches `QueueAudioOutput` before `session.start()`, and `RoomOptions` leaves `audio_output` unset so LiveKit disables direct RoomIO audio after detecting the avatar output.
+- Re-reviewed `livekit-plugins` avatar examples (`flashhead`, `linly`, `ditto`). Updated the template to match the plugin agent pattern more directly: call `session.start(agent=..., room=ctx.room)` without `RoomOptions` unless vision input is required, and use `session.say(...).wait_for_playout()` for the avatar opener so first TTS is immediately routed through the avatar output.
+- Verified the FlashHead backend was animating but the Krishna reference image was still a bust portrait, making mouth movement hard to see. Added a template-side face-crop preparation step: the agent downloads the signed avatar image, crops a tighter face square with Pillow, serves it from the pod over HTTP, and passes that URL to FlashHead. If the crop URL fails, the avatar start retries the original signed image.
+- Investigated non-Krishna Embed failures. The LiveKit rooms were being created and dispatches were issued, but non-Krishna workers crashed on startup due to legacy config:
+  - `tutor/physics`: stale config/image path missing current GPU-AI STT/TTS base URLs.
+  - `tutor/storyteller`: `LLM_PROVIDER=letta`, which is not a realtime voice LLM provider.
+  - `guruji/guruji-physics`: stale FlashHead URL plus retired UUID-style TTS voice rejected by the GPU-AI audio gateway.
+- Hardened the template so legacy `letta`/`dify` primary LLM provider values fall back to GPU-AI for voice, unknown STT/TTS providers fall back to GPU-AI, retired UUID-style TTS voices map to `aditya`, and stale `flashhead-engine.flashhead` URLs are normalized to the working `avatar-service.live-avatar` endpoint.
 
 ## Verification
 - Pass: `docker build --platform linux/amd64 --target frontend-builder -t agent-crew-creator-presentation-stage:check .`
 - Pass: `docker run --rm --platform linux/amd64 --entrypoint sh agent-crew-creator-presentation-stage:check -lc "npx tsc --noEmit && npx tsc -p tsconfig.server.json --noEmit"`
 - Pass: `python3 -m py_compile agent-template/src/agent/main_agent.py`
 - Pass: `docker build --platform linux/amd64 -t agent-crew-creator-agent-template:check .` from `agent-template/`
+- Pass: `docker build --platform linux/amd64 --target frontend-builder -t agent-crew-creator-support-tools:check .`
+- Pass: `docker run --rm --platform linux/amd64 --entrypoint sh agent-crew-creator-support-tools:check -lc "npx tsc --noEmit && npx tsc -p tsconfig.server.json --noEmit"`
+- Pass: `docker build --platform linux/amd64 --target frontend-builder -t agent-crew-creator-audio-options-fix:check .`
+- Pass: `docker run --rm --platform linux/amd64 --entrypoint sh agent-crew-creator-audio-options-fix:check -lc "npx tsc --noEmit && npx tsc -p tsconfig.server.json --noEmit"`
+- Pass: `docker build --platform linux/amd64 -t bionic-agent-audio-endpoint-fix:check .` from `agent-template/`
+- Pass: `docker run --rm --platform linux/amd64 --entrypoint python bionic-agent-audio-endpoint-fix:check -m py_compile /app/src/config.py /app/src/agent/plugins.py /app/src/agent/gpu_ai_tts.py /app/src/agent/main_agent.py`
+- Pass: deployed `docker4zerocool/bionic-agent:latest` and rolled out `guruji/agent-krishna`.
+- Pass: deployed `docker4zerocool/bionic-platform:latest` and rolled out `bionic-platform/bionic-platform`.
+- Pass: live Playground verification connected to Krishna, camera toggled to `Stop camera` and rendered a local camera preview.
+- Pass: live microphone verification produced transcript text and agent response. Agent logs showed STT metrics from `mcp-api-server.mcp.svc.cluster.local:8000` and TTS metrics with no audio 404.
+- Pass: `docker build --platform linux/amd64 --target frontend-builder -t agent-crew-creator-embed-token:check .`
+- Pass: `docker run --rm --platform linux/amd64 --entrypoint sh agent-crew-creator-embed-token:check -lc "npx tsc --noEmit && npx tsc -p tsconfig.server.json --noEmit"`
+- Pass: deployed `docker4zerocool/bionic-platform:latest` and rolled out `bionic-platform/bionic-platform`.
+- Pass: live Agent Builder verification showed `Embed` tab for `guruji/krishna`, generated a fresh token bundle, displayed `wss://livekit.bionicaisolutions.com`, room `pg-guruji-30-9ebcf9e8-603fd59c`, and a `meet.livekit.io` link.
+- Pass: deployed corrected Meet URL format and live Agent Builder verification showed `https://meet.livekit.io/custom?liveKitUrl=wss://livekit.bionicaisolutions.com&token=...`.
+- Pass: avatar service health verified from Krishna pod: `http://avatar-service.live-avatar.svc.cluster.local:8080/healthz` returned 200.
+- Pass: avatar websocket init verified from Krishna pod: `ws://avatar-service.live-avatar.svc.cluster.local:8080/v1/session` returned `{"type":"ready"}` with Krishna's signed reference image.
+- Pass: live Playground verification connected to Krishna and logs showed `FlashHead avatar started: engine=ws://avatar-service.live-avatar.svc.cluster.local:8080/v1/session name=SriKrishna`; the UI rendered the avatar video participant instead of falling back to static placeholder/direct audio only.
+- Pass: `docker build --platform linux/amd64 -t bionic-agent-avatar-tts:fix /home/skadam/agent-crew-creator/agent-template`.
+- Pass: deployed `docker4zerocool/bionic-agent:latest` digest `sha256:87a9a6173b352cd6d32381eeff20370f5ab0460ec6611637e8033c05d56822ae` and rolled out `guruji/agent-krishna`.
+- Pass: fresh `meet.livekit.io` session dispatched Krishna and logs showed `FlashHead avatar attached TTS audio output before session.start: QueueAudioOutput` and `Agent session started: avatar_active=True audio_output=_SyncedAudioOutput`. Follow-up STT/LLM/TTS metrics appeared in the same job, and Meet rendered the Krishna avatar participant.
+- Pass: `docker build --platform linux/amd64 -t bionic-agent-livekit-plugin-template:check /home/skadam/agent-crew-creator/agent-template`.
+- Pass: deployed `docker4zerocool/bionic-agent:latest` digest `sha256:c8e78ec67e78845ab0b2d7a37ed4e8df565545154340b5b977f2725b4f1a3f71` and rolled out `guruji/agent-krishna`.
+- Pass: fresh `meet.livekit.io` room `pg-guruji-30-9ebcf9e8-139a1c5e` rendered Krishna's avatar participant. Runtime logs showed `FlashHead avatar attached TTS audio output before session.start: QueueAudioOutput`, `Agent session started: avatar_active=True audio_output=_SyncedAudioOutput`, and opener `TTS metrics` with `audio_duration=3.24`.
+- Pass: direct FlashHead websocket probe from the Krishna pod sent real TTS PCM to `ws://avatar-service.live-avatar.svc.cluster.local:8080/v1/session` and received 144 video frames, 144 audio frames, and 20 unique video hashes.
+- Pass: instrumented LiveKit probe showed the actual agent path sent TTS audio into FlashHead and received animated video frames (`video_frames=148`, `audio_frames=96`, `unique_video_hashes=20` for the opener).
+- Pass: deployed face-crop avatar reference image support as `docker4zerocool/bionic-agent:latest` digest `sha256:3de2ccc809cd9dcf7da3829440631b774f0d9ee1d44e57920ff2c91ef5127c9f` and rolled out `guruji/agent-krishna`.
+- Pass: final probe `probe-krishna-final-1777068780` showed the agent prepared a cropped reference (`crop=216,52,809,645`), FlashHead started without falling back, TTS audio reached the bridge, and FlashHead returned `video_frames=148`, `audio_frames=96`, `unique_video_hashes=20`.
+- Pass: deployed all-agent Embed fixes as `docker4zerocool/bionic-agent:latest` digest `sha256:8bd07ab57704779b1850742a84e7e2ecf91602245122b4df7b2ec0b46a2f9a7d`; patched stale `physics-config` ConfigMaps and restarted `tutor/agent-physics`, `tutor/agent-storyteller`, and `guruji/agent-physics`.
+- Pass: final LiveKit dispatch probes succeeded:
+  - `tutor/physics`: registered worker, accepted `probe-final-physics-1777069299`, started FlashHead, produced TTS and `video_frames=149`.
+  - `tutor/storyteller`: registered worker, accepted `probe-final-storyteller-1777069308`, normalized `LLM_PROVIDER=letta`, started FlashHead, and produced TTS.
+  - `guruji/guruji-physics`: registered worker, accepted `probe-final-guruji-physics-1777069328`, started FlashHead through the normalized service URL, produced TTS and `video_frames=165`.
+- Updated the user-editable prompts for `tutor/storyteller` only: primary `SYSTEM_PROMPT` now makes the agent Grandma Mira, a world-travelled grandmother storyteller; `LETTA_SYSTEM_PROMPT` now frames Letta as her storybook studio for research, scene planning, image generation, and PDF storybook email.
+- Created and linked missing Letta agent `tutor-letta-d4f20926` as `agent-ea1eebc0-68a1-4045-abea-79a4f1c8a38a`. Letta rejected the app's prior configured model handle `openai-proxy/qwen3.6-35b-a3b-fp8-think`, so the linked Letta agent was created with the live-supported handle `letta/letta-free`.
+- Synced Letta support tools for the storyteller agent: `generate_support_image`, `send_storybook_email`, and `run_crew`.
+- Pass: redeployed `tutor/agent-storyteller`; rollout completed successfully and the running pod environment now contains the updated Grandma Mira primary prompt, the storybook-studio Letta prompt, `LETTA_AGENT_ID=agent-ea1eebc0-68a1-4045-abea-79a4f1c8a38a`, and `LETTA_LLM_MODEL=letta/letta-free`.
+- Found why the storyteller opened with a UUID and "How can I help today?": avatar-enabled agents still used a hard-coded `on_enter()` greeting (`Hi, I'm {FLASHHEAD_AVATAR_NAME}. How can I help today?`) instead of letting the editable `SYSTEM_PROMPT` drive the opening. Storyteller's `FLASHHEAD_AVATAR_NAME` was the UUID `20ead8ef-94ff-47c2-977e-d7d69a81d9df`.
+- Fixed the avatar opener by removing the avatar-only hard-coded greeting and using `session.generate_reply()` for all agents, so the first response comes from the configured persona prompt while still routing TTS through the already-attached avatar output.
+- Updated storyteller's editable avatar display name to `Grandma Mira`.
+- Pass: built and compiled the agent image in Docker: `docker build --platform linux/amd64 -t bionic-agent-persona-opener:check .` and `python -m py_compile /app/src/agent/main_agent.py`.
+- Pass: pushed `docker4zerocool/bionic-agent:latest` digest `sha256:700ca8c350a20dd9c4d8717b7d77b6ca90897299169752dd331416a05516fb1e` and redeployed `tutor/agent-storyteller`.
+- Pass: running storyteller pod now shows `FLASHHEAD_AVATAR_NAME=Grandma Mira`, the Grandma Mira `SYSTEM_PROMPT`, and `MainAgent.on_enter()` is `self.session.generate_reply()`.
+- Follow-up: the avatar appeared but stayed silent because `generate_reply()` without an initial prompt did not reliably create a first turn. Updated `on_enter()` to call `session.generate_reply(user_input="[System: The user has just joined...]")`, which forces an immediate LLM/TTS opener while still deriving the actual persona and wording from the editable `SYSTEM_PROMPT`.
+- Pass: built, compiled, pushed, and redeployed the immediate opener image as `docker4zerocool/bionic-agent:latest` digest `sha256:35a645dd2da13eff623d9bb06d0ea657aaef42203c22e5ca65394e3b694c7657`.
+- Pass: `tutor/agent-storyteller` rollout completed and the running pod source now shows `MainAgent.on_enter()` calling `session.generate_reply(user_input=...)`.
 - Not run: E2E scripts require live credentials and resource creation/deletion.

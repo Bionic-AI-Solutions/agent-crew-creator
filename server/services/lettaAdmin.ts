@@ -14,6 +14,8 @@ const DIFY_API_URL =
   process.env.DIFY_INTERNAL_URL ||
   "http://dify-api.bionic-platform.svc.cluster.local:5001";
 
+const SUPPORT_TOOL_NAMES = ["generate_support_image", "send_storybook_email"];
+
 function ensureConfigured() {
   if (!LETTA_BASE_URL) throw new Error("LETTA_BASE_URL not configured");
 }
@@ -294,6 +296,248 @@ export async function getAgentTools(agentId: string): Promise<any[]> {
 
 // ── Crew tool sync ──────────────────────────────────────────────
 
+function buildSupportToolsSourceCode(opts: {
+  tenantId: string;
+  genimageMcpUrl: string;
+  pdfMcpUrl: string;
+  mailMcpUrl: string;
+}): Record<string, { sourceCode: string; description: string }> {
+  const tenantId = JSON.stringify(opts.tenantId);
+  const genimageMcpUrl = JSON.stringify(opts.genimageMcpUrl);
+  const pdfMcpUrl = JSON.stringify(opts.pdfMcpUrl);
+  const mailMcpUrl = JSON.stringify(opts.mailMcpUrl);
+
+  const common = `
+import base64
+import json
+import requests
+
+TENANT_ID = ${tenantId}
+
+def _parse_mcp_response(text):
+    lines = []
+    for line in str(text).splitlines():
+        line = line.strip()
+        if line.startswith("data:"):
+            lines.append(line[5:].strip())
+    payload = "\\n".join(lines).strip() or text
+    return json.loads(payload)
+
+def _mcp_call(url, tool_name, arguments):
+    headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+    init_payload = {
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "bionic-letta-tool", "version": "1.0"},
+        },
+        "id": 1,
+    }
+    init_resp = requests.post(url, json=init_payload, headers=headers, timeout=30)
+    init_resp.raise_for_status()
+    session_id = init_resp.headers.get("mcp-session-id")
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+
+    call_payload = {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {"name": tool_name, "arguments": arguments},
+        "id": 2,
+    }
+    resp = requests.post(url, json=call_payload, headers=headers, timeout=300)
+    resp.raise_for_status()
+    parsed = _parse_mcp_response(resp.text)
+    if "error" in parsed:
+        raise RuntimeError(parsed["error"].get("message") or str(parsed["error"]))
+    result = parsed.get("result", {})
+    if isinstance(result, dict):
+        if isinstance(result.get("structuredContent"), dict):
+            return result["structuredContent"]
+        content = result.get("content")
+        if isinstance(content, list) and content:
+            first = content[0]
+            if isinstance(first, dict) and isinstance(first.get("text"), str):
+                try:
+                    return json.loads(first["text"])
+                except Exception:
+                    return {"text": first["text"]}
+    return result
+`;
+
+  return {
+    generate_support_image: {
+      description: "Generate a presentation/story illustration via GenImage MCP and return a display artifact.",
+      sourceCode: `${common}
+GENIMAGE_MCP_URL = ${genimageMcpUrl}
+
+def generate_support_image(prompt: str, title: str = "Illustration", width: int = 1024, height: int = 1024, style: str = "") -> str:
+    """Generate an image for the presentation screen.
+
+    Use this when the primary persona needs a diagram, story illustration,
+    teaching visual, or other image to make the session more engaging.
+
+    Args:
+        prompt: Detailed visual prompt.
+        title: Short title/caption for the image.
+        width: Image width in pixels.
+        height: Image height in pixels.
+        style: Optional style guidance, e.g. "children's storybook watercolor".
+
+    Returns:
+        JSON text with summary and artifacts suitable for the presentation screen.
+    """
+    full_prompt = f"{prompt}\\n\\nStyle: {style}" if style else prompt
+    result = _mcp_call(GENIMAGE_MCP_URL, "gi_generate_image", {
+        "tenant_id": TENANT_ID,
+        "prompt": full_prompt,
+        "width": width,
+        "height": height,
+    })
+    image_url = (
+        result.get("image_url")
+        or result.get("url")
+        or result.get("download_url")
+        or result.get("imageURL")
+        or ""
+    )
+    image_data = result.get("data") or result.get("image_data") or result.get("base64") or ""
+    if not image_url and image_data:
+        image_url = image_data if str(image_data).startswith("data:image/") else f"data:image/png;base64,{image_data}"
+    return json.dumps({
+        "summary": f"Generated illustration: {title}",
+        "artifacts": [{
+            "subtype": "image",
+            "title": title,
+            "summary": prompt[:500],
+            "url": image_url,
+            "image_url": image_url,
+            "content_type": "image/png",
+        }],
+    })
+`.trim(),
+    },
+    send_storybook_email: {
+      description: "Create a PDF story/session summary via PDF MCP and email it with Mail MCP.",
+      sourceCode: `${common}
+PDF_MCP_URL = ${pdfMcpUrl}
+MAIL_MCP_URL = ${mailMcpUrl}
+
+def send_storybook_email(to_email: str, subject: str, title: str, story_markdown: str, from_name: str = "Bionic AI") -> str:
+    """Create a PDF story/session summary and email it to the user.
+
+    Use this at the end of storytelling, teaching, or consultation sessions
+    when the user wants a durable PDF summary/book sent by email.
+
+    Args:
+        to_email: Recipient email address.
+        subject: Email subject.
+        title: PDF title.
+        story_markdown: Markdown content for the PDF body.
+        from_name: Optional sender display name.
+
+    Returns:
+        JSON text with the PDF/email delivery status.
+    """
+    template = """
+    <html>
+      <head>
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; margin: 42px; color: #111827; }
+          h1 { color: #1f2937; }
+          .meta { color: #6b7280; font-size: 12px; margin-bottom: 24px; }
+          .content { white-space: pre-wrap; }
+        </style>
+      </head>
+      <body>
+        <h1>{{title}}</h1>
+        <div class="meta">Prepared by Bionic AI</div>
+        <div class="content">{{story}}</div>
+      </body>
+    </html>
+    """
+    pdf = _mcp_call(PDF_MCP_URL, "pdf_generate_pdf", {
+        "tenant_id": TENANT_ID,
+        "template": template,
+        "content": {"title": title, "story": story_markdown},
+        "filename": f"{title}.pdf",
+        "return_format": "base64",
+    })
+    pdf_data = pdf.get("data") or pdf.get("base64") or ""
+    if not pdf_data:
+        raise RuntimeError("PDF generation did not return base64 data")
+
+    mail = _mcp_call(MAIL_MCP_URL, "mail_send_email_with_attachments", {
+        "tenant_id": TENANT_ID,
+        "to": [to_email],
+        "subject": subject,
+        "body": story_markdown,
+        "body_type": "text",
+        "from_name": from_name,
+        "attachments": [{
+            "filename": pdf.get("filename") or f"{title}.pdf",
+            "content": pdf_data,
+            "content_type": "application/pdf",
+        }],
+    })
+    return json.dumps({
+        "summary": f"PDF summary sent to {to_email}.",
+        "email": mail,
+        "artifacts": [{
+            "subtype": "file",
+            "title": pdf.get("filename") or f"{title}.pdf",
+            "summary": f"PDF summary emailed to {to_email}.",
+            "content_type": "application/pdf",
+        }],
+    })
+`.trim(),
+    },
+  };
+}
+
+async function replaceAgentTool(
+  agentId: string,
+  toolName: string,
+  sourceCode: string,
+  opts: { description: string; tags: string[]; pipRequirements?: { name: string; version?: string }[] },
+): Promise<string> {
+  const agentTools = await getAgentTools(agentId);
+  const existing = agentTools.filter((t: any) => t.name === toolName);
+  for (const tool of existing) {
+    try {
+      await detachToolFromAgent(agentId, tool.id);
+      await deleteTool(tool.id);
+      log.info("Removed old support tool", { toolId: tool.id, toolName });
+    } catch (err) {
+      log.warn("Failed to remove old support tool", { error: String(err), toolName });
+    }
+  }
+
+  const tool = await createTool(sourceCode, opts);
+  await attachToolToAgent(agentId, tool.id);
+  log.info("Synced support tool", { agentId, toolId: tool.id, toolName });
+  return tool.id;
+}
+
+export async function syncSupportTools(
+  agentId: string,
+  opts: { tenantId: string; genimageMcpUrl: string; pdfMcpUrl: string; mailMcpUrl: string },
+): Promise<string[]> {
+  const tools = buildSupportToolsSourceCode(opts);
+  const synced: string[] = [];
+  for (const name of SUPPORT_TOOL_NAMES) {
+    const tool = tools[name];
+    synced.push(await replaceAgentTool(agentId, name, tool.sourceCode, {
+      description: tool.description,
+      tags: ["support", "presentation", "mcp"],
+      pipRequirements: [{ name: "requests" }],
+    }));
+  }
+  return synced;
+}
+
 /**
  * Build the source_code for a `run_crew` Letta tool that calls Dify workflows.
  *
@@ -472,4 +716,5 @@ export const lettaAdmin = {
   deleteTool,
   getAgentTools,
   syncCrewTool,
+  syncSupportTools,
 };

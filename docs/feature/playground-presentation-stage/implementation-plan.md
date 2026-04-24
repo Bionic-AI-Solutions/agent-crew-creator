@@ -11,6 +11,8 @@ Restore the prior classroom-style behavior inside the current Playground: the pr
 - Keep the right-side transcript/output history available.
 - Keep Letta research off the primary voice path so the primary agent can keep talking naturally.
 - Nudge the primary agent with concise categorized points after Letta finishes, rather than forcing it to read long research verbatim.
+- Make support-generation tools reusable for any persona, including teaching, storytelling, consulting, and coaching agents.
+- Use exact live MCP tool names for generated images, PDFs, and email delivery.
 - Avoid reintroducing the removed `player-ui` implementation or duplicate artifact parsing.
 
 ## User Journey
@@ -27,7 +29,13 @@ Restore the prior classroom-style behavior inside the current Playground: the pr
 3. Add a central stage that selects the latest renderable artifact/text support item.
 4. Remove redundant inline artifact parsing from the side panel.
 5. Restore background Letta delegation and split summary/presentation publication in the agent template.
-6. Validate with Dockerized frontend, server TypeScript, Python syntax, and agent image checks.
+6. Register reusable Letta support tools for image generation and PDF/email delivery during agent deploy.
+7. Validate with Dockerized frontend, server TypeScript, Python syntax, and agent image checks.
+
+## MCP Tool Mapping
+- GenImage: `gi_generate_image` via `mcp-genimage-server.mcp.svc.cluster.local:8008/mcp`.
+- PDF: `pdf_generate_pdf` via `mcp-pdf-generator-server.mcp.svc.cluster.local:8003/mcp`.
+- Mail: `mail_send_email_with_attachments` via `mcp-mail-server.mcp.svc.cluster.local:8005/mcp`.
 
 ## Testing Strategy
 - Unit-level coverage is limited because Playground currently has no component tests.

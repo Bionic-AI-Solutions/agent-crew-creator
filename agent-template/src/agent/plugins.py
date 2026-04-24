@@ -7,6 +7,7 @@ at startup. This uses LiveKit's built-in FallbackAdapter pattern.
 """
 
 import logging
+import re
 import httpx
 from livekit.agents import inference
 from livekit.agents.llm import FallbackAdapter as FallbackLLMAdapter
@@ -15,6 +16,49 @@ from livekit.agents.tts import FallbackAdapter as FallbackTTSAdapter
 from config import settings
 
 logger = logging.getLogger("plugins")
+
+
+def _gpu_ai_base_url() -> str:
+    """Return the OpenAI-compatible GPU-AI base URL without the MCP path."""
+    return settings.gpu_ai_mcp_url.removesuffix("/mcp").rstrip("/")
+
+
+def _gpu_ai_llm_base_url() -> str:
+    """Return the OpenAI-compatible LLM base URL."""
+    return settings.gpu_ai_llm_base_url.removesuffix("/").removesuffix("/v1") + "/v1"
+
+
+def _gpu_ai_stt_base_url() -> str:
+    """Return the OpenAI-compatible STT base URL."""
+    return settings.gpu_ai_stt_base_url.removesuffix("/").removesuffix("/v1") + "/v1"
+
+
+def _gpu_ai_tts_base_url() -> str:
+    """Return the OpenAI-compatible TTS base URL."""
+    return settings.gpu_ai_tts_base_url.removesuffix("/").removesuffix("/v1") + "/v1"
+
+
+def _gpu_ai_model_name(model: str | None, default: str) -> str:
+    """Use raw model ids when calling the in-cluster OpenAI-compatible endpoint."""
+    return (model or default).removeprefix("openai-proxy/")
+
+
+def _gpu_ai_tts_voice(voice: str | None) -> str:
+    """Map retired UI aliases to voices currently exposed by the audio gateway."""
+    if not voice:
+        return "aditya"
+    legacy_aliases = {
+        "Indic-Parler-English-Male": "Ash",
+        "Indic-Parler-English-Female": "Alloy",
+        "Indic-Parler-Hindi-Male": "aditya",
+        "Indic-Parler-Hindi-Female": "roopa",
+    }
+    if voice in legacy_aliases:
+        return legacy_aliases[voice]
+    if re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", voice):
+        logger.warning("Retired UUID TTS voice %s detected; using aditya", voice)
+        return "aditya"
+    return voice
 
 
 # ── LLM ──────────────────────────────────────────────────────────
@@ -47,18 +91,24 @@ def _create_primary_llm():
     from livekit.plugins import openai as openai_plugin
 
     provider = settings.llm_provider
+    if provider in {"letta", "dify"}:
+        logger.warning(
+            "LLM provider %s is not a realtime voice provider; using gpu-ai primary LLM",
+            provider,
+        )
+        provider = "gpu-ai"
 
     if provider == "gpu-ai":
-        base_url = settings.gpu_ai_mcp_url.replace("/mcp", "") + "/v1"
+        base_url = _gpu_ai_llm_base_url()
         # External gateway (mcp.baisoln.com) enforces Kong key-auth via
         # X-API-Key header. In-cluster path is unauthenticated. Pass the
         # key both ways so a single config works for both.
         key = settings.gpu_ai_key or "not-needed"
         extra_headers = (
-            {"X-API-Key": settings.gpu_ai_key} if settings.gpu_ai_key else None
+            {"X-API-Key": settings.gpu_ai_key} if settings.gpu_ai_key else {}
         )
         return openai_plugin.LLM(
-            model=settings.llm_model or "qwen3.6-35b-a3b-fp8",
+            model=_gpu_ai_model_name(settings.llm_model, "qwen3.6-35b-a3b-fp8"),
             base_url=base_url,
             api_key=key,
             extra_headers=extra_headers,
@@ -83,7 +133,20 @@ def _create_primary_llm():
             timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0),
         )
 
-    raise ValueError(f"Unknown LLM provider: {provider}")
+    logger.warning("Unknown LLM provider %s; using gpu-ai primary LLM", provider)
+    provider = "gpu-ai"
+    base_url = _gpu_ai_llm_base_url()
+    key = settings.gpu_ai_key or "not-needed"
+    extra_headers = (
+        {"X-API-Key": settings.gpu_ai_key} if settings.gpu_ai_key else {}
+    )
+    return openai_plugin.LLM(
+        model=_gpu_ai_model_name(settings.llm_model, "qwen3.6-35b-a3b-fp8"),
+        base_url=base_url,
+        api_key=key,
+        extra_headers=extra_headers,
+        timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
+    )
 
 
 # Legacy aliases for backward compatibility
@@ -126,13 +189,16 @@ def create_stt_with_fallback():
 def _create_primary_stt():
     """Create STT plugin based on configuration."""
     provider = settings.stt_provider
+    if provider in {"", "whisper"}:
+        provider = "gpu-ai"
 
     if provider in ("gpu-ai", "faster-whisper"):
         from livekit.plugins import openai as openai_plugin
-        base_url = settings.gpu_ai_mcp_url.replace("/mcp", "")
+        key = settings.gpu_ai_key or "not-needed"
         return openai_plugin.STT(
             model=settings.stt_model or "whisper-1",
-            base_url=f"{base_url}/v1",
+            base_url=_gpu_ai_stt_base_url(),
+            api_key=key,
         )
 
     if provider == "deepgram":
@@ -146,7 +212,13 @@ def _create_primary_stt():
             api_key=settings.openai_api_key or None,
         )
 
-    raise ValueError(f"Unknown STT provider: {provider}")
+    logger.warning("Unknown STT provider %s; using gpu-ai STT", provider)
+    from livekit.plugins import openai as openai_plugin
+    return openai_plugin.STT(
+        model=settings.stt_model or "whisper-1",
+        base_url=_gpu_ai_stt_base_url(),
+        api_key=settings.gpu_ai_key or "not-needed",
+    )
 
 
 # Legacy aliases
@@ -195,6 +267,8 @@ def create_tts_with_fallback():
 def _create_primary_tts():
     """Create TTS plugin based on configuration."""
     provider = settings.tts_provider
+    if provider in {"", "indextts", "indextts2"}:
+        provider = "gpu-ai"
 
     if provider == "gpu-ai":
         # gpu-ai's /audio/speech returns raw WAV/MP3, not OpenAI SSE —
@@ -203,12 +277,11 @@ def _create_primary_tts():
         # and fail with "no audio frames were pushed"). Pattern lifted
         # from livekit-plugins/flashhead/examples/tools/local_tts.py.
         from agent.gpu_ai_tts import GpuAiTTS
-        base_url = settings.gpu_ai_mcp_url.replace("/mcp", "") + "/v1"
         return GpuAiTTS(
-            base_url=base_url,
+            base_url=_gpu_ai_tts_base_url(),
             api_key=settings.gpu_ai_key or "not-needed",
             model="indextts2",
-            voice=settings.tts_voice or "aditya",
+            voice=_gpu_ai_tts_voice(settings.tts_voice),
         )
 
     if provider == "cartesia":
@@ -230,7 +303,14 @@ def _create_primary_tts():
         from livekit.plugins import elevenlabs
         return elevenlabs.TTS(voice=settings.tts_voice or "default")
 
-    raise ValueError(f"Unknown TTS provider: {provider}")
+    logger.warning("Unknown TTS provider %s; using gpu-ai TTS", provider)
+    from agent.gpu_ai_tts import GpuAiTTS
+    return GpuAiTTS(
+        base_url=_gpu_ai_tts_base_url(),
+        api_key=settings.gpu_ai_key or "not-needed",
+        model="indextts2",
+        voice=_gpu_ai_tts_voice(settings.tts_voice),
+    )
 
 
 # Legacy aliases

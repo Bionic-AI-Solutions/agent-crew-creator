@@ -54,6 +54,9 @@ class Settings(BaseSettings):
 
     # GPU-AI services
     gpu_ai_mcp_url: str = "http://mcp-ai-mcp-server.mcp.svc.cluster.local:8009/mcp"
+    gpu_ai_llm_base_url: str = "http://llm-deep.mcp.svc.cluster.local:8005/v1"
+    gpu_ai_stt_base_url: str = "http://mcp-api-server.mcp.svc.cluster.local:8000/v1"
+    gpu_ai_tts_base_url: str = "http://mcp-api-server.mcp.svc.cluster.local:8000/v1"
     # External gpu-ai key (optional — only needed when the agent points
     # at the public https://mcp.baisoln.com/gpu-ai/v1 gateway rather
     # than the in-cluster ClusterIP). Not required for in-cluster paths.
@@ -68,7 +71,7 @@ class Settings(BaseSettings):
     avatar_provider: str = "flashhead"
     # Shared cluster endpoint for the flashhead-engine service. Set via
     # the platform ConfigMap (see deploy/.../manifests/bionic-platform).
-    flashhead_engine_url: str = "ws://flashhead-engine.flashhead.svc.cluster.local:8080/v1/session"
+    flashhead_engine_url: str = "ws://avatar-service.live-avatar.svc.cluster.local:8080/v1/session"
     # Per-agent default face (https URL or container path). Can be
     # overridden at dispatch time via job metadata {"reference_image": ...}.
     flashhead_reference_image: str = ""

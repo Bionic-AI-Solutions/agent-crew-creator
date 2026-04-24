@@ -16,6 +16,8 @@ High
 - [x] User journey documented
 - [x] Background Letta delegation restored in agent template
 - [x] Split summary/presentation channels wired in Playground
+- [x] Live MCP tool names verified
+- [x] Reusable Letta tools added for support images and PDF/email delivery
 - [x] Dockerized build, TypeScript, and agent checks complete
 - [ ] Deployment verified
 

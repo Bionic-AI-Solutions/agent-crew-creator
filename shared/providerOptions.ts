@@ -85,10 +85,10 @@ export const TTS_PROVIDERS: ProviderOption[] = [
 export const TTS_VOICES: Record<string, ModelOption[]> = {
   "gpu-ai": [
     { value: "Sudhir-IndexTTS2", label: "Sudhir (IndexTTS-2 Clone)" },
-    { value: "Indic-Parler-Hindi-Female", label: "Hindi Female (Indic Parler)" },
-    { value: "Indic-Parler-Hindi-Male", label: "Hindi Male (Indic Parler)" },
-    { value: "Indic-Parler-English-Female", label: "English Female (Indic Parler)" },
-    { value: "Indic-Parler-English-Male", label: "English Male (Indic Parler)" },
+    { value: "aditya", label: "Aditya (IndexTTS-2 Hindi Male)" },
+    { value: "roopa", label: "Roopa (IndexTTS-2 Hindi Female)" },
+    { value: "Ash", label: "Ash (English Male)" },
+    { value: "Alloy", label: "Alloy (English Neutral)" },
   ],
   "elevenlabs": [
     { value: "21m00Tcm4TlvDq8ikWAM", label: "Rachel" },
