@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Grid3x3, Bot, Settings, LogOut } from "lucide-react";
+import { LayoutDashboard, Grid3x3, Bot, FlaskConical, Settings, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { href: "/", icon: LayoutDashboard, label: "Dashboard" },
   { href: "/apps", icon: Grid3x3, label: "Apps" },
   { href: "/agents", icon: Bot, label: "Agent Builder" },
+  { href: "/playground", icon: FlaskConical, label: "Playground" },
   { href: "/settings", icon: Settings, label: "Settings" },
 ];
 

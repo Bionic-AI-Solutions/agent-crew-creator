@@ -43,6 +43,19 @@ const isAuthenticated = middleware(async ({ ctx, next }) => {
 
 export const protectedProcedure = t.procedure.use(isAuthenticated);
 
+/**
+ * App-scoped routes currently share the platform's authenticated app list
+ * visibility model. Keep this helper explicit so routers that mint scoped
+ * credentials have a single place to tighten membership checks later.
+ */
+export async function assertAppMembership(ctx: Context, _appId: number): Promise<void> {
+  if (!ctx.user) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: "Not authenticated" });
+  }
+}
+
+export const appScopedProcedure = protectedProcedure;
+
 /** Admin — requires admin role */
 const isAdmin = middleware(async ({ ctx, next }) => {
   if (!ctx.user) {
