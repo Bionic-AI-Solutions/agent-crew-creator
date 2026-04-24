@@ -533,16 +533,34 @@ async def entrypoint(ctx: JobContext):
     except Exception:
         user_label = room_name
 
+    # Dispatch metadata can override the default avatar per-session
+    # (reference_image, avatar_name, instructions) — see flashhead
+    # reference agent. Parsed here so it's available below.
+    import json as _json
+    dispatch_meta: dict = {}
+    if ctx.job and ctx.job.metadata:
+        try:
+            dispatch_meta = _json.loads(ctx.job.metadata)
+        except _json.JSONDecodeError:
+            logger.warning("non-JSON job metadata: %s", ctx.job.metadata)
+
     # ── Langfuse OTEL tracing (always on) ────────────────────
     trace_provider = setup_langfuse_otel(session_id=room_name)
 
     # ── Build session with FallbackAdapters ──────────────────
-    session = AgentSession(
+    # Avatar sessions use a QueueAudioOutput that can't be paused — if
+    # an avatar is active we disable interruptions so VAD-driven false
+    # triggers don't break lipsync. This matches the flashhead
+    # reference agent.
+    session_kwargs = dict(
         stt=create_stt_with_fallback(),
         llm=create_llm_with_fallback(),
         tts=create_tts_with_fallback(),
         vad=silero.VAD.load(),
     )
+    if settings.avatar_enabled:
+        session_kwargs["allow_interruptions"] = False
+    session = AgentSession(**session_kwargs)
 
     # ── Metrics logging ──────────────────────────────────────
     @session.on("metrics_collected")
@@ -564,26 +582,89 @@ async def entrypoint(ctx: JobContext):
     # so each user gets isolated memory within the shared agent.
     await swap_user_memory_block(user_label)
 
-    # ── Avatar (BitHuman, configurable) ──────────────────────
-    if settings.avatar_enabled and settings.bithuman_api_key:
-        try:
-            from livekit.plugins import bithuman
-            avatar = bithuman.AvatarSession(
-                api_secret=settings.bithuman_api_secret or settings.bithuman_api_key,
+    # ── Avatar (talking-head) ────────────────────────────────
+    # Default: flashhead via in-cluster flashhead-engine (WebSocket).
+    # Legacy: bithuman (kept for backward compat).
+    # Per-session reference image can be injected via dispatch metadata:
+    #   metadata={"reference_image": "https://...", "avatar_name": "Alice"}
+    avatar = None
+    if settings.avatar_enabled:
+        provider = (settings.avatar_provider or "flashhead").lower()
+
+        if provider == "flashhead":
+            reference_image = (
+                dispatch_meta.get("reference_image")
+                or settings.flashhead_reference_image
             )
-            await avatar.start(session, room=ctx.room)
-            logger.info("BitHuman avatar started")
-        except ImportError:
-            logger.warning("livekit-plugins-bithuman not installed — avatar disabled")
-        except Exception as e:
-            logger.warning("Avatar start failed: %s", e)
+            avatar_name = (
+                dispatch_meta.get("avatar_name")
+                or settings.flashhead_avatar_name
+                or "Avatar"
+            )
+            if not settings.flashhead_engine_url:
+                logger.warning(
+                    "avatar_provider=flashhead but FLASHHEAD_ENGINE_URL not set — avatar disabled"
+                )
+            elif not reference_image:
+                logger.warning(
+                    "avatar_provider=flashhead but no reference_image "
+                    "(set FLASHHEAD_REFERENCE_IMAGE or pass via dispatch metadata) "
+                    "— avatar disabled"
+                )
+            else:
+                try:
+                    from livekit.plugins import flashhead
+                    avatar = flashhead.AvatarSession(
+                        api_url=settings.flashhead_engine_url,
+                        reference_image=reference_image,
+                        avatar_participant_identity=f"{settings.agent_name}-avatar",
+                        avatar_participant_name=avatar_name,
+                    )
+                    await avatar.start(session, room=ctx.room)
+                    logger.info(
+                        "FlashHead avatar started: engine=%s name=%s",
+                        settings.flashhead_engine_url,
+                        avatar_name,
+                    )
+                except ImportError:
+                    logger.warning(
+                        "livekit-plugins-flashhead not installed — avatar disabled. "
+                        "Install with: pip install '.[avatar]'"
+                    )
+                    avatar = None
+                except Exception as e:
+                    logger.warning("FlashHead avatar start failed: %s", e)
+                    avatar = None
+
+        elif provider == "bithuman" and settings.bithuman_api_key:
+            try:
+                from livekit.plugins import bithuman
+                avatar = bithuman.AvatarSession(
+                    api_secret=settings.bithuman_api_secret or settings.bithuman_api_key,
+                )
+                await avatar.start(session, room=ctx.room)
+                logger.info("BitHuman avatar started")
+            except ImportError:
+                logger.warning("livekit-plugins-bithuman not installed — avatar disabled")
+                avatar = None
+            except Exception as e:
+                logger.warning("BitHuman avatar start failed: %s", e)
+                avatar = None
+
+        else:
+            logger.warning(
+                "avatar_enabled but provider=%s is not wired or missing creds — avatar disabled",
+                provider,
+            )
 
     # ── Room options ─────────────────────────────────────────
+    # Route audio through the session unless a real avatar was started —
+    # `avatar` is None if avatar_enabled was set but the provider failed
+    # to initialize. Without this check, a failed avatar start would
+    # leave the user hearing silence.
     room_opts = room_io.RoomOptions(
-        # Vision: feed camera/screen frames to the primary LLM (e.g., Gemma 4 E4B)
         video_input=settings.vision_enabled,
-        # If avatar is active, it handles audio output
-        audio_output=not settings.avatar_enabled,
+        audio_output=(avatar is None),
     )
 
     await session.start(
@@ -618,6 +699,11 @@ async def entrypoint(ctx: JobContext):
     # ── Shutdown cleanup ─────────────────────────────────────
     async def _shutdown(_reason: str = ""):
         await capture_mgr.stop()
+        if avatar is not None:
+            try:
+                await avatar.aclose()
+            except Exception:
+                logger.exception("avatar aclose failed (non-fatal)")
         if trace_provider and hasattr(trace_provider, 'force_flush'):
             trace_provider.force_flush()
         flush_langfuse()

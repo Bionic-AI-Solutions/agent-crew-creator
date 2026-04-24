@@ -150,8 +150,19 @@ step_init_dify() {
     step 7 "Initializing Dify (admin account)..."
     load_env
 
-    local admin_email="${DIFY_ADMIN_EMAIL:-admin@bionic.local}"
-    local admin_password="${DIFY_ADMIN_PASSWORD:-B10n1cD1fy!2026}"
+    # Admin credentials must be sourced from the operator's env (typically
+    # populated from Vault via `vault kv get secret/t6-apps/bionic-platform/config`
+    # before running this script). No hardcoded defaults — setup never
+    # happens with a known password.
+    local admin_email="${DIFY_ADMIN_EMAIL:-}"
+    local admin_password="${DIFY_ADMIN_PASSWORD:-}"
+    if [[ -z "$admin_email" || -z "$admin_password" ]]; then
+        error "DIFY_ADMIN_EMAIL and DIFY_ADMIN_PASSWORD must be set in env."
+        error "Retrieve from Vault before running:"
+        error "  export DIFY_ADMIN_EMAIL=\$(vault kv get -field=dify_admin_email secret/t6-apps/bionic-platform/config)"
+        error "  export DIFY_ADMIN_PASSWORD=\$(vault kv get -field=dify_admin_password secret/t6-apps/bionic-platform/config)"
+        return 1
+    fi
 
     # Check if already initialized
     local setup_status
@@ -201,7 +212,7 @@ step_verify() {
     echo "  API:        http://dify-api.${NAMESPACE}.svc.cluster.local:5001"
     echo "  Web:        http://dify-web.${NAMESPACE}.svc.cluster.local:3000"
     echo "  Proxy:      https://platform.baisoln.com/dify/"
-    echo "  Admin:      ${DIFY_ADMIN_EMAIL:-admin@bionic.local}"
+    echo "  Admin:      ${DIFY_ADMIN_EMAIL:-<not-set>}"
     echo "  LLM (deep): http://llm-deep.mcp.svc.cluster.local:8005"
     echo "  LLM (fast): http://llm-fast.mcp.svc.cluster.local:8015"
     echo "════════════════════════════════════════════════════"

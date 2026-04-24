@@ -1,14 +1,16 @@
 /**
  * Crew template installer.
  *
- * Auth model: this server holds the Dify console admin credentials in
- * env (DIFY_ADMIN_EMAIL / DIFY_ADMIN_PASSWORD) and uses Dify's *password*
- * login to obtain a console session token. This is NOT Keycloak SSO —
- * the end user's Keycloak session is never forwarded to Dify. The
- * end-user-facing flow looks like one click because the platform performs
- * the install on their behalf using the platform's own service identity.
- * Audit implication: anything installCrewTemplate does in Dify is owned
- * by whoever DIFY_ADMIN_EMAIL points at, not by the calling user.
+ * Auth model: this server uses the Dify console admin credentials
+ * stored in Vault (secret/t6-apps/bionic-platform/config,
+ * keys dify_admin_email + dify_admin_password) synced into the pod via
+ * ESO, and uses Dify's *password* login to obtain a console session
+ * token. This is NOT Keycloak SSO — the end user's Keycloak session is
+ * never forwarded to Dify. The end-user-facing flow looks like one
+ * click because the platform performs the install on their behalf
+ * using the platform's own service identity. Audit implication:
+ * anything installCrewTemplate does in Dify is owned by whoever the
+ * Vault-provisioned admin points at, not by the calling user.
  *
  * Flow:
  *   1. Load template YAML, validate user-supplied config.
@@ -30,6 +32,7 @@
  *      as Letta archival passages on the agent's Letta agentId.
  */
 import { createLogger } from "../_core/logger.js";
+import { getDifyAdminCredentials } from "../_core/difyAuth.js";
 import {
   getTemplate,
   renderDsl,
@@ -45,8 +48,7 @@ const DIFY_NS = "bionic-platform";
 const DIFY_INTERNAL = `http://dify-api.${DIFY_NS}.svc.cluster.local:5001`;
 
 async function loginDify(): Promise<string> {
-  const email = process.env.DIFY_ADMIN_EMAIL || "admin@bionic.local";
-  const password = process.env.DIFY_ADMIN_PASSWORD || "B10n1cD1fy!2026";
+  const { email, password } = getDifyAdminCredentials();
   const res = await fetch(`${DIFY_INTERNAL}/console/api/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

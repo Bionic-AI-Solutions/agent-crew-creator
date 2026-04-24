@@ -32,6 +32,12 @@ const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || "minio-tenant-hl.minio.svc.
 const LANGFUSE_HOST = process.env.LANGFUSE_INTERNAL_URL || "http://langfuse-web.langfuse.svc.cluster.local:3000";
 const GPU_AI_MCP_URL = process.env.GPU_AI_MCP_INTERNAL_URL || "http://mcp-ai-mcp-server.mcp.svc.cluster.local:8009/mcp";
 const LIVEKIT_INTERNAL_URL = process.env.LIVEKIT_INTERNAL_URL || "ws://livekit-server.livekit.svc.cluster.local:7880";
+// Shared flashhead-engine for realtime talking-head avatars. Agents
+// with avatarEnabled connect here over WebSocket. Default assumes the
+// engine is deployed in the `flashhead` namespace.
+const FLASHHEAD_ENGINE_URL =
+  process.env.FLASHHEAD_ENGINE_URL || "ws://flashhead-engine.flashhead.svc.cluster.local:8080/v1/session";
+const FLASHHEAD_DEFAULT_REFERENCE_IMAGE = process.env.FLASHHEAD_DEFAULT_REFERENCE_IMAGE || "";
 
 export async function deployAgent(
   db: Database,
@@ -66,8 +72,10 @@ export async function deployAgent(
     AGENT_NAME: agentName,
 
     // ── Primary brain (fast, user-facing voice LLM) ─────────────
+    // Default: Qwen 3.6 35B no-think — best voice latency/quality on
+    // gpu-ai. Agents can override per-agent in the UI.
     LLM_PROVIDER: agent.llmProvider,
-    LLM_MODEL: agent.llmModel || "gemma-4-e4b",
+    LLM_MODEL: agent.llmModel || "qwen3.6-35b-a3b-fp8",
     STT_PROVIDER: agent.sttProvider,
     STT_MODEL: agent.sttModel || "",
     TTS_PROVIDER: agent.ttsProvider,
@@ -77,7 +85,9 @@ export async function deployAgent(
     // ── Secondary brain (Letta) ─────────────────────────────────
     LETTA_AGENT_NAME: agent.lettaAgentName || `${app.slug}-letta-${agent.name}`,
     LETTA_AGENT_ID: agent.lettaAgentId || "",
-    LETTA_LLM_MODEL: agent.lettaLlmModel || "openai-proxy/qwen3.5-27b-fp8",
+    // Letta (executor) defaults to the thinking variant — heavy lifting
+    // is done here so CoT pays off.
+    LETTA_LLM_MODEL: agent.lettaLlmModel || "openai-proxy/qwen3.6-35b-a3b-fp8-think",
     LETTA_SYSTEM_PROMPT: agent.lettaSystemPrompt || "",
 
     // ── Infrastructure URLs (internal cluster) ──────────────────
@@ -96,6 +106,14 @@ export async function deployAgent(
     // ── Agent features ──────────────────────────────────────────
     VISION_ENABLED: String(agent.visionEnabled),
     AVATAR_ENABLED: String(agent.avatarEnabled),
+    // FlashHead is the default avatar engine; bithuman kept as legacy.
+    // Per-agent avatar config comes from agent.avatarProvider /
+    // avatarReferenceImage if set, else falls back to platform defaults.
+    AVATAR_PROVIDER: (agent as any).avatarProvider || "flashhead",
+    FLASHHEAD_ENGINE_URL,
+    FLASHHEAD_REFERENCE_IMAGE:
+      (agent as any).avatarReferenceImage || FLASHHEAD_DEFAULT_REFERENCE_IMAGE,
+    FLASHHEAD_AVATAR_NAME: (agent as any).avatarName || agent.name,
     BACKGROUND_AUDIO_ENABLED: String(agent.backgroundAudioEnabled),
     CAPTURE_MODE: agent.captureMode,
     CAPTURE_INTERVAL_SECONDS: String(agent.captureInterval || 5),

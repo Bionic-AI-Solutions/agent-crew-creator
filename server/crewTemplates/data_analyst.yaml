@@ -99,7 +99,7 @@ difyDsl: |
                 dialect = "{{config.database_dialect}}"
                 schema = """{{config.schema_hint}}"""
                 payload = {
-                    "model": "qwen3.5-27b-fp8",
+                    "model": "qwen3.6-35b-a3b-fp8-think",
                     "messages": [
                         {"role": "system", "content": f"You are a senior data analyst writing {dialect} SQL. Given the schema below and a question, output: 1) SQL query in a fenced ```sql block 2) Step-by-step reasoning 3) Expected findings narrative. Schema:\n{schema}"},
                         {"role": "user", "content": question}

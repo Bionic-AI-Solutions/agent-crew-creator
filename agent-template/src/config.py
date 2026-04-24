@@ -20,16 +20,20 @@ class Settings(BaseSettings):
     livekit_api_secret: str = ""
 
     # ── Primary brain (fast, user-facing voice LLM) ──────────────
+    # Default: Qwen 3.6 35B (no-think) — best voice-latency/quality
+    # tradeoff on gpu-ai. Use -think suffix for derivation/reasoning.
     llm_provider: str = "gpu-ai"
-    llm_model: str = "gemma-4-e4b"
+    llm_model: str = "qwen3.6-35b-a3b-fp8"
     custom_llm_base_url: Optional[str] = None
     custom_llm_api_key: Optional[str] = None
 
     # ── Secondary brain (Letta — powerful executor) ──────────────
+    # Default: Qwen 3.6 with thinking ON — Letta handles multi-step
+    # reasoning, tool chains, and crew orchestration where CoT pays off.
     letta_base_url: str = "http://letta-server.letta.svc.cluster.local:8283"
     letta_agent_name: str = ""
     letta_agent_id: str = ""
-    letta_llm_model: str = "openai-proxy/qwen3.5-27b-fp8"
+    letta_llm_model: str = "openai-proxy/qwen3.6-35b-a3b-fp8-think"
     letta_system_prompt: str = ""
     letta_api_key: str = ""
     mcp_api_key: str = ""
@@ -50,9 +54,26 @@ class Settings(BaseSettings):
 
     # GPU-AI services
     gpu_ai_mcp_url: str = "http://mcp-ai-mcp-server.mcp.svc.cluster.local:8009/mcp"
+    # External gpu-ai key (optional — only needed when the agent points
+    # at the public https://mcp.baisoln.com/gpu-ai/v1 gateway rather
+    # than the in-cluster ClusterIP). Not required for in-cluster paths.
+    gpu_ai_key: str = ""
 
-    # Avatar
+    # ── Avatar ───────────────────────────────────────────────────
+    # avatar_provider selects the rendering backend when avatar_enabled:
+    #   "flashhead" (default)  — SoulX-FlashHead via in-cluster
+    #                            flashhead-engine (WebSocket, shared)
+    #   "bithuman"             — legacy BitHuman runtime (optional)
     avatar_enabled: bool = False
+    avatar_provider: str = "flashhead"
+    # Shared cluster endpoint for the flashhead-engine service. Set via
+    # the platform ConfigMap (see deploy/.../manifests/bionic-platform).
+    flashhead_engine_url: str = "ws://flashhead-engine.flashhead.svc.cluster.local:8080/v1/session"
+    # Per-agent default face (https URL or container path). Can be
+    # overridden at dispatch time via job metadata {"reference_image": ...}.
+    flashhead_reference_image: str = ""
+    flashhead_avatar_name: str = "Avatar"
+    # Legacy BitHuman (kept for backward compat with existing agents).
     bithuman_api_key: str = ""
     bithuman_api_secret: str = ""
     bithuman_api_url: str = "http://192.168.0.10:8089/launch"

@@ -4,8 +4,12 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "esModuleInterop": true,
+    // Base config keeps the looser settings the client code was
+    // written under — full strict is enabled in tsconfig.server.json
+    // where it matters (security-critical code path).
     "strict": false,
     "noImplicitAny": false,
+    "strictNullChecks": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,

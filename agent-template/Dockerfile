@@ -2,12 +2,16 @@ FROM python:3.11-slim AS base
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (git needed for git+https pip installs)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies — aligned with pyproject.toml
+# Copy pre-built flashhead wheel (avoids needing GitHub auth in the build)
+COPY livekit_plugins_flashhead-0.3.6-py3-none-any.whl ./
+
+# Install Python dependencies
 RUN pip install --no-cache-dir \
     "livekit-agents>=1.5.0" \
     "livekit-plugins-silero>=1.0.0" \
@@ -16,17 +20,13 @@ RUN pip install --no-cache-dir \
     "pydantic-settings>=2.0.0" \
     "httpx>=0.27.0" \
     "langfuse>=3.0.0" \
-    # OTEL for Langfuse pipeline tracing
     "opentelemetry-sdk>=1.20.0" \
     "opentelemetry-exporter-otlp-proto-http>=1.20.0" \
     "opentelemetry-instrumentation-httpx>=0.44b0" \
-    # Fallback providers (keys from Vault, not user-configurable)
     "livekit-plugins-deepgram>=1.0.0" \
     "livekit-plugins-cartesia>=1.0.0" \
     "livekit-plugins-elevenlabs>=1.0.0" \
-    # Avatar
-    "livekit-plugins-bithuman>=0.1.0" \
-    # Capture (frame → PNG) and storage
+    "./livekit_plugins_flashhead-0.3.6-py3-none-any.whl" \
     "Pillow>=10.0.0" \
     "minio>=7.2.0"
 

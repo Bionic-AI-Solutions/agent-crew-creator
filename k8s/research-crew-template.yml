@@ -38,7 +38,7 @@ workflow:
         params: ""
         body:
           type: raw-text
-          data: '{"model":"qwen3.5-27b-fp8","messages":[{"role":"system","content":"You are a Research Agent. Analyze the given task. Identify 3-5 key aspects. Provide detailed analysis with examples. Structure findings with clear headings. Output plain text only, no thinking process."},{"role":"user","content":"Task: {{#start.task#}}\nContext: {{#start.context#}}\nProvide research findings."}],"temperature":0.7,"max_tokens":2048}'
+          data: '{"model":"qwen3.6-35b-a3b-fp8-think","messages":[{"role":"system","content":"You are a Research Agent. Analyze the given task. Identify 3-5 key aspects. Provide detailed analysis with examples. Structure findings with clear headings. Output plain text only, no thinking process."},{"role":"user","content":"Task: {{#start.task#}}\nContext: {{#start.context#}}\nProvide research findings."}],"temperature":0.7,"max_tokens":2048}'
         authorization: {type: no-auth}
         timeout: {connect: 10, read: 120, write: 60}
       id: researcher
@@ -74,7 +74,7 @@ workflow:
           import json
           def main(task: str, research: str) -> dict:
               payload = {
-                  "model": "qwen3.5-27b-fp8",
+                  "model": "qwen3.6-35b-a3b-fp8-think",
                   "messages": [
                       {"role": "system", "content": "You are a Writer Agent. Create a professional report with: Executive Summary, Key Findings, Recommendations, Conclusion. Output plain text, no thinking process."},
                       {"role": "user", "content": f"Task: {task}\n\nResearch findings:\n{research}\n\nWrite a comprehensive report."}

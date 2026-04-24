@@ -73,6 +73,10 @@ export const agentConfigs = pgTable(
     systemPrompt: text("system_prompt"),
     visionEnabled: boolean("vision_enabled").default(false).notNull(),
     avatarEnabled: boolean("avatar_enabled").default(false).notNull(),
+    // flashhead (default) | bithuman (legacy)
+    avatarProvider: varchar("avatar_provider", { length: 30 }).default("flashhead"),
+    avatarReferenceImage: text("avatar_reference_image"),
+    avatarName: varchar("avatar_name", { length: 100 }),
     backgroundAudioEnabled: boolean("background_audio_enabled").default(false).notNull(),
     captureMode: varchar("capture_mode", { length: 20 }).default("off").notNull(),
     captureInterval: integer("capture_interval").default(5),
@@ -80,7 +84,8 @@ export const agentConfigs = pgTable(
     // Letta agent (secondary/execution arm)
     lettaAgentName: varchar("letta_agent_name", { length: 255 }),
     lettaAgentId: varchar("letta_agent_id", { length: 255 }),
-    lettaLlmModel: varchar("letta_llm_model", { length: 200 }).default("openai-proxy/qwen3.5-27b-fp8"),
+    // Default: Qwen 3.6 with thinking ON — Letta is the reasoning arm.
+    lettaLlmModel: varchar("letta_llm_model", { length: 200 }).default("openai-proxy/qwen3.6-35b-a3b-fp8-think"),
     lettaSystemPrompt: text("letta_system_prompt"),
 
     // Deployment
@@ -266,12 +271,20 @@ export const agentDocuments = pgTable(
     contentType: varchar("content_type", { length: 100 }),
     chunkCount: integer("chunk_count"),
     lettaPassageIds: json("letta_passage_ids").$type<string[]>(),
+    // processing_status values:
+    //   pending | processing | complete | failed   - ingest pipeline
+    //   deleted                                    - user initiated delete,
+    //                                                awaiting cleanup
+    //   delete_failed                              - cleanup attempt failed,
+    //                                                cron will retry
     processingStatus: varchar("processing_status", { length: 50 }).default("pending").notNull(),
     error: text("error"),
+    deletedAt: timestamp("deleted_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => [
     index("idx_agent_docs_config").on(table.agentConfigId),
+    index("idx_agent_docs_status").on(table.processingStatus),
   ],
 );
 

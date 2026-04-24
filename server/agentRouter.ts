@@ -2,6 +2,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { router, adminProcedure, protectedProcedure, analystOrAdminProcedure } from "./_core/trpc.js";
 import { createLogger } from "./_core/logger.js";
+import { getDifyAdminCredentials } from "./_core/difyAuth.js";
 import {
   agentConfigs,
   agentTools,
@@ -762,11 +763,12 @@ export const agentRouter = router({
       const difyApiUrl = `http://dify-api.${DIFY_NS}.svc.cluster.local:5001`;
       const externalDifyUrl = process.env.DIFY_EXTERNAL_BASE_URL || "https://dify.baisoln.com";
 
-      // Get a Dify session token so the user doesn't have to login separately
+      // Get a Dify session token so the user doesn't have to login separately.
+      // Credentials come from Vault (bionic-platform-secrets via ESO) — never
+      // hardcode defaults.
       let difyToken: string | null = null;
       try {
-        const difyEmail = process.env.DIFY_ADMIN_EMAIL || "admin@bionic.local";
-        const difyPassword = process.env.DIFY_ADMIN_PASSWORD || "B10n1cD1fy!2026";
+        const { email: difyEmail, password: difyPassword } = getDifyAdminCredentials();
         const loginRes = await fetch(`${difyApiUrl}/console/api/login`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -777,7 +779,8 @@ export const agentRouter = router({
           difyToken = loginData?.data?.access_token || null;
         }
       } catch {
-        // Dify may not be available — token will be null, user logs in manually
+        // Dify may not be available OR creds not provisioned — token will be
+        // null, user logs in manually.
       }
 
       return {
@@ -803,9 +806,18 @@ export const agentRouter = router({
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
-      // TODO: Delete from MinIO + Letta passages
-      await ctx.db.delete(agentDocuments).where(eq(agentDocuments.id, input.id));
-      return { success: true };
+      // Two-stage delete: mark first (so the UI stops showing it and so
+      // the cleanup cron has a definite signal), then best-effort cleanup
+      // in the same request. If cleanup fails, documentCleanup leaves the
+      // row as processing_status='delete_failed' and the cron retries it.
+      await ctx.db
+        .update(agentDocuments)
+        .set({ processingStatus: "deleted", deletedAt: new Date() })
+        .where(eq(agentDocuments.id, input.id));
+
+      const { cleanupDocument } = await import("./services/documentCleanup.js");
+      const result = await cleanupDocument(ctx.db, input.id);
+      return { success: true, cleanup: result.status };
     }),
 
   // ── Deployment ────────────────────────────────────────────────

@@ -265,7 +265,7 @@ difyDsl: |
           title: Build Research Payload
           type: code
           code_language: python3
-          code: "import json\ndef main(subject: str, notes: str, sources: str) -> dict:\n    focus = \"\"\"{{config.report_focus}}\"\"\"\n    payload = {\n        \"model\": \"qwen3.5-27b-fp8\",\n        \"messages\": [\n            {\"role\": \"system\", \"content\": f\"You are a due-diligence researcher. Focus areas: {focus}. Extract structured findings from the provided sources.\"},\n            {\"role\": \"user\", \"content\": f\"Subject: {subject}\\nNotes: {notes}\\n\\nSources:\\n{sources}\"}\n        ],\n        \"temperature\": 0.3,\n        \"max_tokens\": 3000\n    }\n    return {\"payload\": json.dumps(payload)}\n"
+          code: "import json\ndef main(subject: str, notes: str, sources: str) -> dict:\n    focus = \"\"\"{{config.report_focus}}\"\"\"\n    payload = {\n        \"model\": \"qwen3.6-35b-a3b-fp8-think\",\n        \"messages\": [\n            {\"role\": \"system\", \"content\": f\"You are a due-diligence researcher. Focus areas: {focus}. Extract structured findings from the provided sources.\"},\n            {\"role\": \"user\", \"content\": f\"Subject: {subject}\\nNotes: {notes}\\n\\nSources:\\n{sources}\"}\n        ],\n        \"temperature\": 0.3,\n        \"max_tokens\": 3000\n    }\n    return {\"payload\": json.dumps(payload)}\n"
           variables:
           - variable: subject
             value_selector:
@@ -360,7 +360,7 @@ difyDsl: |
           title: Build Report Payload
           type: code
           code_language: python3
-          code: "import json\ndef main(subject: str, findings: str) -> dict:\n    payload = {\n        \"model\": \"qwen3.5-27b-fp8\",\n        \"messages\": [\n            {\"role\": \"system\", \"content\": \"You are a due-diligence report writer. Produce a Markdown dossier with: Executive Summary, Subject Profile, Key Findings, Risk Assessment (low/medium/high), Recommended Actions. Include 1-2 Mermaid diagrams (flowchart or pie) where useful.\"},\n            {\"role\": \"user\", \"content\": f\"Subject: {subject}\\n\\nResearch findings:\\n{findings}\"}\n        ],\n        \"temperature\": 0.4,\n        \"max_tokens\": 4000\n    }\n    return {\"payload\": json.dumps(payload)}\n"
+          code: "import json\ndef main(subject: str, findings: str) -> dict:\n    payload = {\n        \"model\": \"qwen3.6-35b-a3b-fp8-think\",\n        \"messages\": [\n            {\"role\": \"system\", \"content\": \"You are a due-diligence report writer. Produce a Markdown dossier with: Executive Summary, Subject Profile, Key Findings, Risk Assessment (low/medium/high), Recommended Actions. Include 1-2 Mermaid diagrams (flowchart or pie) where useful.\"},\n            {\"role\": \"user\", \"content\": f\"Subject: {subject}\\n\\nResearch findings:\\n{findings}\"}\n        ],\n        \"temperature\": 0.4,\n        \"max_tokens\": 4000\n    }\n    return {\"payload\": json.dumps(payload)}\n"
           variables:
           - variable: subject
             value_selector:

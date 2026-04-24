@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 import { createLogger } from "./_core/logger.js";
 import { createContext } from "./_core/trpc.js";
 import { createAuthRouter } from "./_core/auth.js";
+import { getDifyAdminCredentials } from "./_core/difyAuth.js";
 import { appTrpcRouter } from "./routers.js";
 
 const log = createLogger("Server");
@@ -226,8 +227,7 @@ app.use("/dify/v1", createProxyMiddleware({
 app.get("/dify-login", async (req, res) => {
   try {
     const difyApiUrl = `http://dify-api.${DIFY_NS}.svc.cluster.local:5001`;
-    const difyEmail = process.env.DIFY_ADMIN_EMAIL || "admin@bionic.local";
-    const difyPassword = process.env.DIFY_ADMIN_PASSWORD || "B10n1cD1fy!2026";
+    const { email: difyEmail, password: difyPassword } = getDifyAdminCredentials();
     const externalDifyUrl = process.env.DIFY_EXTERNAL_BASE_URL || "https://dify.baisoln.com";
 
     const loginRes = await fetch(`${difyApiUrl}/console/api/login`, {
@@ -311,6 +311,21 @@ app.get("*", (_req, res) => {
     if (err) res.status(404).send("Not found");
   });
 });
+
+// ── Background workers ─────────────────────────────────────────
+// Kick off the document-cleanup cron. Soft-deleted rows (status
+// "deleted" or "delete_failed") get swept every 5 minutes — belt for
+// the synchronous cleanup attempt already done in deleteDocument.
+// (getDb was already imported at the top of the file.)
+import { startCleanupCron } from "./services/documentCleanup.js";
+void (async () => {
+  try {
+    const db = await getDb();
+    if (db) startCleanupCron(db);
+  } catch (err) {
+    log.warn("Document cleanup cron not started", { error: String(err) });
+  }
+})();
 
 // ── Start ───────────────────────────────────────────────────────
 app.listen(PORT, "0.0.0.0", () => {

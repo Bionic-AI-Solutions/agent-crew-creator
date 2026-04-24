@@ -5,7 +5,16 @@
     "outDir": "dist",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "strictNullChecks": true
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "noImplicitThis": true,
+    "alwaysStrict": true,
+    "useUnknownInCatchVariables": true,
+    "noFallthroughCasesInSwitch": true
   },
   "include": ["server", "shared", "drizzle"]
 }

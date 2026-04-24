@@ -162,7 +162,7 @@ difyDsl: |
             import json
             def main(query: str, sources: str) -> dict:
                 payload = {
-                    "model": "qwen3.5-27b-fp8",
+                    "model": "qwen3.6-35b-a3b-fp8-think",
                     "messages": [
                         {"role": "system", "content": "You are a research analyst. Synthesise the provided sources into a structured report with: 1) Executive Summary 2) Key Findings (with [n] citations) 3) Detailed Analysis 4) Conclusions. Cite sources by number."},
                         {"role": "user", "content": f"Research query: {query}\n\nSources:\n{sources}\n\nProduce the report."}

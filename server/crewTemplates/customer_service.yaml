@@ -195,7 +195,7 @@ difyDsl: |
           title: Build Reply Payload
           type: code
           code_language: python3
-          code: "import json\ndef main(question: str, context: str) -> dict:\n    site = \"{{config.website_url}}\"\n    payload = {\n        \"model\": \"qwen3.5-27b-fp8\",\n        \"messages\": [\n            {\"role\": \"system\", \"content\": f\"You are a helpful customer service agent for {site}. Answer using only the provided site content. Be concise, friendly, and accurate. If the answer isn't in the content, say so and offer to escalate.\"},\n            {\"role\": \"user\", \"content\": f\"Customer asks: {question}\\n\\nRelevant site content:\\n{context}\"}\n        ],\n        \"temperature\": 0.4,\n        \"max_tokens\": 1000\n    }\n    return {\"payload\": json.dumps(payload)}\n"
+          code: "import json\ndef main(question: str, context: str) -> dict:\n    site = \"{{config.website_url}}\"\n    payload = {\n        \"model\": \"qwen3.6-35b-a3b-fp8-think\",\n        \"messages\": [\n            {\"role\": \"system\", \"content\": f\"You are a helpful customer service agent for {site}. Answer using only the provided site content. Be concise, friendly, and accurate. If the answer isn't in the content, say so and offer to escalate.\"},\n            {\"role\": \"user\", \"content\": f\"Customer asks: {question}\\n\\nRelevant site content:\\n{context}\"}\n        ],\n        \"temperature\": 0.4,\n        \"max_tokens\": 1000\n    }\n    return {\"payload\": json.dumps(payload)}\n"
           variables:
           - variable: question
             value_selector:

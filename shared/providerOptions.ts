@@ -62,9 +62,14 @@ export const LLM_MODELS: Record<string, ModelOption[]> = {
     { value: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro" },
     { value: "meta-llama/llama-4-maverick", label: "Llama 4 Maverick" },
   ],
+  // gpu-ai cluster models. qwen3.6-35b-a3b-fp8 is the house default
+  // (same weights, priority=0 in gpu-ai scheduler). The -think suffix
+  // toggles CoT ON for multi-step reasoning — slower but better at
+  // derivation. Legacy qwen3.5/gemma-4 names still alias on the
+  // gateway but should not be shown in new pickers.
   "gpu-ai": [
-    { value: "openai-proxy/qwen3.5-27b-fp8", label: "Qwen 3.5 27B (Deep)" },
-    { value: "openai-proxy/gemma-4-e4b", label: "Gemma 4 E4B (Fast)" },
+    { value: "openai-proxy/qwen3.6-35b-a3b-fp8", label: "Qwen 3.6 35B (Fast, no-think)" },
+    { value: "openai-proxy/qwen3.6-35b-a3b-fp8-think", label: "Qwen 3.6 35B (Thinking)" },
   ],
   "custom": [],
 };
@@ -98,9 +103,12 @@ export const TTS_VOICES: Record<string, ModelOption[]> = {
 
 // ── Letta LLM Models (for secondary agent) ──────────────────────
 
+// Letta (secondary executor) defaults to the thinking variant — this
+// brain does the heavy reasoning, so CoT pays off. The no-think variant
+// is here for agents that don't need derivation (faster).
 export const LETTA_LLM_MODELS: ModelOption[] = [
-  { value: "openai-proxy/qwen3.5-27b-fp8", label: "Qwen 3.5 27B (Deep — GPU)" },
-  { value: "openai-proxy/gemma-4-e4b", label: "Gemma 4 E4B (Fast — GPU)" },
+  { value: "openai-proxy/qwen3.6-35b-a3b-fp8-think", label: "Qwen 3.6 35B (Thinking — GPU, default)" },
+  { value: "openai-proxy/qwen3.6-35b-a3b-fp8", label: "Qwen 3.6 35B (Fast, no-think — GPU)" },
   { value: "anthropic/claude-sonnet-4-20250514", label: "Claude Sonnet 4" },
   { value: "openai/gpt-4o", label: "GPT-4o" },
   { value: "openai/gpt-4o-mini", label: "GPT-4o Mini" },

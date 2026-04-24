@@ -23,13 +23,20 @@ fallback = [
     "livekit-plugins-deepgram>=1.0.0",
     "livekit-plugins-cartesia>=1.0.0",
 ]
+# Default avatar provider — flashhead is a Bionic fork plugin that
+# speaks to an in-cluster flashhead-engine over WebSocket.
 avatar = [
+    "livekit-plugins-flashhead @ git+https://github.com/Bionic-AI-Solutions/livekit-plugins.git#subdirectory=flashhead",
+]
+# Legacy BitHuman runtime — still wired behind avatar_provider=bithuman.
+avatar-bithuman = [
     "livekit-plugins-bithuman>=0.1.0",
 ]
 all-providers = [
     "livekit-plugins-deepgram>=1.0.0",
     "livekit-plugins-elevenlabs>=1.0.0",
     "livekit-plugins-cartesia>=1.0.0",
+    "livekit-plugins-flashhead @ git+https://github.com/Bionic-AI-Solutions/livekit-plugins.git#subdirectory=flashhead",
     "livekit-plugins-bithuman>=0.1.0",
 ]
 dev = [

@@ -49,12 +49,19 @@ def _create_primary_llm():
     provider = settings.llm_provider
 
     if provider == "gpu-ai":
-        # Internal cluster GPU — no auth required within cluster
         base_url = settings.gpu_ai_mcp_url.replace("/mcp", "") + "/v1"
+        # External gateway (mcp.baisoln.com) enforces Kong key-auth via
+        # X-API-Key header. In-cluster path is unauthenticated. Pass the
+        # key both ways so a single config works for both.
+        key = settings.gpu_ai_key or "not-needed"
+        extra_headers = (
+            {"X-API-Key": settings.gpu_ai_key} if settings.gpu_ai_key else None
+        )
         return openai_plugin.LLM(
-            model=settings.llm_model or "gemma-4-e4b",
+            model=settings.llm_model or "qwen3.6-35b-a3b-fp8",
             base_url=base_url,
-            api_key="not-needed",
+            api_key=key,
+            extra_headers=extra_headers,
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
         )
 
@@ -190,12 +197,18 @@ def _create_primary_tts():
     provider = settings.tts_provider
 
     if provider == "gpu-ai":
-        from livekit.plugins import openai as openai_plugin
-        base_url = settings.gpu_ai_mcp_url.replace("/mcp", "")
-        return openai_plugin.TTS(
-            model="tts-1",
-            voice=settings.tts_voice or "alloy",
-            base_url=f"{base_url}/v1",
+        # gpu-ai's /audio/speech returns raw WAV/MP3, not OpenAI SSE —
+        # use our custom adapter instead of openai.TTS (which would try
+        # the SSE path for any model name other than "tts-1"/"tts-1-hd"
+        # and fail with "no audio frames were pushed"). Pattern lifted
+        # from livekit-plugins/flashhead/examples/tools/local_tts.py.
+        from agent.gpu_ai_tts import GpuAiTTS
+        base_url = settings.gpu_ai_mcp_url.replace("/mcp", "") + "/v1"
+        return GpuAiTTS(
+            base_url=base_url,
+            api_key=settings.gpu_ai_key or "not-needed",
+            model="indextts2",
+            voice=settings.tts_voice or "aditya",
         )
 
     if provider == "cartesia":
