@@ -10,6 +10,9 @@ const log = createLogger("K8s");
 
 const K8S_LIVEKIT_NAMESPACE = process.env.K8S_LIVEKIT_NAMESPACE || "livekit";
 const LIVEKIT_KEYS_SECRET = process.env.LIVEKIT_KEYS_SECRET_NAME || "livekit-api-keys";
+const AGENT_MODEL_CACHE_NFS_SERVER = process.env.AGENT_MODEL_CACHE_NFS_SERVER || "192.168.0.109";
+const AGENT_MODEL_CACHE_NFS_PATH =
+  process.env.AGENT_MODEL_CACHE_NFS_PATH || "/volume1/docker/bionic-shared/agent-models";
 
 /** Check if a K8s client error is a 404 Not Found */
 function is404(err: any): boolean {
@@ -282,6 +285,16 @@ export async function applyAgentDeployment(
           annotations: { "bionic/deployed-at": new Date().toISOString() },
         },
         spec: {
+          initContainers: [{
+            name: "seed-model-cache",
+            image,
+            command: ["sh", "-c"],
+            args: [
+              "mkdir -p /models/hf/hub /models/cache && cp -rn /root/.cache/huggingface/hub/. /models/hf/hub/ 2>/dev/null || true && echo 'model cache seeded:' && ls /models/hf/hub/",
+            ],
+            volumeMounts: [{ name: "model-cache", mountPath: "/models" }],
+            resources: { requests: { cpu: "50m", memory: "64Mi" }, limits: { cpu: "500m", memory: "512Mi" } },
+          }],
           containers: [{
             name: "agent",
             image,
@@ -303,8 +316,17 @@ export async function applyAgentDeployment(
               // MinIO
               { name: "MINIO_ACCESS_KEY", valueFrom: { secretKeyRef: { name: secretName, key: "minio_access_key", optional: true } } },
               { name: "MINIO_SECRET_KEY", valueFrom: { secretKeyRef: { name: secretName, key: "minio_secret_key", optional: true } } },
+              // Shared model cache used by LiveKit turn detector and local model utilities.
+              { name: "HF_HOME", value: "/models/hf" },
+              { name: "TRANSFORMERS_CACHE", value: "/models/hf" },
+              { name: "XDG_CACHE_HOME", value: "/models/cache" },
             ],
+            volumeMounts: [{ name: "model-cache", mountPath: "/models" }],
             resources: { requests: { cpu: "250m", memory: "512Mi" }, limits: { cpu: "1000m", memory: "2Gi" } },
+          }],
+          volumes: [{
+            name: "model-cache",
+            nfs: { server: AGENT_MODEL_CACHE_NFS_SERVER, path: AGENT_MODEL_CACHE_NFS_PATH },
           }],
         },
       },
@@ -346,7 +368,18 @@ export async function getDeploymentStatus(
     const dep = result?.body || result;
     const ready = dep?.status?.readyReplicas || 0;
     const desired = dep?.spec?.replicas || 1;
-    return { status: ready >= desired ? "running" : "deploying", replicas: ready, message: `${ready}/${desired} replicas ready` };
+    const updated = dep?.status?.updatedReplicas || 0;
+    const unavailable = dep?.status?.unavailableReplicas || 0;
+    const progress = (dep?.status?.conditions || []).find((condition: any) => condition.type === "Progressing");
+    if (progress?.status === "False" && progress?.reason === "ProgressDeadlineExceeded") {
+      return { status: "failed", replicas: ready, message: `${ready}/${desired} replicas ready; rollout failed` };
+    }
+    const running = updated >= desired && ready >= desired && unavailable === 0;
+    return {
+      status: running ? "running" : "deploying",
+      replicas: ready,
+      message: `${ready}/${desired} replicas ready, ${updated}/${desired} updated`,
+    };
   } catch (err: any) {
     if (is404(err)) return { status: "stopped", replicas: 0, message: "Not deployed" };
     return { status: "unknown", replicas: 0, message: String(err) };

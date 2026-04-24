@@ -53,10 +53,54 @@ import multer from "multer";
 import { getUserFromRequest } from "./_core/auth.js";
 import { getDb } from "./db.js";
 import { agentDocuments, agentConfigs, apps } from "../drizzle/platformSchema.js";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { randomUUID } from "crypto";
+import { verifyAvatarImageSignature } from "./services/avatarUrl.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+
+app.get("/api/apps/:appSlug/agents/:agentName/avatar-image", async (req, res) => {
+  try {
+    const appSlug = String(req.params.appSlug);
+    const agentName = String(req.params.agentName);
+    const expiresAt = Number(req.query.expires);
+    const signature = String(req.query.signature || "");
+    if (!verifyAvatarImageSignature(appSlug, agentName, expiresAt, signature)) {
+      res.status(403).json({ error: "Avatar image URL expired or invalid" });
+      return;
+    }
+
+    const db = await getDb();
+    if (!db) { res.status(500).json({ error: "Database not available" }); return; }
+
+    const [appRecord] = await db
+      .select()
+      .from(apps)
+      .where(eq(apps.slug, appSlug))
+      .limit(1);
+    if (!appRecord) { res.status(404).json({ error: "App not found" }); return; }
+
+    const [agent] = await db
+      .select()
+      .from(agentConfigs)
+      .where(and(eq(agentConfigs.appId, appRecord.id), eq(agentConfigs.name, agentName)))
+      .limit(1);
+    if (!agent?.avatarReferenceImage?.startsWith("data:image/")) {
+      res.status(404).json({ error: "Avatar image not found" });
+      return;
+    }
+
+    const match = agent.avatarReferenceImage.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (!match) { res.status(415).json({ error: "Unsupported avatar image format" }); return; }
+
+    res.setHeader("Content-Type", match[1]);
+    res.setHeader("Cache-Control", "public, max-age=300");
+    res.send(Buffer.from(match[2], "base64"));
+  } catch (err) {
+    log.error("Avatar image fetch error", { error: String(err) });
+    res.status(500).json({ error: "Avatar image fetch failed" });
+  }
+});
 
 app.post("/api/agents/:agentId/documents", upload.single("file"), async (req, res) => {
   try {

@@ -20,6 +20,7 @@ import {
 } from "../../drizzle/platformSchema.js";
 import type { Database } from "../db.js";
 import type { App, AgentConfig } from "../../drizzle/platformSchema.js";
+import { signAvatarImageUrl } from "./avatarUrl.js";
 
 const log = createLogger("AgentDeployer");
 
@@ -38,6 +39,16 @@ const LIVEKIT_INTERNAL_URL = process.env.LIVEKIT_INTERNAL_URL || "ws://livekit-s
 const FLASHHEAD_ENGINE_URL =
   process.env.FLASHHEAD_ENGINE_URL || "ws://flashhead-engine.flashhead.svc.cluster.local:8080/v1/session";
 const FLASHHEAD_DEFAULT_REFERENCE_IMAGE = process.env.FLASHHEAD_DEFAULT_REFERENCE_IMAGE || "";
+const BIONIC_INTERNAL_BASE_URL =
+  process.env.BIONIC_INTERNAL_BASE_URL || "http://bionic-platform.bionic-platform.svc.cluster.local";
+
+function getAvatarReferenceImage(appSlug: string, agent: AgentConfig): string {
+  const referenceImage = (agent as any).avatarReferenceImage || "";
+  if (referenceImage.startsWith("data:image/")) {
+    return signAvatarImageUrl(BIONIC_INTERNAL_BASE_URL, appSlug, agent.name);
+  }
+  return referenceImage || FLASHHEAD_DEFAULT_REFERENCE_IMAGE;
+}
 
 export async function deployAgent(
   db: Database,
@@ -111,8 +122,7 @@ export async function deployAgent(
     // avatarReferenceImage if set, else falls back to platform defaults.
     AVATAR_PROVIDER: (agent as any).avatarProvider || "flashhead",
     FLASHHEAD_ENGINE_URL,
-    FLASHHEAD_REFERENCE_IMAGE:
-      (agent as any).avatarReferenceImage || FLASHHEAD_DEFAULT_REFERENCE_IMAGE,
+    FLASHHEAD_REFERENCE_IMAGE: getAvatarReferenceImage(app.slug, agent),
     FLASHHEAD_AVATAR_NAME: (agent as any).avatarName || agent.name,
     BACKGROUND_AUDIO_ENABLED: String(agent.backgroundAudioEnabled),
     CAPTURE_MODE: agent.captureMode,
