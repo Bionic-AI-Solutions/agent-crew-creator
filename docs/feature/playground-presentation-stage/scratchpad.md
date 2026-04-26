@@ -99,4 +99,10 @@
 - Follow-up: the avatar appeared but stayed silent because `generate_reply()` without an initial prompt did not reliably create a first turn. Updated `on_enter()` to call `session.generate_reply(user_input="[System: The user has just joined...]")`, which forces an immediate LLM/TTS opener while still deriving the actual persona and wording from the editable `SYSTEM_PROMPT`.
 - Pass: built, compiled, pushed, and redeployed the immediate opener image as `docker4zerocool/bionic-agent:latest` digest `sha256:35a645dd2da13eff623d9bb06d0ea657aaef42203c22e5ca65394e3b694c7657`.
 - Pass: `tutor/agent-storyteller` rollout completed and the running pod source now shows `MainAgent.on_enter()` calling `session.generate_reply(user_input=...)`.
+- E2E attempt for Grandma Mira / Boston Tea Party story:
+  - Pass: live LiveKit room dispatch created `storyteller` sessions and subscribed to room audio plus FlashHead avatar audio/video.
+  - Initial probes failed to reach STT because synthetic audio either overlapped the non-interruptible avatar opener or was published with `SOURCE_UNKNOWN`.
+  - Pass after publishing synthetic user audio as `SOURCE_MICROPHONE`: STT processed the Boston Tea Party request, the primary LLM generated a response, and logs showed `Delegating to Letta in background: Research the historical context of the Boston Tea Party...`.
+  - Fail: Letta delegation returned HTTP 401. Direct Letta call returned `llm_authentication` with invalid OpenAI API key, so Letta could not reason or call `generate_support_image` / `send_storybook_email`.
+  - Fallback MCP validation: `pdf_generate_pdf` succeeded for a Boston Tea Party storybook PDF; `mail_send_email_with_attachments` failed because tenant `tutor` is not registered in the Mail MCP; direct GenImage calls also failed response parsing in the one-off script and need a more robust parser before using outside Letta.
 - Not run: E2E scripts require live credentials and resource creation/deletion.

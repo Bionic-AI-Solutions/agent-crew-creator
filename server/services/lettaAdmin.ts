@@ -314,14 +314,37 @@ import requests
 
 TENANT_ID = ${tenantId}
 
-def _parse_mcp_response(text):
-    lines = []
-    for line in str(text).splitlines():
+def _parse_mcp_response(text, response_id=None):
+    # FastMCP Streamable-HTTP sends multiple SSE data: lines per request.
+    # Joining them produces invalid JSON (multiple objects). Parse each line
+    # individually and return the one matching response_id (or the last
+    # one that has a result/error field).
+    stripped = str(text).strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        try:
+            return json.loads(stripped)
+        except Exception:
+            pass
+    candidates = []
+    for line in stripped.splitlines():
         line = line.strip()
         if line.startswith("data:"):
-            lines.append(line[5:].strip())
-    payload = "\\n".join(lines).strip() or text
-    return json.loads(payload)
+            payload = line[5:].strip()
+            if payload and payload != "[DONE]":
+                try:
+                    candidates.append(json.loads(payload))
+                except Exception:
+                    pass
+    if not candidates:
+        return json.loads(text)
+    if response_id is not None:
+        for obj in candidates:
+            if obj.get("id") == response_id:
+                return obj
+    for obj in reversed(candidates):
+        if "result" in obj or "error" in obj:
+            return obj
+    return candidates[-1]
 
 def _mcp_call(url, tool_name, arguments):
     headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
@@ -349,7 +372,7 @@ def _mcp_call(url, tool_name, arguments):
     }
     resp = requests.post(url, json=call_payload, headers=headers, timeout=300)
     resp.raise_for_status()
-    parsed = _parse_mcp_response(resp.text)
+    parsed = _parse_mcp_response(resp.text, response_id=2)
     if "error" in parsed:
         raise RuntimeError(parsed["error"].get("message") or str(parsed["error"]))
     result = parsed.get("result", {})
