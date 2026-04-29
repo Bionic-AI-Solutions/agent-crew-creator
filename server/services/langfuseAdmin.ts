@@ -7,6 +7,7 @@
  */
 import pg from "pg";
 import { randomBytes, createHash } from "crypto";
+import bcrypt from "bcryptjs";
 import { createLogger } from "../_core/logger.js";
 
 const log = createLogger("LangfuseAdmin");
@@ -16,6 +17,9 @@ const LANGFUSE_DB_HOST = process.env.LANGFUSE_DB_HOST || "pg-ceph-rw.pg.svc.clus
 const LANGFUSE_DB_NAME = "langfuse";
 const LANGFUSE_DB_USER = "langfuse";
 const LANGFUSE_ORG_ID = process.env.LANGFUSE_ORG_ID || "cmi7vys0y0001wd07fwx9grvn";
+// Must match Langfuse server's SALT env var; without it fast-hash lookups
+// produce a value that won't match Langfuse's lookup, so auth always fails.
+const LANGFUSE_SALT = process.env.LANGFUSE_SALT || "";
 
 function isConfigured(): boolean {
   return Boolean(LANGFUSE_DB_PASSWORD);
@@ -31,8 +35,17 @@ function generateId(): string {
   return `cm${timestamp}${random}`;
 }
 
-function hashKey(key: string): string {
-  return createHash("sha256").update(key).digest("hex");
+// Mirrors Langfuse's createShaHash from packages/shared/src/server/auth/apiKeys.ts:
+// sha256(secretKey).update( sha256(SALT).digest("hex") ).digest("hex").
+// LANGFUSE_SALT must match the SALT env var on the Langfuse web pod.
+function fastHash(secretKey: string): string {
+  if (!LANGFUSE_SALT) {
+    throw new Error("LANGFUSE_SALT not set — required to compute fast_hashed_secret_key");
+  }
+  return createHash("sha256")
+    .update(secretKey)
+    .update(createHash("sha256").update(LANGFUSE_SALT, "utf8").digest("hex"))
+    .digest("hex");
 }
 
 export async function createProject(slug: string) {
@@ -58,17 +71,22 @@ export async function createProject(slug: string) {
 
     log.info("Created Langfuse project", { projectId, name: slug, org: LANGFUSE_ORG_ID });
 
-    // Generate API key pair
+    // Generate API key pair. Langfuse stores TWO hashes for the secret:
+    //   hashed_secret_key       — bcrypt(sk, 11), used for slow auth verify
+    //   fast_hashed_secret_key  — sha256(sk + sha256(SALT)), used for fast lookups
+    // (see Langfuse packages/shared/src/server/auth/apiKeys.ts).
+    // Storing sha256 in both fields produces 401 on every API call.
     const apiKeyId = generateId();
     const publicKey = `pk-lf-${randomBytes(16).toString("hex")}`;
     const secretKey = `sk-lf-${randomBytes(16).toString("hex")}`;
-    const hashedSecret = hashKey(secretKey);
+    const hashedSecret = await bcrypt.hash(secretKey, 11);
+    const fastHashedSecret = fastHash(secretKey);
     const displaySecret = `sk-lf-...${secretKey.slice(-4)}`;
 
     await client.query(
       `INSERT INTO api_keys (id, public_key, hashed_secret_key, fast_hashed_secret_key, display_secret_key, note, project_id, scope, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, 'PROJECT', $8)`,
-      [apiKeyId, publicKey, hashedSecret, hashedSecret, displaySecret, `Auto-generated for ${slug}`, projectId, now],
+      [apiKeyId, publicKey, hashedSecret, fastHashedSecret, displaySecret, `Auto-generated for ${slug}`, projectId, now],
     );
 
     log.info("Created Langfuse API keys", { projectId, publicKey });
