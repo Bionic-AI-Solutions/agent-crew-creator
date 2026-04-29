@@ -5,11 +5,18 @@
  * Uses @kubernetes/client-node v1.4.0 which requires { body: ... } named params.
  */
 import { createLogger } from "./_core/logger.js";
+import { vault } from "./vaultClient.js";
 
 const log = createLogger("K8s");
 
 const K8S_LIVEKIT_NAMESPACE = process.env.K8S_LIVEKIT_NAMESPACE || "livekit";
 const LIVEKIT_KEYS_SECRET = process.env.LIVEKIT_KEYS_SECRET_NAME || "livekit-api-keys";
+// Vault path that backs the livekit-api-keys ExternalSecret. The ESO syncs
+// this path to the K8s secret every 5min, so writing directly to the K8s
+// secret is futile — ESO will overwrite it on the next sync.
+const LIVEKIT_VAULT_PATH = process.env.LIVEKIT_VAULT_PATH || "t6-apps/livekit/config";
+const LIVEKIT_EXTERNAL_SECRET_NAME =
+  process.env.LIVEKIT_EXTERNAL_SECRET_NAME || "livekit-api-keys";
 const AGENT_MODEL_CACHE_NFS_SERVER = process.env.AGENT_MODEL_CACHE_NFS_SERVER || "192.168.0.109";
 const AGENT_MODEL_CACHE_NFS_PATH =
   process.env.AGENT_MODEL_CACHE_NFS_PATH || "/volume1/docker/bionic-shared/agent-models";
@@ -113,67 +120,111 @@ export async function createServiceAccount(namespace: string): Promise<void> {
 }
 
 // ── LiveKit Key Management ──────────────────────────────────────
+//
+// LiveKit's API key map (`LIVEKIT_KEYS` env on livekit-server) is synced from
+// Vault by ESO on a 5-min refresh. Writing to the K8s secret directly causes
+// the value to be reverted on the next sync. The proper flow is:
+//   1. write the per-tenant key pair into Vault under LIVEKIT_VAULT_PATH
+//   2. patch the ExternalSecret to add data refs + extend the LIVEKIT_KEYS template
+//   3. force ESO to re-sync now (annotation bump)
+//   4. restart livekit-server so it re-reads the env
 
-export async function upsertLivekitKey(apiKey: string, apiSecret: string): Promise<void> {
+function livekitVaultProps(slug: string) {
+  return {
+    keyProp: `${slug}_api_key`,
+    secretProp: `${slug}_api_secret`,
+    secretKeyKey: `${slug}_api_key`,
+    secretKeySecret: `${slug}_api_secret`,
+  };
+}
+
+async function patchLivekitExternalSecret(slug: string, op: "add" | "remove"): Promise<void> {
+  const { customApi } = await getK8sApis();
+  const props = livekitVaultProps(slug);
+
+  // Read current ExternalSecret
+  const current: any = await customApi.getNamespacedCustomObject({
+    group: "external-secrets.io",
+    version: "v1",
+    namespace: K8S_LIVEKIT_NAMESPACE,
+    plural: "externalsecrets",
+    name: LIVEKIT_EXTERNAL_SECRET_NAME,
+  });
+  const es = current?.body || current;
+  if (!es?.spec) throw new Error("livekit-api-keys ExternalSecret not found");
+
+  const data: Array<{ secretKey: string; remoteRef: { key: string; property: string } }> = es.spec.data || [];
+  const tplData: Record<string, string> = es.spec.target?.template?.data || {};
+  const livekitKeysTpl: string = tplData.LIVEKIT_KEYS || "";
+
+  const filtered = data.filter(
+    (d) => d.secretKey !== props.secretKeyKey && d.secretKey !== props.secretKeySecret,
+  );
+  const lines = livekitKeysTpl.split("\n");
+  const cleaned = lines.filter(
+    (l) => !l.includes(`{{ .${props.secretKeyKey} }}`) && !l.includes(`{{ .${props.secretKeySecret} }}`),
+  );
+
+  if (op === "add") {
+    filtered.push(
+      { secretKey: props.secretKeyKey, remoteRef: { key: LIVEKIT_VAULT_PATH, property: props.keyProp } },
+      { secretKey: props.secretKeySecret, remoteRef: { key: LIVEKIT_VAULT_PATH, property: props.secretProp } },
+    );
+    // Append the new tenant line before the trailing newline (if any).
+    const trailingNewline = livekitKeysTpl.endsWith("\n");
+    const body = cleaned.filter((l) => l !== "").join("\n");
+    const newLine = `{{ .${props.secretKeyKey} }}: {{ .${props.secretKeySecret} }}`;
+    tplData.LIVEKIT_KEYS = body + (body ? "\n" : "") + newLine + (trailingNewline ? "\n" : "");
+  } else {
+    tplData.LIVEKIT_KEYS = cleaned.join("\n");
+  }
+
+  es.spec.data = filtered;
+  if (!es.spec.target) es.spec.target = {};
+  if (!es.spec.target.template) es.spec.target.template = {};
+  es.spec.target.template.data = tplData;
+
+  // Annotate to force ESO to resync immediately (bypass refreshInterval).
+  if (!es.metadata.annotations) es.metadata.annotations = {};
+  es.metadata.annotations["force-sync"] = String(Math.floor(Date.now() / 1000));
+
+  await customApi.replaceNamespacedCustomObject({
+    group: "external-secrets.io",
+    version: "v1",
+    namespace: K8S_LIVEKIT_NAMESPACE,
+    plural: "externalsecrets",
+    name: LIVEKIT_EXTERNAL_SECRET_NAME,
+    body: es,
+  });
+}
+
+export async function upsertLivekitKey(slug: string, apiKey: string, apiSecret: string): Promise<void> {
   try {
-    const { coreApi } = await getK8sApis();
-    let keysMap: Record<string, string> = {};
-
-    try {
-      const secret = await coreApi.readNamespacedSecret({ name: LIVEKIT_KEYS_SECRET, namespace: K8S_LIVEKIT_NAMESPACE });
-      const encoded = secret?.body?.data?.LIVEKIT_KEYS || secret?.data?.LIVEKIT_KEYS;
-      if (encoded) {
-        const raw = Buffer.from(encoded, "base64").toString("utf8");
-        for (const line of raw.split("\n")) {
-          const idx = line.indexOf(":");
-          if (idx > 0) {
-            const k = line.slice(0, idx).trim();
-            const v = line.slice(idx + 1).trim();
-            if (k && v) keysMap[k] = v;
-          }
-        }
-      }
-    } catch {}
-
-    keysMap[apiKey] = apiSecret;
-    const newValue = Object.entries(keysMap).map(([k, v]) => `${k}: ${v}`).join("\n");
-
-    await coreApi.replaceNamespacedSecret({
-      name: LIVEKIT_KEYS_SECRET,
-      namespace: K8S_LIVEKIT_NAMESPACE,
-      body: {
-        metadata: { name: LIVEKIT_KEYS_SECRET },
-        data: { LIVEKIT_KEYS: Buffer.from(newValue).toString("base64") },
-      },
+    const props = livekitVaultProps(slug);
+    // 1. Merge the per-tenant key pair into the shared Vault path.
+    await vault.mergeGenericSecret(LIVEKIT_VAULT_PATH, {
+      [props.keyProp]: apiKey,
+      [props.secretProp]: apiSecret,
     });
-    log.info("Updated LiveKit keys secret");
+
+    // 2. Wire the new properties into the ExternalSecret + template, then force a sync.
+    await patchLivekitExternalSecret(slug, "add");
+
+    log.info("Wired LiveKit key into Vault + ExternalSecret", { slug });
   } catch (err) {
-    log.warn("Failed to update LiveKit keys", { error: String(err) });
+    log.error("Failed to provision LiveKit key", { slug, error: String(err) });
+    throw err;
   }
 }
 
-export async function removeLivekitKey(apiKey: string): Promise<void> {
+export async function removeLivekitKey(slug: string): Promise<void> {
   try {
-    const { coreApi } = await getK8sApis();
-    const secret = await coreApi.readNamespacedSecret({ name: LIVEKIT_KEYS_SECRET, namespace: K8S_LIVEKIT_NAMESPACE });
-    const encoded = secret?.body?.data?.LIVEKIT_KEYS || secret?.data?.LIVEKIT_KEYS;
-    if (!encoded) return;
-
-    const raw = Buffer.from(encoded, "base64").toString("utf8");
-    const lines = raw.split("\n").filter((line: string) => !line.startsWith(`${apiKey}:`));
-    const newValue = lines.join("\n");
-
-    await coreApi.replaceNamespacedSecret({
-      name: LIVEKIT_KEYS_SECRET,
-      namespace: K8S_LIVEKIT_NAMESPACE,
-      body: {
-        metadata: { name: LIVEKIT_KEYS_SECRET },
-        data: { LIVEKIT_KEYS: Buffer.from(newValue).toString("base64") },
-      },
-    });
-    log.info("Removed LiveKit key");
+    const props = livekitVaultProps(slug);
+    await patchLivekitExternalSecret(slug, "remove");
+    await vault.deleteGenericSecretFields(LIVEKIT_VAULT_PATH, [props.keyProp, props.secretProp]);
+    log.info("Removed LiveKit key from Vault + ExternalSecret", { slug });
   } catch (err) {
-    log.warn("Failed to remove LiveKit key", { error: String(err) });
+    log.warn("Failed to remove LiveKit key", { slug, error: String(err) });
   }
 }
 

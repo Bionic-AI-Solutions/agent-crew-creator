@@ -138,6 +138,67 @@ export async function deleteEsoPolicy(slug: string): Promise<void> {
   }
 }
 
+/**
+ * Read the data from an arbitrary Vault KV-v2 path (e.g. "t6-apps/livekit/config").
+ * Use for shared multi-tenant config paths that don't follow the per-app convention.
+ */
+export async function readGenericSecret(
+  vaultPath: string,
+): Promise<Record<string, string>> {
+  const path = `secret/data/${vaultPath}`;
+  try {
+    const result = (await vaultRequest("GET", path)) as {
+      data?: { data?: Record<string, string> };
+    } | null;
+    return result?.data?.data || {};
+  } catch (error) {
+    log.warn("Failed to read generic Vault secret", { path, error: String(error) });
+    return {};
+  }
+}
+
+/**
+ * Merge new properties into an arbitrary Vault KV-v2 path WITHOUT clobbering
+ * existing properties. Used by multi-tenant shared config paths (e.g. the
+ * LiveKit key map at t6-apps/livekit/config) where each tenant adds two keys
+ * but the existing tenants' keys must remain intact.
+ */
+export async function mergeGenericSecret(
+  vaultPath: string,
+  data: Record<string, string>,
+): Promise<void> {
+  const path = `secret/data/${vaultPath}`;
+  const existing = await readGenericSecret(vaultPath);
+  const merged = { ...existing, ...data };
+  try {
+    await vaultRequest("POST", path, { data: merged });
+    log.info("Merged keys into Vault path", { path, addedKeys: Object.keys(data) });
+  } catch (error) {
+    log.error("Failed to merge into Vault path", { path, error: String(error) });
+    throw error;
+  }
+}
+
+/**
+ * Remove specific fields from an arbitrary Vault KV-v2 path while preserving
+ * all other fields. Mirrors mergeGenericSecret for the cleanup path.
+ */
+export async function deleteGenericSecretFields(
+  vaultPath: string,
+  fields: string[],
+): Promise<void> {
+  const path = `secret/data/${vaultPath}`;
+  const existing = await readGenericSecret(vaultPath);
+  const next: Record<string, string> = { ...existing };
+  for (const f of fields) delete next[f];
+  try {
+    await vaultRequest("POST", path, { data: next });
+    log.info("Removed fields from Vault path", { path, fields });
+  } catch (error) {
+    log.error("Failed to remove fields from Vault path", { path, error: String(error) });
+  }
+}
+
 export const vault = {
   writeAppSecret,
   deleteAppSecret,
@@ -146,5 +207,8 @@ export const vault = {
   writePlatformSecret,
   createEsoPolicy,
   deleteEsoPolicy,
+  readGenericSecret,
+  mergeGenericSecret,
+  deleteGenericSecretFields,
   isConfigured,
 };

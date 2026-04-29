@@ -56,7 +56,7 @@ const PROVISION_STEPS: Record<ServiceKey, StepHandler> = {
       await db.update(apps).set({ apiKey, apiSecret, updatedAt: new Date() }).where(eq(apps.id, ctx.appId));
     }
 
-    await k8s.upsertLivekitKey(apiKey, apiSecret);
+    await k8s.upsertLivekitKey(ctx.slug, apiKey, apiSecret);
     await k8s.restartLivekitServer();
 
     const internalLivekitUrl = process.env.LIVEKIT_INTERNAL_URL || "ws://livekit-server.livekit.svc.cluster.local:7880";
@@ -384,10 +384,10 @@ export async function runDeletionJob(appId: number): Promise<void> {
     await step("minio-bucket", () => minioAdmin.deleteBucket(app.slug));
   }
 
-  // 6. LiveKit — remove API key from shared secret, restart server
+  // 6. LiveKit — remove API key from shared Vault path + ExternalSecret, restart server
   if (enabledServices.includes("livekit") && secrets.livekit_api_key) {
     await step("livekit-key", async () => {
-      await k8s.removeLivekitKey(secrets.livekit_api_key);
+      await k8s.removeLivekitKey(app.slug);
       await k8s.restartLivekitServer();
     });
   }
