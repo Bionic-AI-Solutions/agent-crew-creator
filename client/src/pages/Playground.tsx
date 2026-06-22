@@ -205,6 +205,9 @@ export default function Playground() {
   const [appId, setAppId] = useState<number | null>(null);
   const [agentId, setAgentId] = useState<number | null>(null);
   const [bundle, setBundle] = useState<Bundle | null>(null);
+  // Track the actual LiveKit room lifecycle (distinct from the token fetch).
+  const [roomConnected, setRoomConnected] = useState(false);
+  const [roomError, setRoomError] = useState<string | null>(null);
 
   const { data: apps, isLoading: appsLoading } = trpc.appsCrud.list.useQuery();
   const { data: agents, isLoading: agentsLoading } = trpc.agentsCrud.list.useQuery(
@@ -218,8 +221,13 @@ export default function Playground() {
 
   const connect = trpc.playground.getConnectionBundle.useMutation({
     onSuccess: (b) => {
+      // This only means the join token was issued — NOT that the LiveKit room
+      // connected. The actual connection happens in <LiveKitRoom> below and is
+      // reported via onConnected / onError.
+      setRoomConnected(false);
+      setRoomError(null);
       setBundle(b as Bundle);
-      toast.success(`Connected to room ${(b as Bundle).roomName}`);
+      toast.success(`Token issued — connecting to ${(b as Bundle).roomName}…`);
     },
     onError: (err) => {
       toast.error(err.message);
@@ -238,8 +246,11 @@ export default function Playground() {
     meta?.livekitReady === true &&
     !connect.isPending;
 
+  // User-initiated teardown (Disconnect button or leaving the page).
   function handleDisconnect() {
     setBundle(null);
+    setRoomConnected(false);
+    setRoomError(null);
   }
 
   // ── Connected state: full LiveKit room ────────────────────────────
@@ -256,9 +267,23 @@ export default function Playground() {
             <span className="font-mono text-xs text-muted-foreground">{bundle.roomName}</span>
           </div>
           <Button size="sm" variant="outline" onClick={handleDisconnect}>
-            <LogOut className="h-3 w-3 mr-1" /> Disconnect
+            <LogOut className="h-3 w-3 mr-1" /> {roomError ? "Back" : "Disconnect"}
           </Button>
         </div>
+        {roomError && (
+          <div className="flex items-start gap-2 border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-medium">Room connection failed</p>
+              <p className="text-xs text-destructive/90">{roomError}</p>
+              <p className="text-xs text-muted-foreground">
+                Common causes: the agent worker wasn't dispatched, the LiveKit
+                token/API key was rejected, or LiveKit was unreachable. Check the
+                browser console and the agent pod logs.
+              </p>
+            </div>
+          </div>
+        )}
         <div className="flex-1 min-h-0">
           <LiveKitRoom
             token={bundle.token}
@@ -268,7 +293,28 @@ export default function Playground() {
             video={bundle.agent.visionEnabled}
             data-lk-theme="default"
             style={{ height: "100%" }}
-            onDisconnected={handleDisconnect}
+            onConnected={() => {
+              setRoomConnected(true);
+              setRoomError(null);
+            }}
+            onError={(e) => {
+              setRoomError(e.message);
+              toast.error(`LiveKit: ${e.message}`);
+            }}
+            onDisconnected={() => {
+              // Only auto-return to the picker on a NORMAL end-of-session
+              // (we were actually connected). If we never connected, keep the
+              // room view and surface the error instead of silently flashing
+              // back to the connect screen with the reason swallowed.
+              if (roomConnected) {
+                handleDisconnect();
+              } else {
+                setRoomError((prev) =>
+                  prev ??
+                  "Disconnected before the room finished connecting — token rejected, agent not dispatched, or LiveKit unreachable.",
+                );
+              }
+            }}
           >
             {/* RoomAudioRenderer is required to actually play remote audio
                 tracks (the agent's TTS output). VideoConference includes it
