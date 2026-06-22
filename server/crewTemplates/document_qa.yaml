@@ -123,7 +123,7 @@ difyDsl: |
           title: Retrieve Passages
           type: http-request
           method: GET
-          url: '{{auto.letta_base_url}}/v1/agents/{{auto.letta_agent_id}}/archival?search={{#start.question#}}&limit=8'
+          url: '{{auto.letta_base_url}}/v1/agents/{{auto.letta_agent_id}}/archival-memory?search={{#start.question#}}&limit=8'
           headers: 'Authorization: Bearer {{auto.letta_api_key}}
 
             '

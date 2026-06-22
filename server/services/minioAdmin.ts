@@ -5,7 +5,10 @@
  */
 import { createLogger } from "../_core/logger.js";
 import { randomBytes } from "crypto";
-import { execSync } from "child_process";
+import { exec as execCb } from "child_process";
+import { promisify } from "util";
+
+const execAsync = promisify(execCb);
 
 const log = createLogger("MinioAdmin");
 
@@ -23,7 +26,7 @@ function ensureConfigured() {
   }
 }
 
-async function getClient() {
+export async function getClient() {
   ensureConfigured();
   if (_client) return _client;
 
@@ -43,13 +46,13 @@ async function getClient() {
 // MinIO admin API hangs on headless service — use the ClusterIP service instead
 const MINIO_ADMIN_ENDPOINT = process.env.MINIO_ADMIN_ENDPOINT || "minio.minio.svc.cluster.local:80";
 
-function mcAdmin(cmd: string): string {
+async function mcAdmin(cmd: string): Promise<string> {
   if (!_mcConfigured) {
     const protocol = MINIO_USE_SSL ? "https" : "http";
     try {
-      execSync(
+      await execAsync(
         `mc alias set bpmin ${protocol}://${MINIO_ADMIN_ENDPOINT} ${MINIO_ROOT_USER} "${MINIO_ROOT_PASSWORD}"`,
-        { stdio: "pipe", timeout: 10000 },
+        { timeout: 10000 },
       );
       _mcConfigured = true;
     } catch (err) {
@@ -57,7 +60,8 @@ function mcAdmin(cmd: string): string {
       throw new Error("mc CLI not available for MinIO admin operations");
     }
   }
-  return execSync(`mc --no-color ${cmd}`, { stdio: "pipe", timeout: 15000 }).toString().trim();
+  const { stdout } = await execAsync(`mc --no-color ${cmd}`, { timeout: 15000 });
+  return stdout.trim();
 }
 
 export async function createBucket(slug: string): Promise<void> {
@@ -95,13 +99,13 @@ export async function createServiceAccount(slug: string) {
     const policyPath = `/tmp/minio-policy-${slug}.json`;
     fs.writeFileSync(policyPath, policyJson);
 
-    mcAdmin(`admin policy create bpmin ${policyName} ${policyPath}`);
+    await mcAdmin(`admin policy create bpmin ${policyName} ${policyPath}`);
     log.info("Created MinIO policy", { policyName });
 
-    mcAdmin(`admin user add bpmin ${accessKey} "${secretKey}"`);
+    await mcAdmin(`admin user add bpmin ${accessKey} "${secretKey}"`);
     log.info("Created MinIO user", { accessKey });
 
-    mcAdmin(`admin policy attach bpmin ${policyName} --user ${accessKey}`);
+    await mcAdmin(`admin policy attach bpmin ${policyName} --user ${accessKey}`);
     log.info("Attached policy to user", { policyName, accessKey });
 
     fs.unlinkSync(policyPath);
@@ -116,14 +120,14 @@ export async function createServiceAccount(slug: string) {
 
 export async function deleteServiceAccount(slug: string): Promise<void> {
   try {
-    mcAdmin(`admin user remove bpmin ${slug}-svc`);
+    await mcAdmin(`admin user remove bpmin ${slug}-svc`);
     log.info("Removed MinIO user", { user: `${slug}-svc` });
   } catch (err) {
     log.warn("Failed to remove MinIO user", { error: String(err) });
   }
 
   try {
-    mcAdmin(`admin policy remove bpmin ${slug}-policy`);
+    await mcAdmin(`admin policy remove bpmin ${slug}-policy`);
     log.info("Removed MinIO policy", { policy: `${slug}-policy` });
   } catch (err) {
     log.warn("Failed to remove MinIO policy", { error: String(err) });
@@ -132,7 +136,7 @@ export async function deleteServiceAccount(slug: string): Promise<void> {
 
 export async function revokeAccess(accessKey: string): Promise<void> {
   try {
-    mcAdmin(`admin user remove bpmin ${accessKey}`);
+    await mcAdmin(`admin user remove bpmin ${accessKey}`);
     log.info("Revoked MinIO access", { accessKey });
   } catch (err) {
     log.warn("Failed to revoke MinIO access", { error: String(err) });

@@ -23,6 +23,12 @@ const SERVICES = [
   { key: "redis", label: "Redis", description: "Cache & sessions" },
   { key: "minio", label: "MinIO", description: "Object storage bucket" },
   { key: "letta", label: "Letta", description: "Memory tenant for agents" },
+  {
+    key: "player_ui",
+    label: "Agent player UI",
+    description:
+      "Per app: generates UI build context (app metadata JSON), docker build+push to PLAYER_UI_IMAGE_REPOSITORY:{slug}, deploys to namespace; or PLAYER_UI_IMAGE for pre-built only (needs K8s + LiveKit + Docker)",
+  },
 ];
 
 export default function AppWizard({ onComplete, onCancel }: Props) {

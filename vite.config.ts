@@ -17,6 +17,10 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
+    // Match common local embed host port so /favicon.* is served from client/public
+    port: 8765,
+    strictPort: false,
+    host: true,
     proxy: {
       "/api": {
         target: "http://localhost:3000",

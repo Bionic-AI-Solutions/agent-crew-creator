@@ -7,6 +7,7 @@
  */
 import pg from "pg";
 import { randomBytes, createHash } from "crypto";
+import bcrypt from "bcryptjs";
 import { createLogger } from "../_core/logger.js";
 
 const log = createLogger("LangfuseAdmin");
@@ -16,6 +17,11 @@ const LANGFUSE_DB_HOST = process.env.LANGFUSE_DB_HOST || "pg-ceph-rw.pg.svc.clus
 const LANGFUSE_DB_NAME = "langfuse";
 const LANGFUSE_DB_USER = "langfuse";
 const LANGFUSE_ORG_ID = process.env.LANGFUSE_ORG_ID || "cmi7vys0y0001wd07fwx9grvn";
+// Must match the SALT env var on the Langfuse web pod, used by
+// createShaHash(sk, salt) → fast_hashed_secret_key. Without this matching,
+// API auth fails with 401 "Invalid credentials".
+// Source: packages/shared/src/server/auth/apiKeys.ts in langfuse repo.
+const LANGFUSE_SALT = process.env.LANGFUSE_SALT || "";
 
 function isConfigured(): boolean {
   return Boolean(LANGFUSE_DB_PASSWORD);
@@ -31,8 +37,21 @@ function generateId(): string {
   return `cm${timestamp}${random}`;
 }
 
-function hashKey(key: string): string {
-  return createHash("sha256").update(key).digest("hex");
+/**
+ * Mirror of Langfuse's createShaHash from
+ * packages/shared/src/server/auth/apiKeys.ts:
+ *
+ *   crypto.createHash("sha256")
+ *     .update(privateKey)
+ *     .update(crypto.createHash("sha256").update(salt, "utf8").digest("hex"))
+ *     .digest("hex");
+ *
+ * The salt MUST match the SALT env var on the Langfuse web pod. We chain
+ * two updates: first the raw secret key, then the hex sha256 of the salt.
+ */
+function langfuseFastHash(secretKey: string, salt: string): string {
+  const saltHash = createHash("sha256").update(salt, "utf8").digest("hex");
+  return createHash("sha256").update(secretKey).update(saltHash).digest("hex");
 }
 
 export async function createProject(slug: string) {
@@ -58,17 +77,27 @@ export async function createProject(slug: string) {
 
     log.info("Created Langfuse project", { projectId, name: slug, org: LANGFUSE_ORG_ID });
 
-    // Generate API key pair
+    if (!LANGFUSE_SALT) {
+      throw new Error("LANGFUSE_SALT not configured — fast_hashed_secret_key will not validate");
+    }
+
+    // Generate API key pair using Langfuse's exact hashing scheme:
+    //  hashed_secret_key       = bcrypt(sk, 11)               -- legacy slow
+    //  fast_hashed_secret_key  = sha256(sk + sha256(salt))    -- runtime check
+    //  display_secret_key      = sk[0:6] + '...' + sk[-4:]
+    // Both columns must be set so the runtime auth path can match the
+    // raw key against fast_hashed_secret_key (looked up directly).
     const apiKeyId = generateId();
     const publicKey = `pk-lf-${randomBytes(16).toString("hex")}`;
     const secretKey = `sk-lf-${randomBytes(16).toString("hex")}`;
-    const hashedSecret = hashKey(secretKey);
-    const displaySecret = `sk-lf-...${secretKey.slice(-4)}`;
+    const hashedSecret = await bcrypt.hash(secretKey, 11);
+    const fastHashedSecret = langfuseFastHash(secretKey, LANGFUSE_SALT);
+    const displaySecret = secretKey.slice(0, 6) + "..." + secretKey.slice(-4);
 
     await client.query(
       `INSERT INTO api_keys (id, public_key, hashed_secret_key, fast_hashed_secret_key, display_secret_key, note, project_id, scope, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, 'PROJECT', $8)`,
-      [apiKeyId, publicKey, hashedSecret, hashedSecret, displaySecret, `Auto-generated for ${slug}`, projectId, now],
+      [apiKeyId, publicKey, hashedSecret, fastHashedSecret, displaySecret, `Auto-generated for ${slug}`, projectId, now],
     );
 
     log.info("Created Langfuse API keys", { projectId, publicKey });

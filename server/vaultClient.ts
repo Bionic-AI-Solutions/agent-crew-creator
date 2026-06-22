@@ -19,7 +19,10 @@ async function vaultRequest(
   body?: Record<string, unknown>,
 ): Promise<unknown> {
   if (!isConfigured()) {
-    log.warn("Vault not configured — skipping", { path });
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(`Vault not configured in production — cannot ${method} ${path}. Set VAULT_ADDR and VAULT_TOKEN.`);
+    }
+    log.warn("Vault not configured — skipping (dev only)", { path });
     return null;
   }
 
@@ -112,6 +115,54 @@ export async function writePlatformSecret(
   const path = `secret/data/platform/${name}`;
   await vaultRequest("POST", path, { data });
   log.info("Wrote platform secret to Vault", { path });
+}
+
+/**
+ * Generic Vault KV v2 read at an arbitrary path under `secret/data/`.
+ * Used for shared/cross-app paths like `t6-apps/livekit/config` that
+ * don't fit the per-app `t6-apps/<slug>/config` convention.
+ */
+export async function readPlatformVaultPath(
+  path: string,
+): Promise<Record<string, string> | null> {
+  try {
+    const result = (await vaultRequest("GET", `secret/data/${path}`)) as {
+      data?: { data?: Record<string, string>; metadata?: { version?: number } };
+    } | null;
+    return result?.data?.data || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Read with version metadata for CAS writes. */
+export async function readPlatformVaultPathWithVersion(
+  path: string,
+): Promise<{ data: Record<string, string>; version: number } | null> {
+  try {
+    const result = (await vaultRequest("GET", `secret/data/${path}`)) as {
+      data?: { data?: Record<string, string>; metadata?: { version?: number } };
+    } | null;
+    const data = result?.data?.data;
+    const version = result?.data?.metadata?.version ?? 0;
+    if (!data) return null;
+    return { data, version };
+  } catch {
+    return null;
+  }
+}
+
+export async function writePlatformVaultPath(
+  path: string,
+  data: Record<string, string>,
+  cas?: number,
+): Promise<void> {
+  const body: Record<string, unknown> = { data };
+  if (cas !== undefined) {
+    body.options = { cas };
+  }
+  await vaultRequest("POST", `secret/data/${path}`, body);
+  log.info("Wrote platform Vault path", { path });
 }
 
 export async function createEsoPolicy(slug: string): Promise<void> {

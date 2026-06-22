@@ -20,7 +20,7 @@ import { eq } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { AccessToken } from "livekit-server-sdk";
 import { RoomAgentDispatch, RoomConfiguration } from "@livekit/protocol";
-import { router, appScopedProcedure, assertAppMembership } from "./_core/trpc.js";
+import { router, appScopedProcedure, assertAppMembership, protectedProcedure } from "./_core/trpc.js";
 import { createLogger } from "./_core/logger.js";
 import { apps, agentConfigs } from "../drizzle/platformSchema.js";
 import { readAppSecret } from "./vaultClient.js";
@@ -148,9 +148,11 @@ export const playgroundRouter = router({
         // Auto-create the room on join so callers don't need RoomService.
         roomCreate: true,
       });
-      // Dispatch the named worker into this fresh room. The worker registers
-      // with AGENT_NAME from agentDeployer, which is the agent config name.
-      const dispatchName = agent.name;
+      // Dispatch the named worker into this fresh room. The worker's
+      // AGENT_NAME env is set by agentDeployer to `${slug}-${agent.name}`
+      // (slug-prefixed to avoid cross-app collisions on the shared LiveKit
+      // instance). We must mirror that exact string here.
+      const dispatchName = `${app.slug}-${agent.name}`;
       at.roomConfig = new RoomConfiguration({
         agents: [new RoomAgentDispatch({ agentName: dispatchName })],
       });

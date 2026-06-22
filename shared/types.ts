@@ -1,3 +1,17 @@
+/**
+ * Unified platform role hierarchy: super_admin > admin > analyst > user.
+ * Derived from Keycloak realm roles at login time.
+ */
+export type PlatformRole = "super_admin" | "admin" | "analyst" | "user";
+
+export function derivePlatformRole(realmRoles: string[]): PlatformRole {
+  const lower = realmRoles.map((r) => r.toLowerCase());
+  if (lower.includes("super_admin")) return "super_admin";
+  if (lower.includes("admin")) return "admin";
+  if (lower.includes("analyst")) return "analyst";
+  return "user";
+}
+
 export interface SanitizedApp {
   id: number;
   name: string;

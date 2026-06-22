@@ -6,32 +6,18 @@
  * 2. Click Connect → call playground.getConnectionBundle → server reads
  *    LiveKit creds from Vault, mints a JWT with RoomConfiguration.agents
  *    so the worker is auto-dispatched.
- * 3. Render an agent-focused LiveKit room UI with voice controls,
- *    audio visualization, transcript, and delegated output.
+ * 3. Render <LiveKitRoom> + <VideoConference> for full audio/video/chat parity.
  */
 import { useMemo, useState } from "react";
-import {
-  BarVisualizer,
-  DisconnectButton,
-  LiveKitRoom,
-  RoomAudioRenderer,
-  StartAudio,
-  TrackToggle,
-  useChat,
-  useConnectionState,
-  useTranscriptions,
-  useVoiceAssistant,
-  VideoTrack,
-} from "@livekit/components-react";
+import { LiveKitRoom, VideoConference, useTranscriptions, useChat, RoomAudioRenderer } from "@livekit/components-react";
 import "@livekit/components-styles";
-import { ConnectionState, Track } from "livekit-client";
 import { marked } from "marked";
 import { trpc } from "@/lib/trpc";
 import { rewriteS3UrlsInHtml, toBrowserS3ProxyUrl } from "@/lib/s3ProxyUrl";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { FlaskConical, AlertCircle, Loader2, Mic, PhoneOff, Video } from "lucide-react";
+import { FlaskConical, AlertCircle, Loader2, LogOut } from "lucide-react";
 import { toast } from "sonner";
 
 interface Bundle {
@@ -54,7 +40,7 @@ interface Bundle {
  * useTranscriptions() to display them — the VideoConference prefab on
  * its own renders chat messages but NOT transcription events.
  */
-function AgentTranscriptPanel() {
+function TranscriptionPanel() {
   // Two independent streams need to be rendered side-by-side:
   //  1. Voice transcriptions (lk.transcription topic) — streaming STT text
   //     from both the user and the primary voice agent.
@@ -66,30 +52,7 @@ function AgentTranscriptPanel() {
   const { chatMessages } = useChat();
 
   return (
-    <aside className="w-full border-l bg-card overflow-y-auto p-4 text-sm flex flex-col gap-4 lg:w-[26rem]">
-      <section>
-        <div className="font-semibold text-xs uppercase text-muted-foreground tracking-wide mb-2">
-          Live Transcript
-        </div>
-        {transcriptions.length === 0 ? (
-          <p className="text-muted-foreground text-xs italic">
-            Spoken conversation will appear here as transcription events arrive.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {transcriptions.slice(-30).map((t: any, i: number) => (
-              <div key={`${t.id || i}-${t.final ? "final" : "partial"}`} className="rounded-md border bg-background/60 p-2">
-                <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-                  {t.participant?.identity || t.participantIdentity || "speaker"}
-                  {!t.final && <span className="ml-1 italic">(speaking)</span>}
-                </div>
-                <p className={t.final ? "" : "text-muted-foreground"}>{t.text}</p>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
+    <aside className="w-80 border-l bg-card overflow-y-auto p-3 text-sm flex flex-col gap-4">
       <section>
         <div className="font-semibold text-xs uppercase text-muted-foreground tracking-wide mb-2">
           Secondary Agent Output
@@ -112,102 +75,6 @@ function AgentTranscriptPanel() {
         )}
       </section>
     </aside>
-  );
-}
-
-function AgentSessionSurface({ bundle, onDisconnect }: { bundle: Bundle; onDisconnect: () => void }) {
-  const voice = useVoiceAssistant();
-  const connectionState = useConnectionState();
-  const connected = connectionState === ConnectionState.Connected;
-  const agentState = String(voice.state || "initializing").replace(/_/g, " ");
-
-  return (
-    <div className="flex h-full flex-col bg-background">
-      <div className="flex items-center justify-between border-b bg-card px-4 py-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm">
-            <FlaskConical className="h-4 w-4" />
-            <span className="font-medium">Playground</span>
-            <span className="text-muted-foreground">/</span>
-            <span>{bundle.agent.name}</span>
-          </div>
-          <div className="mt-0.5 truncate font-mono text-xs text-muted-foreground">
-            {bundle.roomName}
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="rounded-full border px-2 py-1 text-xs capitalize text-muted-foreground">
-            {connected ? agentState : connectionState}
-          </span>
-          <DisconnectButton
-            className="inline-flex h-9 items-center rounded-md border px-3 text-sm hover:bg-muted"
-            onClick={onDisconnect}
-          >
-            <PhoneOff className="mr-1 h-3.5 w-3.5" /> End
-          </DisconnectButton>
-        </div>
-      </div>
-
-      <div className="grid flex-1 min-h-0 grid-cols-1 lg:grid-cols-[1fr_26rem]">
-        <main className="flex min-h-0 flex-col items-center justify-center gap-6 p-6">
-          <div className="relative flex aspect-square w-full max-w-[28rem] items-center justify-center overflow-hidden rounded-3xl border bg-card shadow-sm">
-            {bundle.agent.avatarEnabled && voice.videoTrack ? (
-              <VideoTrack trackRef={voice.videoTrack} className="h-full w-full object-cover" />
-            ) : (
-              <div className="flex h-full w-full flex-col items-center justify-center gap-5 bg-gradient-to-br from-background via-muted/50 to-background p-8">
-                <div className="flex h-28 w-28 items-center justify-center rounded-full border bg-background shadow-inner">
-                  <FlaskConical className="h-12 w-12 text-muted-foreground" />
-                </div>
-                <div className="text-center">
-                  <div className="text-xl font-semibold">{bundle.agent.name}</div>
-                  <div className="mt-1 text-sm capitalize text-muted-foreground">{agentState}</div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="w-full max-w-xl rounded-2xl border bg-card p-5">
-            <div className="mb-3 flex items-center justify-between">
-              <div>
-                <div className="text-sm font-medium">Agent audio</div>
-                <div className="text-xs capitalize text-muted-foreground">{agentState}</div>
-              </div>
-              <StartAudio
-                label="Enable audio"
-                className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted"
-              />
-            </div>
-            <BarVisualizer
-              state={voice.state}
-              trackRef={voice.audioTrack}
-              barCount={7}
-              className="mx-auto flex h-20 items-center justify-center gap-2"
-            >
-              <span className="block w-2 rounded-full bg-primary/80 data-[lk-highlighted=true]:bg-primary" />
-            </BarVisualizer>
-          </div>
-
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <TrackToggle
-              source={Track.Source.Microphone}
-              className="inline-flex h-10 items-center rounded-md border px-4 text-sm hover:bg-muted data-[lk-enabled=true]:bg-primary data-[lk-enabled=true]:text-primary-foreground"
-            >
-              <Mic className="mr-2 h-4 w-4" /> Microphone
-            </TrackToggle>
-            {bundle.agent.visionEnabled && (
-              <TrackToggle
-                source={Track.Source.Camera}
-                className="inline-flex h-10 items-center rounded-md border px-4 text-sm hover:bg-muted data-[lk-enabled=true]:bg-primary data-[lk-enabled=true]:text-primary-foreground"
-              >
-                <Video className="mr-2 h-4 w-4" /> Camera
-              </TrackToggle>
-            )}
-          </div>
-        </main>
-
-        <AgentTranscriptPanel />
-      </div>
-    </div>
   );
 }
 
@@ -375,10 +242,23 @@ export default function Playground() {
     setBundle(null);
   }
 
-  // ── Connected state: agent-focused LiveKit room ───────────────────
+  // ── Connected state: full LiveKit room ────────────────────────────
   if (bundle) {
     return (
       <div className="flex flex-col h-[calc(100vh-3rem)] -m-6">
+        <div className="flex items-center justify-between border-b bg-card px-4 py-2">
+          <div className="flex items-center gap-2 text-sm">
+            <FlaskConical className="h-4 w-4" />
+            <span className="font-medium">Playground</span>
+            <span className="text-muted-foreground">·</span>
+            <span>{bundle.agent.name}</span>
+            <span className="text-muted-foreground">·</span>
+            <span className="font-mono text-xs text-muted-foreground">{bundle.roomName}</span>
+          </div>
+          <Button size="sm" variant="outline" onClick={handleDisconnect}>
+            <LogOut className="h-3 w-3 mr-1" /> Disconnect
+          </Button>
+        </div>
         <div className="flex-1 min-h-0">
           <LiveKitRoom
             token={bundle.token}
@@ -390,8 +270,16 @@ export default function Playground() {
             style={{ height: "100%" }}
             onDisconnected={handleDisconnect}
           >
+            {/* RoomAudioRenderer is required to actually play remote audio
+                tracks (the agent's TTS output). VideoConference includes it
+                internally, but mounting it explicitly is defensive. */}
             <RoomAudioRenderer />
-            <AgentSessionSurface bundle={bundle} onDisconnect={handleDisconnect} />
+            <div className="flex h-full">
+              <div className="flex-1 min-w-0">
+                <VideoConference />
+              </div>
+              <TranscriptionPanel />
+            </div>
           </LiveKitRoom>
         </div>
       </div>

@@ -1,5 +1,5 @@
 {
-  "id": "15dfb6f4-b59a-48dc-8087-682c8fb3ad72",
+  "id": "2f2ae19d-1938-49a2-9bfd-e03f83a88c70",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -50,14 +50,14 @@
           "type": "varchar(50)",
           "primaryKey": false,
           "notNull": true,
-          "default": "'letta'"
+          "default": "'gpu-ai'"
         },
         "llm_model": {
           "name": "llm_model",
           "type": "varchar(200)",
           "primaryKey": false,
           "notNull": false,
-          "default": "'gpt-4o-mini'"
+          "default": "'gemma-4-e4b-it'"
         },
         "tts_provider": {
           "name": "tts_provider",
@@ -92,25 +92,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "avatar_provider": {
-          "name": "avatar_provider",
-          "type": "varchar(30)",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'flashhead'"
-        },
-        "avatar_reference_image": {
-          "name": "avatar_reference_image",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "avatar_name": {
-          "name": "avatar_name",
-          "type": "varchar(100)",
-          "primaryKey": false,
-          "notNull": false
         },
         "background_audio_enabled": {
           "name": "background_audio_enabled",
@@ -150,7 +131,7 @@
           "type": "varchar(200)",
           "primaryKey": false,
           "notNull": false,
-          "default": "'openai-proxy/qwen3.6-35b-a3b-fp8-think'"
+          "default": "'openai-proxy/qwen3.5-27b-fp8'"
         },
         "letta_system_prompt": {
           "name": "letta_system_prompt",
@@ -409,12 +390,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "deleted_at": {
-          "name": "deleted_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp",
@@ -429,21 +404,6 @@
           "columns": [
             {
               "expression": "agent_config_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_agent_docs_status": {
-          "name": "idx_agent_docs_status",
-          "columns": [
-            {
-              "expression": "processing_status",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -636,6 +596,102 @@
           "tableTo": "agent_configs",
           "columnsFrom": [
             "agent_config_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.app_members": {
+      "name": "app_members",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "app_id": {
+          "name": "app_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'member'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_app_members_unique": {
+          "name": "idx_app_members_unique",
+          "columns": [
+            {
+              "expression": "app_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_app_members_user": {
+          "name": "idx_app_members_user",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "app_members_app_id_apps_id_fk": {
+          "name": "app_members_app_id_apps_id_fk",
+          "tableFrom": "app_members",
+          "tableTo": "apps",
+          "columnsFrom": [
+            "app_id"
           ],
           "columnsTo": [
             "id"
@@ -1151,6 +1207,199 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.embed_tokens": {
+      "name": "embed_tokens",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "agent_config_id": {
+          "name": "agent_config_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "app_id": {
+          "name": "app_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token": {
+          "name": "token",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'default'"
+        },
+        "allow_voice": {
+          "name": "allow_voice",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "allow_chat": {
+          "name": "allow_chat",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "allow_video": {
+          "name": "allow_video",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "allow_screen_share": {
+          "name": "allow_screen_share",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "allow_avatar": {
+          "name": "allow_avatar",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "show_transcription": {
+          "name": "show_transcription",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "theme": {
+          "name": "theme",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'light'"
+        },
+        "mode": {
+          "name": "mode",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'popup'"
+        },
+        "allowed_origins": {
+          "name": "allowed_origins",
+          "type": "json",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'[]'::json"
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "last_used_at": {
+          "name": "last_used_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_embed_tokens_agent": {
+          "name": "idx_embed_tokens_agent",
+          "columns": [
+            {
+              "expression": "agent_config_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_embed_tokens_token": {
+          "name": "idx_embed_tokens_token",
+          "columns": [
+            {
+              "expression": "token",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "embed_tokens_agent_config_id_agent_configs_id_fk": {
+          "name": "embed_tokens_agent_config_id_agent_configs_id_fk",
+          "tableFrom": "embed_tokens",
+          "tableTo": "agent_configs",
+          "columnsFrom": [
+            "agent_config_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "embed_tokens_app_id_apps_id_fk": {
+          "name": "embed_tokens_app_id_apps_id_fk",
+          "tableFrom": "embed_tokens",
+          "tableTo": "apps",
+          "columnsFrom": [
+            "app_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "embed_tokens_token_unique": {
+          "name": "embed_tokens_token_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "token"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

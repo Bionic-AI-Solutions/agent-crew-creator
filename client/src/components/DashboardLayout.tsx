@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Grid3x3, Bot, FlaskConical, Settings, LogOut } from "lucide-react";
+import { LayoutDashboard, Grid3x3, Bot, Settings, LogOut, FlaskConical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
 

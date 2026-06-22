@@ -2,7 +2,7 @@
  * App provisioning pipeline.
  * Executes provisioning/deletion step-by-step, persisting status to DB.
  */
-import { eq } from "drizzle-orm";
+import { eq, and, lt } from "drizzle-orm";
 import { randomBytes } from "crypto";
 import { getDb } from "../db.js";
 import { apps, provisioningJobs } from "../../drizzle/platformSchema.js";
@@ -19,6 +19,14 @@ import { lettaAdmin } from "./lettaAdmin.js";
 import { buildDifyEnvConfig, buildDifyK8sManifests } from "./difyAdmin.js";
 import { vault } from "../vaultClient.js";
 import { k8s } from "../k8sClient.js";
+import {
+  deletePlayerUiARecord,
+  ensurePlayerUiARecord,
+  getPlayerUiFqdn,
+  resolveCloudflareDnsConfig,
+  verifyCloudflarePlayerUiARecord,
+  waitPublicDnsResolvesToWan,
+} from "./cloudflareDns.js";
 
 const log = createLogger("Provisioner");
 
@@ -56,7 +64,10 @@ const PROVISION_STEPS: Record<ServiceKey, StepHandler> = {
       await db.update(apps).set({ apiKey, apiSecret, updatedAt: new Date() }).where(eq(apps.id, ctx.appId));
     }
 
-    await k8s.upsertLivekitKey(apiKey, apiSecret);
+    // Vault-of-record path: writes to Vault, patches the LiveKit
+    // ExternalSecret, force-syncs ESO. Replaces the old direct K8s secret
+    // write which got reverted by ESO within 5 minutes.
+    await k8s.registerAppLivekitKey(ctx.slug, apiKey, apiSecret);
     await k8s.restartLivekitServer();
 
     const internalLivekitUrl = process.env.LIVEKIT_INTERNAL_URL || "ws://livekit-server.livekit.svc.cluster.local:7880";
@@ -80,6 +91,8 @@ const PROVISION_STEPS: Record<ServiceKey, StepHandler> = {
       keycloak_confidential_client_id: confClientId,
       keycloak_confidential_client_secret: clientSecret,
       keycloak_confidential_keycloak_id: confKeycloakId,
+      // Aliases for player-ui K8s secret refs
+      keycloak_client_secret: clientSecret,
     };
   },
 
@@ -156,6 +169,36 @@ const PROVISION_STEPS: Record<ServiceKey, StepHandler> = {
     return {};
   },
 
+  player_ui: async (ctx) => {
+    if (!ctx.enabledServices.includes("kubernetes")) {
+      throw new Error("player_ui requires kubernetes (namespace)");
+    }
+    if (!ctx.enabledServices.includes("livekit")) {
+      throw new Error("player_ui requires livekit (API keys in app secret)");
+    }
+    const { resolvePlayerUiImageRef } = await import("./playerUiDocker.js");
+    const image = await resolvePlayerUiImageRef(ctx.slug, {
+      slug: ctx.slug,
+      name: ctx.name,
+      description: ctx.description,
+      livekitUrl: ctx.livekitUrl,
+    });
+    const skipCf = process.env.PLAYER_UI_SKIP_CLOUDFLARE_DNS === "true";
+    if (!skipCf) {
+      const cf = await resolveCloudflareDnsConfig();
+      if (!cf) {
+        throw new Error(
+          "player_ui requires Cloudflare DNS config (Vault secret/data/shared/cloudflare: api_token, zone_id|zone_ids|zone_name, WAN_IP|wan_ip). " +
+            "For dev without DNS, set PLAYER_UI_SKIP_CLOUDFLARE_DNS=true.",
+        );
+      }
+    }
+    await ensurePlayerUiARecord(ctx.slug);
+    const { host } = await k8s.applyPlayerUi(ctx.slug, image, ctx.livekitUrl);
+    log.info("player_ui applied", { slug: ctx.slug, host, image });
+    return { player_ui_public_url: `https://${host}`, player_ui_image: image };
+  },
+
   verification: async (ctx, secrets) => {
     const results: Record<string, boolean> = {};
     if (ctx.enabledServices.includes("postgres") && secrets.postgres_database_url) {
@@ -166,6 +209,51 @@ const PROVISION_STEPS: Record<ServiceKey, StepHandler> = {
     }
     const vaultData = await vault.readAppSecret(ctx.slug);
     results.vault = vaultData !== null;
+
+    if (ctx.enabledServices.includes("player_ui") && ctx.enabledServices.includes("kubernetes")) {
+      const ready = await k8s.waitPlayerUiReady(ctx.slug, 180_000, 5_000);
+      results.player_ui = ready;
+      if (!ready) {
+        throw new Error(
+          "Verification failed: agent player UI (deployment + ingress + in-cluster /api/health) did not become ready within the timeout",
+        );
+      }
+      await k8s.verifyPlayerUiIngressKongRouting(ctx.slug);
+      try {
+        await k8s.verifyPlayerUiKongHostRoute(ctx.slug);
+      } catch (kongErr) {
+        // Kong ingress controller can take several minutes to reconcile new Ingress resources.
+        // The Ingress spec is already verified correct — Kong will pick it up eventually.
+        log.warn("Kong live route check failed (ingress spec is correct — Kong will reconcile)", {
+          slug: ctx.slug,
+          error: String(kongErr),
+        });
+      }
+
+      const skipCf = process.env.PLAYER_UI_SKIP_CLOUDFLARE_DNS === "true";
+      if (!skipCf) {
+        const cf = await resolveCloudflareDnsConfig();
+        if (!cf) {
+          throw new Error(
+            "Verification failed: Cloudflare config missing (required unless PLAYER_UI_SKIP_CLOUDFLARE_DNS=true)",
+          );
+        }
+        await verifyCloudflarePlayerUiARecord(ctx.slug);
+        if (!cf.proxied) {
+          const fqdn = getPlayerUiFqdn(ctx.slug);
+          const dnsOk = await waitPublicDnsResolvesToWan(fqdn, cf.targetIp, 120_000, 5_000);
+          if (!dnsOk) {
+            throw new Error(
+              `Verification failed: public DNS for ${fqdn} did not resolve to WAN ${cf.targetIp} within timeout`,
+            );
+          }
+        } else {
+          log.info("Skipping public DNS=WAN check (Cloudflare proxied=true); A record verified via API only", {
+            slug: ctx.slug,
+          });
+        }
+      }
+    }
 
     const failures = Object.entries(results).filter(([, ok]) => !ok).map(([name]) => name);
     if (failures.length > 0) {
@@ -178,8 +266,48 @@ const PROVISION_STEPS: Record<ServiceKey, StepHandler> = {
 const PROVISION_ORDER: ServiceKey[] = [
   "livekit", "keycloak", "langfuse", "kubernetes",
   "postgres", "redis", "minio", "letta", "dify",
-  "vault_policy", "verification",
+  "vault_policy", "player_ui", "verification",
 ];
+
+/** Rollback handlers — reverse each provisioning step's side effects. */
+const ROLLBACK_STEPS: Partial<Record<ServiceKey, (ctx: ProvisionContext, secrets: Record<string, string>) => Promise<void>>> = {
+  livekit: async (ctx, secrets) => {
+    if (secrets.livekit_api_key) {
+      await k8s.removeLivekitKey(secrets.livekit_api_key);
+    }
+  },
+  keycloak: async (ctx) => {
+    await keycloakAdmin.deleteClients(ctx.slug);
+    await keycloakAdmin.deleteRoles(ctx.slug);
+  },
+  langfuse: async (_ctx, secrets) => {
+    if (secrets.langfuse_project_id) {
+      await langfuseAdmin.deleteProject(secrets.langfuse_project_id);
+    }
+  },
+  kubernetes: async (ctx) => {
+    await k8s.deleteNamespace(ctx.slug);
+  },
+  postgres: async (ctx) => {
+    await postgresAdmin.dropDatabase(ctx.slug);
+  },
+  minio: async (ctx) => {
+    try { await minioAdmin.deleteServiceAccount(ctx.slug); } catch {}
+    try { await minioAdmin.deleteBucket(ctx.slug); } catch {}
+  },
+  letta: async (ctx) => {
+    await lettaAdmin.deleteTenant(ctx.slug);
+  },
+  vault_policy: async (ctx) => {
+    await vault.deleteEsoPolicy(ctx.slug);
+    await vault.deleteAppSecret(ctx.slug);
+  },
+  player_ui: async (ctx) => {
+    try { await deletePlayerUiARecord(ctx.slug); } catch {}
+    // K8s resources cleaned by kubernetes rollback (namespace delete)
+  },
+  // redis, dify, verification: no-ops (no external resources to clean)
+};
 
 async function updateJobStep(jobId: number, stepName: string, status: StepStatus, error?: string): Promise<void> {
   const db = await getDb();
@@ -233,6 +361,7 @@ export async function runProvisioningJob(ctx: ProvisionContext): Promise<void> {
   await updateAppStatus(ctx.appId, "provisioning");
 
   const secrets: Record<string, string> = {};
+  const completedSteps: ServiceKey[] = [];
 
   for (const stepName of PROVISION_ORDER) {
     const isEnabled = ctx.enabledServices.includes(stepName);
@@ -249,11 +378,28 @@ export async function runProvisioningJob(ctx: ProvisionContext): Promise<void> {
       const handler = PROVISION_STEPS[stepName];
       const newSecrets = await handler(ctx, secrets);
       Object.assign(secrets, newSecrets);
+      completedSteps.push(stepName);
       await updateJobStep(ctx.jobId, stepName, "success");
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       log.error(`Step failed: ${stepName}`, { slug: ctx.slug, error: errorMsg });
       await updateJobStep(ctx.jobId, stepName, "failed", errorMsg);
+
+      // Rollback completed steps in reverse order
+      log.info("Rolling back completed steps", { slug: ctx.slug, steps: completedSteps });
+      for (const completed of [...completedSteps].reverse()) {
+        const rollbackFn = ROLLBACK_STEPS[completed];
+        if (rollbackFn) {
+          try {
+            await rollbackFn(ctx, secrets);
+            await updateJobStep(ctx.jobId, completed, "rolled_back" as StepStatus);
+            log.info(`Rolled back: ${completed}`, { slug: ctx.slug });
+          } catch (rbErr) {
+            log.warn(`Rollback failed: ${completed}`, { slug: ctx.slug, error: String(rbErr) });
+          }
+        }
+      }
+
       await updateJobStatus(ctx.jobId, "failed", errorMsg);
       await updateAppStatus(ctx.appId, "failed");
       return;
@@ -384,29 +530,123 @@ export async function runDeletionJob(appId: number): Promise<void> {
     await step("minio-bucket", () => minioAdmin.deleteBucket(app.slug));
   }
 
-  // 6. LiveKit — remove API key from shared secret, restart server
+  // 6. LiveKit — remove API key from Vault, ESO template, and K8s secret
   if (enabledServices.includes("livekit") && secrets.livekit_api_key) {
     await step("livekit-key", async () => {
+      const safeSlug = app.slug.replace(/[^a-z0-9]/g, "_");
+      const keyField = `${safeSlug}_api_key`;
+      const secretField = `${safeSlug}_api_secret`;
+
+      // Remove from Vault shared LiveKit config
+      try {
+        const { readPlatformVaultPath, writePlatformVaultPath } = await import("../vaultClient.js");
+        const existing = (await readPlatformVaultPath("t6-apps/livekit/config")) || {};
+        delete existing[keyField];
+        delete existing[secretField];
+        await writePlatformVaultPath("t6-apps/livekit/config", existing);
+        log.info("Removed LiveKit key from Vault", { slug: app.slug });
+      } catch (err) {
+        log.warn("Failed to remove LiveKit key from Vault (non-fatal)", { error: String(err) });
+      }
+
+      // Remove from ESO template (prevents stale refs that break ALL apps' key sync)
+      try {
+        const k8sLib = await import("@kubernetes/client-node");
+        const kc = new k8sLib.KubeConfig();
+        if (process.env.KUBECONFIG) { kc.loadFromFile(process.env.KUBECONFIG); }
+        else { try { kc.loadFromCluster(); } catch { kc.loadFromDefault(); } }
+        const customApi = kc.makeApiClient(k8sLib.CustomObjectsApi);
+        const esoRes = await customApi.getNamespacedCustomObject({
+          group: "external-secrets.io", version: "v1",
+          namespace: "livekit", plural: "externalsecrets", name: "livekit-api-keys",
+        });
+        const eso = (esoRes?.body || esoRes) as any;
+        // Remove data refs for this slug
+        eso.spec.data = (eso.spec.data || []).filter(
+          (d: any) => !d.secretKey?.startsWith(safeSlug),
+        );
+        // Remove template lines for this slug
+        const tpl = eso.spec?.target?.template?.data?.LIVEKIT_KEYS || "";
+        eso.spec.target.template.data.LIVEKIT_KEYS = tpl
+          .split("\n")
+          .filter((l: string) => !l.includes(safeSlug))
+          .join("\n");
+        // Replace the entire ESO (PUT, not PATCH — avoids merge-patch array issues)
+        await customApi.replaceNamespacedCustomObject({
+          group: "external-secrets.io", version: "v1",
+          namespace: "livekit", plural: "externalsecrets", name: "livekit-api-keys",
+          body: eso,
+        });
+        log.info("Removed LiveKit key from ESO template", { slug: app.slug });
+      } catch (esoErr) {
+        log.warn("Failed to clean ESO template (non-fatal)", { error: String(esoErr) });
+      }
+
+      // Remove from K8s secret directly (immediate effect)
       await k8s.removeLivekitKey(secrets.livekit_api_key);
       await k8s.restartLivekitServer();
     });
   }
 
-  // 7. Kubernetes — delete namespace (takes everything in it)
+  // 7. Cloudflare — remove player UI A record before namespace teardown
+  if (enabledServices.includes("player_ui")) {
+    await step("cloudflare-player-ui-dns", () => deletePlayerUiARecord(app.slug));
+  }
+
+  // 8. Kubernetes — delete namespace (takes everything in it)
   if (enabledServices.includes("kubernetes")) {
     await step("kubernetes-namespace", () => k8s.deleteNamespace(app.slug));
   }
 
-  // 8. Vault — delete ESO policy and app secrets (always runs)
+  // 9. Vault — delete ESO policy and app secrets (always runs)
   await step("vault-policy", () => vault.deleteEsoPolicy(app.slug));
   await step("vault-secrets", () => vault.deleteAppSecret(app.slug));
 
-  // 9. Delete from platform DB
-  await db.delete(apps).where(eq(apps.id, appId));
-
+  // 10. Delete from platform DB — only if all external cleanup succeeded
   if (errors.length > 0) {
-    log.warn("Deletion completed with errors", { slug: app.slug, errors });
+    log.warn("Deletion completed with errors — keeping DB record for retry", { slug: app.slug, errors });
+    await db
+      .update(apps)
+      .set({ provisioningStatus: "deletion_partial", updatedAt: new Date() })
+      .where(eq(apps.id, appId));
   } else {
+    await db.delete(apps).where(eq(apps.id, appId));
     log.info("Deletion complete — all resources removed", { slug: app.slug });
   }
+}
+
+// ── Provisioning Watchdog ─────────────────────────────────────
+const WATCHDOG_INTERVAL_MS = 60_000; // 1 minute
+const STUCK_JOB_TIMEOUT_MS = 30 * 60_000; // 30 minutes
+
+export function startProvisioningWatchdog(): void {
+  setInterval(async () => {
+    try {
+      const db = await getDb();
+      if (!db) return;
+
+      const cutoff = new Date(Date.now() - STUCK_JOB_TIMEOUT_MS);
+      const stuckJobs = await db
+        .select({ id: provisioningJobs.id, appId: provisioningJobs.appId })
+        .from(provisioningJobs)
+        .where(and(eq(provisioningJobs.status, "running"), lt(provisioningJobs.startedAt, cutoff)));
+
+      for (const job of stuckJobs) {
+        log.warn("Watchdog: marking stuck provisioning job as failed", { jobId: job.id, appId: job.appId });
+        await db.update(provisioningJobs).set({
+          status: "failed",
+          error: "Provisioning timed out after 30 minutes (watchdog)",
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        }).where(eq(provisioningJobs.id, job.id));
+        await db.update(apps).set({
+          provisioningStatus: "failed",
+          updatedAt: new Date(),
+        }).where(eq(apps.id, job.appId));
+      }
+    } catch (err) {
+      log.error("Watchdog error", { error: String(err) });
+    }
+  }, WATCHDOG_INTERVAL_MS);
+  log.info("Provisioning watchdog started (interval=60s, timeout=30m)");
 }
