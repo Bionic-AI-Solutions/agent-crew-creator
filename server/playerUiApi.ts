@@ -104,8 +104,8 @@ export function registerPlayerUiRoutes(app: Express): void {
     const db = await getDb();
     if (!db) { res.status(500).json({ error: "DB unavailable" }); return; }
     try {
-      const agentConfigId = parseInt(req.params.agentConfigId, 10);
-      const userId = req.params.userId;
+      const agentConfigId = parseInt(String(req.params.agentConfigId), 10);
+      const userId = String(req.params.userId);
       const [row] = await db
         .select()
         .from(userMemoryBlocks)
@@ -126,8 +126,8 @@ export function registerPlayerUiRoutes(app: Express): void {
     const db = await getDb();
     if (!db) { res.status(500).json({ error: "DB unavailable" }); return; }
     try {
-      const agentConfigId = parseInt(req.params.agentConfigId, 10);
-      const userId = req.params.userId;
+      const agentConfigId = parseInt(String(req.params.agentConfigId), 10);
+      const userId = String(req.params.userId);
       const { lettaBlockId, blockLabel } = req.body as { lettaBlockId: string; blockLabel?: string };
       if (!lettaBlockId) { res.status(400).json({ error: "lettaBlockId required" }); return; }
 
@@ -168,7 +168,7 @@ export function registerPlayerUiRoutes(app: Express): void {
     const db = await getDb();
     if (!db) { res.status(500).json({ error: "DB unavailable" }); return; }
     try {
-      const agentConfigId = parseInt(req.params.agentConfigId, 10);
+      const agentConfigId = parseInt(String(req.params.agentConfigId), 10);
       const { minioPath } = req.body as { minioPath: string };
       if (!minioPath) { res.status(400).json({ error: "minioPath required" }); return; }
 

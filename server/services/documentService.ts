@@ -44,7 +44,8 @@ export async function extractText(buffer: Buffer, filename: string): Promise<str
 
     case ".pdf":
       try {
-        const pdfParse = (await import("pdf-parse")).default;
+        const pdfMod: any = await import("pdf-parse");
+        const pdfParse = pdfMod.default ?? pdfMod;
         const pdfData = await pdfParse(buffer);
         return pdfData.text;
       } catch (err) {

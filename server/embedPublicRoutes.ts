@@ -286,8 +286,8 @@ export function registerEmbedRoutes(app: Express): void {
 
   app.get("/api/s3-proxy/:bucket/*", embedCors, async (req: Request, res: Response) => {
     try {
-      const bucket = req.params.bucket;
-      const objectKey = req.params[0]; // everything after /bucket/
+      const bucket = String(req.params.bucket);
+      const objectKey = String(req.params[0]); // everything after /bucket/
       if (!bucket || !objectKey) {
         res.status(400).send("Missing bucket or key");
         return;
