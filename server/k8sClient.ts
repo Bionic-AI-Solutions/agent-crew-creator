@@ -507,6 +507,10 @@ export async function applyAgentDeployment(
           annotations: { "bionic/deployed-at": new Date().toISOString() },
         },
         spec: {
+          // Private images (docker4zerocool/bionic-agent) need the per-app
+          // Docker Hub pull secret (synced into each app namespace via ESO);
+          // without it the kubelet pulls anonymously and gets denied.
+          imagePullSecrets: [{ name: "dockerhub-pull-secret" }],
           // Seed the shared NFS model cache with whatever the agent image
           // baked in (turn-detector ONNX, languages.json, silero VAD, etc.)
           // — `cp -rn` is no-clobber so concurrent pods don't fight, and
