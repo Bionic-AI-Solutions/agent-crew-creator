@@ -1478,7 +1478,7 @@ async def entrypoint(ctx: JobContext):
     # existing agents created on the playground line keep working.
     avatar_active = False
     provider = (settings.avatar_provider or "flashhead").lower()
-    flashhead_ref = dispatch_meta.get("reference_image") or settings.flashhead_reference_image
+    flashhead_ref = settings.flashhead_reference_image
     use_flashhead = (
         settings.avatar_enabled
         and provider == "flashhead"
@@ -1492,11 +1492,7 @@ async def entrypoint(ctx: JobContext):
     )
 
     if use_flashhead:
-        avatar_name = (
-            dispatch_meta.get("avatar_name")
-            or settings.flashhead_avatar_name
-            or "Avatar"
-        )
+        avatar_name = settings.flashhead_avatar_name or "Avatar"
         try:
             from livekit.plugins import flashhead
             avatar = flashhead.AvatarSession(
