@@ -1495,7 +1495,17 @@ async def entrypoint(ctx: JobContext):
         avatar_name = settings.flashhead_avatar_name or "Avatar"
         try:
             from livekit.plugins import flashhead
-            avatar = flashhead.AvatarSession(
+
+            # livekit-plugins-flashhead 0.3.6 predates livekit-agents 1.6.x making
+            # BaseAvatarSession.avatar_identity an abstract property, so its
+            # AvatarSession can't be instantiated directly. Provide the property
+            # from the identity the plugin already stores.
+            class _FlashHeadAvatarSession(flashhead.AvatarSession):
+                @property
+                def avatar_identity(self) -> str:
+                    return self._avatar_participant_identity
+
+            avatar = _FlashHeadAvatarSession(
                 api_url=settings.flashhead_engine_url,
                 reference_image=flashhead_ref,
                 avatar_participant_identity=f"{settings.agent_name}-avatar",
