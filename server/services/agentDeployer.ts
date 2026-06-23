@@ -156,7 +156,10 @@ export async function deployAgent(
     // Default: Qwen 3.6 35B no-think — best voice latency/quality on
     // gpu-ai. Agents can override per-agent in the UI.
     LLM_PROVIDER: agent.llmProvider,
-    LLM_MODEL: agent.llmModel || "qwen3.6-35b-a3b-fp8",
+    // Strip any legacy "openai-proxy/" prefix: it routes through a dead gpu-ai
+    // upstream (ai-llm-inference:8001 → 404 → gateway 500) so the agent never
+    // gets an LLM reply. The bare model id is what /v1/models serves.
+    LLM_MODEL: (agent.llmModel || "qwen3.6-35b-a3b-fp8").replace(/^openai-proxy\//, ""),
     STT_PROVIDER: agent.sttProvider,
     STT_MODEL: agent.sttModel || "",
     TTS_PROVIDER: agent.ttsProvider,
@@ -168,7 +171,7 @@ export async function deployAgent(
     LETTA_AGENT_ID: agent.lettaAgentId || "",
     // Letta (executor) defaults to the thinking variant — heavy lifting
     // is done here so CoT pays off.
-    LETTA_LLM_MODEL: agent.lettaLlmModel || "openai-proxy/qwen3.6-35b-a3b-fp8-think",
+    LETTA_LLM_MODEL: (agent.lettaLlmModel || "qwen3.6-35b-a3b-fp8-think").replace(/^openai-proxy\//, ""),
     LETTA_SYSTEM_PROMPT: agent.lettaSystemPrompt || "",
     LETTA_SERVER_PASSWORD: "",  // Populated below from shared Vault
 
