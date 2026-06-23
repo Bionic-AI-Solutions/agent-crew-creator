@@ -453,6 +453,58 @@ export async function createExternalSecret(namespace: string): Promise<void> {
   }
 }
 
+/**
+ * Ensure the Docker Hub pull secret exists in the app namespace via ESO.
+ * The agent Deployment template references `dockerhub-pull-secret` in
+ * imagePullSecrets; without this the kubelet pulls the private bionic-agent
+ * image anonymously and gets denied (ImagePullBackOff). Synced from the
+ * shared Vault path `shared/dockerhub`.
+ */
+export async function createDockerHubPullSecret(namespace: string): Promise<void> {
+  try {
+    const { customApi } = await getK8sApis();
+    await customApi.createNamespacedCustomObject({
+      group: "external-secrets.io",
+      version: "v1",
+      namespace,
+      plural: "externalsecrets",
+      body: {
+        apiVersion: "external-secrets.io/v1",
+        kind: "ExternalSecret",
+        metadata: { name: "dockerhub-pull-secret", namespace },
+        spec: {
+          refreshInterval: "1h",
+          secretStoreRef: { name: "vault-backend", kind: "ClusterSecretStore" },
+          target: {
+            name: "dockerhub-pull-secret",
+            template: {
+              type: "kubernetes.io/dockerconfigjson",
+              data: {
+                ".dockerconfigjson":
+                  '{"auths":{"https://index.docker.io/v1/":{"username":"{{ .username }}","password":"{{ .pat }}","email":"{{ .email }}","auth":"{{ printf "%s:%s" .username .pat | b64enc }}"}}}',
+              },
+            },
+          },
+          data: [
+            { secretKey: "username", remoteRef: { key: "shared/dockerhub", property: "username" } },
+            { secretKey: "pat", remoteRef: { key: "shared/dockerhub", property: "pat" } },
+            { secretKey: "email", remoteRef: { key: "shared/dockerhub", property: "email" } },
+          ],
+        },
+      },
+    });
+    log.info("Created dockerhub-pull-secret ExternalSecret", { namespace });
+  } catch (err: any) {
+    if (is409(err)) {
+      log.info("dockerhub-pull-secret ExternalSecret already exists", { namespace });
+      return;
+    }
+    log.warn("Failed to create dockerhub-pull-secret ExternalSecret", {
+      error: String(err?.body?.message || err),
+    });
+  }
+}
+
 // ── ConfigMap Management ────────────────────────────────────────
 
 export async function ensureConfigMap(
@@ -1162,6 +1214,7 @@ export const k8s = {
   createResourceQuota,
   createServiceAccount,
   createExternalSecret,
+  createDockerHubPullSecret,
   upsertLivekitKey,
   registerAppLivekitKey,
   removeLivekitKey,

@@ -406,6 +406,9 @@ export async function deployAgent(
 
   // 4b. ExternalSecret (ConfigMap written AFTER presigned URLs are generated below)
   await k8s.createExternalSecret(namespace);
+  // Ensure the Docker Hub pull secret exists so the agent Deployment's
+  // imagePullSecrets reference resolves (private bionic-agent image).
+  await k8s.createDockerHubPullSecret(namespace);
 
   // 5. Resolve per-agent provider API keys from Vault — for ALL three
   // pipelines (LLM, STT, TTS). setProviderKey writes per-agent keys to
