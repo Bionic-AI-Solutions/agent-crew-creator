@@ -20,12 +20,18 @@ export const STT_PROVIDERS: ProviderOption[] = [
 ];
 
 export const STT_MODELS: Record<string, ModelOption[]> = {
+  // gpu-ai STT aliases the mcp-api-server /v1/audio/transcriptions endpoint
+  // actually accepts. (faster-whisper-large-v3 is NOT valid — it 400s.)
   "gpu-ai": [
-    { value: "faster-whisper-large-v3", label: "Faster Whisper Large v3" },
-    { value: "faster-whisper-large-v3-turbo-ct2", label: "Faster Whisper Large v3 Turbo" },
+    { value: "whisper-large-v3", label: "Whisper Large v3 (best quality)" },
+    { value: "whisper-large-v3-turbo", label: "Whisper Large v3 Turbo (faster)" },
+    { value: "whisper-large-v3-turbo-ct2", label: "Whisper Large v3 Turbo CT2 (fastest)" },
+    { value: "faster-whisper", label: "Faster Whisper (default)" },
+    { value: "sensevoice", label: "SenseVoice (multilingual)" },
   ],
   "faster-whisper": [
-    { value: "faster-whisper-large-v3-turbo-ct2", label: "Large v3 Turbo (CTranslate2)" },
+    { value: "whisper-large-v3-turbo-ct2", label: "Large v3 Turbo (CTranslate2)" },
+    { value: "whisper-large-v3", label: "Large v3" },
   ],
   "deepgram": [
     { value: "nova-2", label: "Nova-2" },
@@ -70,6 +76,8 @@ export const LLM_MODELS: Record<string, ModelOption[]> = {
   "gpu-ai": [
     { value: "openai-proxy/qwen3.6-35b-a3b-fp8", label: "Qwen 3.6 35B (Fast, no-think)" },
     { value: "openai-proxy/qwen3.6-35b-a3b-fp8-think", label: "Qwen 3.6 35B (Thinking)" },
+    { value: "openai-proxy/gemma-4-e4b-it", label: "Gemma 4 E4B (fast, low-latency)" },
+    { value: "openai-proxy/qwen3.5-27b-fp8", label: "Qwen 3.5 27B" },
   ],
   "custom": [],
 };
@@ -84,12 +92,18 @@ export const TTS_PROVIDERS: ProviderOption[] = [
 ];
 
 export const TTS_VOICES: Record<string, ModelOption[]> = {
+  // Real gpu-ai voice names from mcp-api-server /v1/audio/voices. The
+  // builder fetches the full live list dynamically (listProviderVoices);
+  // this is just the offline fallback. (The old Sudhir-IndexTTS2 /
+  // Indic-Parler-* names did not exist on the endpoint.)
   "gpu-ai": [
-    { value: "Sudhir-IndexTTS2", label: "Sudhir (IndexTTS-2 Clone)" },
-    { value: "Indic-Parler-Hindi-Female", label: "Hindi Female (Indic Parler)" },
-    { value: "Indic-Parler-Hindi-Male", label: "Hindi Male (Indic Parler)" },
-    { value: "Indic-Parler-English-Female", label: "English Female (Indic Parler)" },
-    { value: "Indic-Parler-English-Male", label: "English Male (Indic Parler)" },
+    { value: "Sudhir", label: "Sudhir (en)" },
+    { value: "Severus", label: "Severus (en)" },
+    { value: "SirShree", label: "SirShree (en)" },
+    { value: "aditya", label: "Aditya (hi)" },
+    { value: "Morgan Freeman", label: "Morgan Freeman (en)" },
+    { value: "Julie Andrews", label: "Julie Andrews (en)" },
+    { value: "Don LaFontaine", label: "Don LaFontaine (en)" },
   ],
   "elevenlabs": [
     { value: "21m00Tcm4TlvDq8ikWAM", label: "Rachel" },

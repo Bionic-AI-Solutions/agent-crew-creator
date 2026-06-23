@@ -469,6 +469,45 @@ export const agentRouter = router({
         }
       }
 
+      // gpu-ai TTS voice validation — tightly wire the saved voice to the
+      // live mcp-api-server voice list so a stale/typo'd voice can't persist
+      // (the external-provider block above skips gpu-ai). Non-fatal on a
+      // transient endpoint error so saves aren't blocked by infra blips.
+      if (ttsChanged && newTtsVoice && newTtsProvider === "gpu-ai") {
+        try {
+          const base = (
+            process.env.GPU_AI_LLM_INTERNAL_URL ||
+            "http://mcp-api-server.mcp.svc.cluster.local:8000"
+          ).replace(/\/+$/, "").replace(/\/v1$/, "");
+          const res = await fetch(`${base}/v1/audio/voices`, {
+            signal: AbortSignal.timeout(6000),
+          });
+          if (res.ok) {
+            const body = (await res.json()) as any;
+            const voices: any[] = body?.data?.voices ?? body?.voices ?? [];
+            const ids = new Set(
+              voices.flatMap((v) => [v.id, v.name].filter(Boolean)),
+            );
+            if (ids.size > 0 && !ids.has(newTtsVoice)) {
+              const needle = newTtsVoice.toLowerCase().slice(0, 4);
+              const hints = voices
+                .map((v) => v.name || v.id)
+                .filter((n: string) => n.toLowerCase().includes(needle))
+                .slice(0, 6);
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message:
+                  `Voice '${newTtsVoice}' is not available on gpu-ai.` +
+                  (hints.length ? ` Did you mean: ${hints.join(", ")}?` : ""),
+              });
+            }
+          }
+        } catch (err) {
+          if (err instanceof TRPCError) throw err;
+          log.warn("gpu-ai voice validation failed (non-fatal)", { error: String(err) });
+        }
+      }
+
       // Increment configVersion on every update for optimistic locking
       const [updated] = await ctx.db
         .update(agentConfigs)
