@@ -12,7 +12,7 @@ export type ServiceKey =
   | "player_ui"
   | "verification";
 
-export type StepStatus = "pending" | "running" | "success" | "failed" | "skipped";
+export type StepStatus = "pending" | "running" | "success" | "failed" | "skipped" | "rolled_back";
 
 export interface ProvisioningStep {
   name: ServiceKey;

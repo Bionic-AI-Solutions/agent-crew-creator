@@ -392,7 +392,7 @@ export async function runProvisioningJob(ctx: ProvisionContext): Promise<void> {
         if (rollbackFn) {
           try {
             await rollbackFn(ctx, secrets);
-            await updateJobStep(ctx.jobId, completed, "rolled_back" as StepStatus);
+            await updateJobStep(ctx.jobId, completed, "rolled_back");
             log.info(`Rolled back: ${completed}`, { slug: ctx.slug });
           } catch (rbErr) {
             log.warn(`Rollback failed: ${completed}`, { slug: ctx.slug, error: String(rbErr) });
@@ -424,12 +424,20 @@ export async function retryProvisioningJob(jobId: number): Promise<void> {
   const app = appRows[0];
   if (!app) throw new Error("App not found");
 
-  // Reset failed steps to pending
+  // Reset to pending everything that must re-run:
+  //  - the failed step and every step after it, AND
+  //  - any step that was ROLLED BACK. When a step fails, runProvisioningJob
+  //    rolls back the earlier completed steps (deleting the namespace, Keycloak
+  //    clients, app DB, etc.) and marks them "rolled_back". Those resources no
+  //    longer exist, so they MUST be recreated on retry — otherwise the retry
+  //    skips them (status !== "pending") and later steps fail against the
+  //    missing namespace/clients (the exact reason a failed app could never be
+  //    retried, only deleted + recreated).
   const steps = job.steps as ProvisioningStep[];
   let foundFailed = false;
   for (const step of steps) {
     if (step.status === "failed") foundFailed = true;
-    if (foundFailed) {
+    if (foundFailed || step.status === "rolled_back") {
       step.status = "pending";
       step.error = undefined;
     }
