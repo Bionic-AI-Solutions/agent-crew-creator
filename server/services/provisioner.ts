@@ -105,6 +105,9 @@ const PROVISION_STEPS: Record<ServiceKey, StepHandler> = {
     await k8s.createNamespace(ctx.slug);
     await k8s.createResourceQuota(ctx.slug);
     await k8s.createServiceAccount(ctx.slug);
+    // Pull secret for private images (player-ui, agents) — without it their
+    // pods ImagePullBackOff and provisioning verification times out.
+    await k8s.createDockerHubPullSecret(ctx.slug);
     return { kubernetes_namespace: ctx.slug, kubernetes_service_account: `${ctx.slug}-sa` };
   },
 

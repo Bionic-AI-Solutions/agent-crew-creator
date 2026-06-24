@@ -830,6 +830,7 @@ export async function applyPlayerUi(
           annotations: { "bionic/deployed-at": new Date().toISOString() },
         },
         spec: {
+          imagePullSecrets: [{ name: "dockerhub-pull-secret" }],
           containers: [{
             name: "player-ui",
             image,
