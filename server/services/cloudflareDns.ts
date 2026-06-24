@@ -58,21 +58,29 @@ function pickFromVault(data: Record<string, string> | null, ...candidates: strin
   return undefined;
 }
 
-/** Parse zone_ids JSON like {"baisoln.com":"<zone_uuid>"}; prefers PLAYER_UI_HOST_SUFFIX. */
+/** Resolve a zone id from zone_ids {"baisoln.com":"<zone_uuid>"}; prefers
+ * PLAYER_UI_HOST_SUFFIX. Accepts zone_ids as a JSON STRING or as an OBJECT —
+ * Vault KV stores nested JSON as an object, in which case pickFromVault skips it
+ * (non-string) and JSON.parse would choke on "[object Object]". That made the
+ * Cloudflare config resolve to null and every player_ui provision fail with
+ * "requires Cloudflare DNS config" despite the secret being present. */
 function zoneIdFromZoneIdsJson(data: Record<string, string> | null): string | undefined {
-  const raw = pickFromVault(data, "zone_ids", "zone_ids_json");
-  if (!raw) return undefined;
-  try {
-    const map = JSON.parse(raw) as Record<string, string>;
-    if (!map || typeof map !== "object") return undefined;
-    const suffix = playerUiHostSuffix();
-    const byKey = map[suffix]?.trim();
-    if (byKey) return byKey;
-    const first = Object.values(map).find((v) => typeof v === "string" && v.trim());
-    return first?.trim();
-  } catch {
-    return undefined;
+  if (!data) return undefined;
+  let raw: unknown;
+  for (const [k, v] of Object.entries(data as Record<string, unknown>)) {
+    const lk = k.toLowerCase();
+    if (lk === "zone_ids" || lk === "zone_ids_json") { raw = v; break; }
   }
+  let map: Record<string, unknown> | undefined;
+  if (typeof raw === "string") {
+    try { map = JSON.parse(raw) as Record<string, unknown>; } catch { return undefined; }
+  } else if (raw && typeof raw === "object") {
+    map = raw as Record<string, unknown>;
+  }
+  if (!map) return undefined;
+  const pick = (v: unknown): string | undefined =>
+    typeof v === "string" && v.trim() ? v.trim() : undefined;
+  return pick(map[playerUiHostSuffix()]) ?? Object.values(map).map(pick).find(Boolean);
 }
 
 export interface CloudflareDnsConfig {
