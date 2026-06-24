@@ -1299,13 +1299,21 @@ async def entrypoint(ctx: JobContext):
     # min_endpointing_delay=0.4 — drop from default ~1.0 so the framework
     # decides 'user is done speaking' faster. Saves ~0.6s per turn at the
     # cost of slightly more interruption mid-thought.
+    # preemptive_generation starts the LLM call on EOU *prediction* (before the
+    # user fully stops) to save ~1s/turn — but it hangs silently against gpu-ai's
+    # streaming endpoint: the call starts, gpu-ai never streams back, so the reply
+    # and TTS never come. Logs show "using preemptive generation" then silence,
+    # and because the stuck task is a foreground speech task, every later turn
+    # awaits it and deadlocks. It is only safe with cloud streaming LLMs
+    # (OpenRouter/OpenAI). Disable it whenever the primary LLM is gpu-ai.
+    _preemptive_ok = (settings.llm_provider or "").lower() != "gpu-ai"
     session = AgentSession(
         stt=create_stt_with_fallback(),
         llm=create_llm_with_fallback(),
         tts=create_tts_with_fallback(),
         vad=silero.VAD.load(),
         turn_detection=MultilingualModel(),
-        preemptive_generation=True,
+        preemptive_generation=_preemptive_ok,
         min_endpointing_delay=0.8,
     )
 
@@ -1501,6 +1509,16 @@ async def entrypoint(ctx: JobContext):
             # AvatarSession can't be instantiated directly. Provide the property
             # from the identity the plugin already stores.
             class _FlashHeadAvatarSession(flashhead.AvatarSession):
+                def __init__(self, **kwargs):
+                    super().__init__(**kwargs)
+                    # plugin 0.3.6's AvatarSession.__init__ skips the
+                    # rtc.EventEmitter init that livekit-agents 1.6.x's metrics
+                    # machinery (_emit_metrics -> emit("metrics_collected"))
+                    # relies on, so self._events is missing and every
+                    # conversation_item_added logs a noisy AttributeError.
+                    if not hasattr(self, "_events"):
+                        self._events = {}
+
                 @property
                 def avatar_identity(self) -> str:
                     return self._avatar_participant_identity
