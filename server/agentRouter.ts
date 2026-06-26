@@ -22,6 +22,15 @@ import { and } from "drizzle-orm";
 import { AVAILABLE_CREWS } from "../shared/providerOptions.js";
 import { desc } from "drizzle-orm";
 
+// Agent name becomes the k8s deployment (`agent-<name>`), the worker's
+// AGENT_NAME, and the LiveKit dispatch name. Require an RFC-1123-style label:
+// lowercase alphanumeric segments joined by single hyphens, starting AND ending
+// with an alphanumeric. This rejects empty, whitespace, and all-dash names
+// (e.g. "-", "--", " ") that would otherwise produce a blank/auto-dispatch agent.
+const AGENT_NAME_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const AGENT_NAME_MSG =
+  "Agent name must be lowercase letters/numbers separated by single hyphens (e.g. 'physics-tutor').";
+
 // ── Default Personas (user-editable via UI) ────────────────────
 // These are the personality/style defaults. Users can replace them in the
 // "Agent Persona" / "Assistant Persona" fields. Behavioral rules are
@@ -171,7 +180,7 @@ export const agentRouter = router({
     .input(
       z.object({
         appId: z.number(),
-        name: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/),
+        name: z.string().min(1).max(63).regex(AGENT_NAME_REGEX, AGENT_NAME_MSG),
         description: z.string().optional(),
       }),
     )
@@ -292,7 +301,9 @@ export const agentRouter = router({
     .input(
       z.object({
         id: z.number(),
-        name: z.string().min(1).max(100).optional(),
+        // Was unvalidated (only min(1)/max(100)) — accepted whitespace/any chars,
+        // which flowed straight into the dispatch name. Mirror create's strict rule.
+        name: z.string().min(1).max(63).regex(AGENT_NAME_REGEX, AGENT_NAME_MSG).optional(),
         description: z.string().optional(),
         sttProvider: z.string().optional(),
         sttModel: z.string().nullable().optional(),

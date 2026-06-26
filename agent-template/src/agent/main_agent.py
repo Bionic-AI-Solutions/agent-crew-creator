@@ -1982,6 +1982,31 @@ async def entrypoint(ctx: JobContext):
     ctx.add_shutdown_callback(_shutdown)
 
 
+def _resolve_agent_name() -> str:
+    """Resolve the LiveKit worker's agent_name, fail-closed.
+
+    A worker registered with an EMPTY agent_name is an *anonymous* worker that
+    LiveKit AUTO-DISPATCHES into every room — it would hijack unrelated sessions.
+    So we never start unnamed: strip whitespace, fall back to ``<app_slug>-agent``,
+    and raise if it's still empty rather than silently auto-dispatching.
+
+    The platform always sets AGENT_NAME to ``<app_slug>-<agent.name>`` (see
+    agentDeployer); the playground dispatches that exact string. The fallback is
+    only a guard for a misconfigured deploy.
+    """
+    name = (settings.agent_name or "").strip()
+    if not name:
+        slug = (settings.app_slug or "").strip()
+        name = f"{slug}-agent" if slug else ""
+    if not name:
+        raise RuntimeError(
+            "Refusing to start: AGENT_NAME is empty and APP_SLUG has no fallback. "
+            "An unnamed worker auto-dispatches into every LiveKit room."
+        )
+    return name
+
+
 if __name__ == "__main__":
-    agent_name = settings.agent_name or settings.app_slug + "-agent"
+    agent_name = _resolve_agent_name()
+    logger.info("Registering LiveKit worker (explicit-dispatch only): agent_name=%r", agent_name)
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, agent_name=agent_name))

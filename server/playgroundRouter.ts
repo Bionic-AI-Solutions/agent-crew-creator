@@ -152,7 +152,17 @@ export const playgroundRouter = router({
       // AGENT_NAME env is set by agentDeployer to `${slug}-${agent.name}`
       // (slug-prefixed to avoid cross-app collisions on the shared LiveKit
       // instance). We must mirror that exact string here.
-      const dispatchName = `${app.slug}-${agent.name}`;
+      // Defense in depth: agent.name is NOT NULL + validated min(1) on write,
+      // but never dispatch a blank agentName. An empty/whitespace agentName on
+      // RoomAgentDispatch is not a no-op — it produces an unnamed dispatch.
+      const agentDbName = (agent.name ?? "").trim();
+      if (!agentDbName || !app.slug) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Agent or app has no name — refusing to dispatch an unnamed agent",
+        });
+      }
+      const dispatchName = `${app.slug}-${agentDbName}`;
       at.roomConfig = new RoomConfiguration({
         agents: [new RoomAgentDispatch({ agentName: dispatchName })],
       });

@@ -61,12 +61,16 @@ export function registerPlayerUiRoutes(app: Express): void {
         .where(and(eq(agentConfigs.appId, appRow.id), eq(agentConfigs.deployed, true)));
 
       res.json({
-        agents: agents.map((a) => ({
+        // Never expose an unnamed agent — a blank name yields a blank
+        // dispatchName and an unnamed/auto-dispatch agent in the room.
+        agents: agents
+          .filter((a) => (a.name ?? "").trim().length > 0)
+          .map((a) => ({
           id: a.id,
           name: a.name,
           displayName: a.name.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
           deployed: a.deployed,
-          dispatchName: `${slug}-${a.name}`,
+          dispatchName: `${slug}-${a.name.trim()}`,
           capabilities: {
             vision: a.visionEnabled,
             avatar: a.avatarEnabled,
