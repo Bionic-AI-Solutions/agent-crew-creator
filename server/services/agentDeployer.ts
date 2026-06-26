@@ -350,6 +350,62 @@ export async function deployAgent(
         current: [...currentToolNames],
       });
 
+      // ── Wire linked MCP servers → Letta agent ──────────────────
+      // Register each linked MCP server with Letta (Letta is the upstream that
+      // connects out and exposes the server's tools) and attach those tools to
+      // the agent. Auth token comes from Vault (mcp_<name>_api_key, written when
+      // the server was saved in the UI) and is passed as an Authorization header.
+      // Best-effort: a bad URL / stale token logs a warning, never fails deploy.
+      if (mcpLinks.length > 0) {
+        const { readAppSecret } = await import("../vaultClient.js");
+        const mcpSecrets = (await readAppSecret(app.slug)) || {};
+        for (const m of mcpLinks) {
+          const lettaServerName = `${app.slug}-${m.name}`.replace(/[^A-Za-z0-9_-]/g, "-");
+          try {
+            // Explicit headers JSON wins; otherwise a bearer/api-key token from
+            // Vault becomes an Authorization: Bearer header.
+            let customHeaders: Record<string, string> | undefined;
+            if (m.headers) {
+              try { customHeaders = JSON.parse(m.headers); } catch { /* ignore malformed */ }
+            }
+            if ((!customHeaders || !Object.keys(customHeaders).length) && m.authType && m.authType !== "none") {
+              const token = mcpSecrets[`mcp_${m.name}_api_key`];
+              if (token) customHeaders = { Authorization: `Bearer ${token}` };
+            }
+            let mcpArgs: string[] | undefined;
+            let mcpEnv: Record<string, string> | undefined;
+            if (m.args) { try { mcpArgs = JSON.parse(m.args); } catch { /* ignore */ } }
+            if (m.env) { try { mcpEnv = JSON.parse(m.env); } catch { /* ignore */ } }
+
+            await lettaAdmin.registerMcpServer({
+              name: lettaServerName,
+              transport: m.transport,
+              url: m.url || undefined,
+              command: m.command || undefined,
+              args: mcpArgs,
+              env: mcpEnv,
+              customHeaders,
+            });
+            const mcpTools = await lettaAdmin.listMcpServerTools(lettaServerName);
+            let attached = 0;
+            for (const t of mcpTools) {
+              if (!t?.name) continue;
+              const created = await lettaAdmin.registerMcpToolFromServer(lettaServerName, t.name);
+              if (created?.id) {
+                await lettaAdmin.attachToolToAgent(agent.lettaAgentId, created.id);
+                attached++;
+              }
+            }
+            log.info("MCP server wired to Letta agent", { server: lettaServerName, toolsAttached: attached });
+          } catch (err) {
+            log.warn("MCP server wiring failed (non-fatal) — verify the server URL and auth token in the UI", {
+              server: lettaServerName,
+              error: String((err as any)?.body?.message || (err as any)?.message || err),
+            });
+          }
+        }
+      }
+
       // Set tool execution environment variables on the Letta agent
       // These are needed by generate_image, generate_pdf, code_interpreter etc.
       try {

@@ -308,6 +308,87 @@ export async function getAgentTools(agentId: string): Promise<any[]> {
   return agent?.tools || [];
 }
 
+// ── MCP server registration ─────────────────────────────────────
+//
+// Letta is the upstream that actually connects to external MCP servers and
+// exposes their tools to the agent. Flow:
+//   1. registerMcpServer — PUT the server config (with auth) into Letta
+//   2. listMcpServerTools — Letta connects out and lists the server's tools
+//   3. registerMcpToolFromServer — materialize one MCP tool as a Letta Tool
+//   4. attachToolToAgent — attach that Tool to the agent
+// Auth (bearer token / api key) is passed via custom_headers so the exact
+// header is under our control; the token itself comes from Vault, never code.
+
+export interface LettaMcpServerConfig {
+  /** Unique server name in Letta — namespace per app to avoid collisions. */
+  name: string;
+  /** "streamable-http" | "sse" | "stdio" (our DB values). */
+  transport: string;
+  url?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  /** Exact HTTP headers to send to the MCP server (e.g. Authorization). */
+  customHeaders?: Record<string, string>;
+}
+
+function lettaMcpType(transport: string): string {
+  switch (transport) {
+    case "sse": return "sse";
+    case "stdio": return "stdio";
+    default: return "streamable_http";
+  }
+}
+
+/**
+ * Register (idempotent upsert) an external MCP server with Letta. Returns true
+ * on success. Non-throwing helpers below let the deployer treat MCP wiring as
+ * best-effort (a bad/unreachable server must not fail the whole agent deploy).
+ */
+export async function registerMcpServer(config: LettaMcpServerConfig): Promise<void> {
+  const type = lettaMcpType(config.transport);
+  const body: Record<string, any> = { server_name: config.name, type };
+  if (type === "stdio") {
+    body.command = config.command;
+    if (config.args?.length) body.args = config.args;
+    if (config.env && Object.keys(config.env).length) body.env = config.env;
+  } else {
+    body.server_url = config.url;
+    if (config.customHeaders && Object.keys(config.customHeaders).length) {
+      body.custom_headers = config.customHeaders;
+    }
+  }
+  await lettaRequest("PUT", "/v1/tools/mcp/servers", body);
+  log.info("Registered MCP server with Letta", { server: config.name, type });
+}
+
+/** List the tools an MCP server exposes (Letta connects out to fetch them). */
+export async function listMcpServerTools(serverName: string): Promise<any[]> {
+  const res = await lettaRequest(
+    "GET",
+    `/v1/tools/mcp/servers/${encodeURIComponent(serverName)}/tools`,
+  );
+  return Array.isArray(res) ? res : [];
+}
+
+/** Materialize one MCP tool as a Letta Tool (idempotent by name). */
+export async function registerMcpToolFromServer(
+  serverName: string,
+  toolName: string,
+): Promise<{ id: string; name: string }> {
+  return lettaRequest(
+    "POST",
+    `/v1/tools/mcp/servers/${encodeURIComponent(serverName)}/${encodeURIComponent(toolName)}`,
+    {},
+  );
+}
+
+/** Remove an MCP server from Letta (used when an agent unlinks it). */
+export async function removeMcpServer(serverName: string): Promise<void> {
+  await lettaRequest("DELETE", `/v1/tools/mcp/servers/${encodeURIComponent(serverName)}`);
+  log.info("Removed MCP server from Letta", { server: serverName });
+}
+
 // ── Crew tool sync ──────────────────────────────────────────────
 
 /**
