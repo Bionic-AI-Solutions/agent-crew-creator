@@ -570,4 +570,8 @@ export const lettaAdmin = {
   deleteTool,
   getAgentTools,
   syncCrewTool,
+  registerMcpServer,
+  listMcpServerTools,
+  registerMcpToolFromServer,
+  removeMcpServer,
 };
