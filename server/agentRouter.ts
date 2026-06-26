@@ -1076,10 +1076,41 @@ export const agentRouter = router({
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
-      const [s] = await ctx.db.select({ appId: mcpServers.appId }).from(mcpServers).where(eq(mcpServers.id, input.id)).limit(1);
+      const [s] = await ctx.db
+        .select({ appId: mcpServers.appId, name: mcpServers.name })
+        .from(mcpServers)
+        .where(eq(mcpServers.id, input.id))
+        .limit(1);
       if (!s) throw new TRPCError({ code: "NOT_FOUND", message: "MCP server not found" });
       await assertAppMembership(ctx, s.appId);
       await ctx.db.delete(mcpServers).where(eq(mcpServers.id, input.id));
+
+      // Clean up everything this server created elsewhere — best-effort, so a
+      // cleanup hiccup never blocks the delete:
+      //  - the bearer/api-key token in Vault (mcp_<name>_api_key)
+      //  - the Letta MCP server registration (<slug>-<name>) + its tools
+      // Agents still holding its tools shed them on their next deploy (the
+      // Letta tool-sync detaches tools no longer backed by a linked server).
+      try {
+        const [app] = await ctx.db.select().from(apps).where(eq(apps.id, s.appId)).limit(1);
+        if (app) {
+          const { writeAppSecret, readAppSecret } = await import("./vaultClient.js");
+          const existing = (await readAppSecret(app.slug)) || {};
+          if (existing[`mcp_${s.name}_api_key`] !== undefined) {
+            delete existing[`mcp_${s.name}_api_key`];
+            await writeAppSecret(app.slug, existing);
+          }
+          const { lettaAdmin } = await import("./services/lettaAdmin.js");
+          const lettaServerName = `${app.slug}-${s.name}`.replace(/[^A-Za-z0-9_-]/g, "-");
+          await lettaAdmin.removeMcpServer(lettaServerName);
+        }
+      } catch (err) {
+        log.warn("MCP server cleanup (Vault/Letta) failed (non-fatal)", {
+          id: input.id,
+          name: s.name,
+          error: String((err as any)?.message || err),
+        });
+      }
       return { success: true };
     }),
 
