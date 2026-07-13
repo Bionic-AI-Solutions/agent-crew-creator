@@ -24,9 +24,17 @@ from dataclasses import dataclass
 from typing import Optional
 
 import livekit.agents
-livekit.agents.DEFAULT_API_CONNECT_OPTIONS = livekit.agents.APIConnectOptions(
+import livekit.agents.types as _lk_types
+# Relax the default connect timeout for slow gpu-ai cold starts. Consumers
+# (SessionConnectOptions, plugin chat()/synthesize() defaults) read the
+# constant from livekit.agents.types, so patching only livekit.agents was a
+# no-op (finding #27). Patch the source symbol too, before the plugins import
+# below bind their defaults.
+_RELAXED_CONNECT_OPTIONS = livekit.agents.APIConnectOptions(
     timeout=120.0, max_retry=3, retry_interval=2.0,
 )
+livekit.agents.DEFAULT_API_CONNECT_OPTIONS = _RELAXED_CONNECT_OPTIONS
+_lk_types.DEFAULT_API_CONNECT_OPTIONS = _RELAXED_CONNECT_OPTIONS
 
 import httpx
 from livekit.agents import (

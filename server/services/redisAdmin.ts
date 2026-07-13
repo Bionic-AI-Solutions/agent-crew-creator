@@ -21,8 +21,30 @@ export async function registerKeyPrefix(slug: string) {
 
 export async function testConnectivity(redisUrl: string, keyPrefix: string): Promise<boolean> {
   if (!redisUrl) return false;
-  log.info("Redis connectivity test", { keyPrefix });
-  return true;
+  // Actually contact Redis — previously this returned true unconditionally, so
+  // the provisioning verification step could never catch a broken Redis
+  // (finding #20). A round-trip PING/SET/GET on the app's key prefix confirms
+  // both reachability and write access.
+  const Redis = (await import("ioredis")).default;
+  const client = new Redis(redisUrl, {
+    maxRetriesPerRequest: 1,
+    lazyConnect: true,
+    connectTimeout: 5000,
+  });
+  try {
+    await client.connect();
+    const probeKey = `${keyPrefix}__connectivity_probe`;
+    await client.set(probeKey, "1", "EX", 30);
+    const got = await client.get(probeKey);
+    await client.del(probeKey);
+    log.info("Redis connectivity test passed", { keyPrefix });
+    return got === "1";
+  } catch (err) {
+    log.warn("Redis connectivity test failed", { keyPrefix, error: String(err) });
+    return false;
+  } finally {
+    try { client.disconnect(); } catch { /* already down */ }
+  }
 }
 
 export async function backupKeys(slug: string): Promise<string> {

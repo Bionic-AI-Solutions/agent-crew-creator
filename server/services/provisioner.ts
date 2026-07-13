@@ -296,8 +296,14 @@ const ROLLBACK_STEPS: Partial<Record<ServiceKey, (ctx: ProvisionContext, secrets
     await postgresAdmin.dropDatabase(ctx.slug);
   },
   minio: async (ctx) => {
-    try { await minioAdmin.deleteServiceAccount(ctx.slug); } catch {}
-    try { await minioAdmin.deleteBucket(ctx.slug); } catch {}
+    // Attempt both, but surface failure so the step is not falsely marked
+    // "rolled_back" while the bucket/service-account actually remain (#18).
+    const errors: string[] = [];
+    try { await minioAdmin.deleteServiceAccount(ctx.slug); }
+    catch (e) { errors.push(`service-account: ${e instanceof Error ? e.message : String(e)}`); }
+    try { await minioAdmin.deleteBucket(ctx.slug); }
+    catch (e) { errors.push(`bucket: ${e instanceof Error ? e.message : String(e)}`); }
+    if (errors.length) throw new Error(`MinIO rollback incomplete — ${errors.join("; ")}`);
   },
   letta: async (ctx) => {
     await lettaAdmin.deleteTenant(ctx.slug);

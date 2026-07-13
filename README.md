@@ -31,7 +31,8 @@ Execution Flow:
 - **CrewSelector.tsx** — Checkbox component for enabling/disabling crews per agent
 
 ### Agent Template (`agent-template/`)
-- **orchestrator.py** — Routes crew execution to Dify workflow API via HTTP. Supports blocking mode, JSON payload construction, result extraction
+- **main_agent.py** — LiveKit voice agent; delegates to the Letta secondary agent, which invokes crews via its server-registered `run_crew` tool
+- **orchestrator.py** — _DEPRECATED / unused._ Kept only as a reference for the Dify API contract + result parsing. Crew execution is now driven by the Letta `run_crew` tool (`server/services/lettaAdmin.ts` → `buildRunCrewSourceCode()`), not this module
 - **config.py** — Settings for `DIFY_BASE_URL`, `DIFY_API_KEY`, `CREW_REGISTRY`
 
 ### Database (`drizzle/`)

@@ -16,6 +16,7 @@ import { eq } from "drizzle-orm";
 import { AccessToken } from "livekit-server-sdk";
 import { RoomAgentDispatch, RoomConfiguration } from "@livekit/protocol";
 import { randomUUID } from "crypto";
+import { isEmbedOriginAllowed } from "./embedOrigin.js";
 import { createLogger } from "./_core/logger.js";
 import { getDb } from "./db.js";
 import { embedTokens, agentConfigs, apps } from "../drizzle/platformSchema.js";
@@ -171,13 +172,11 @@ export function registerEmbedRoutes(app: Express): void {
         return;
       }
 
-      // Origin check
-      const origin = req.headers.origin;
-      if (tokenRow.allowedOrigins && tokenRow.allowedOrigins.length > 0 && origin) {
-        if (!tokenRow.allowedOrigins.includes(origin)) {
-          res.status(403).json({ error: "Origin not allowed for this embed token" });
-          return;
-        }
+      // Origin check — a restricted token requires a matching Origin header
+      // (omitting Origin must NOT bypass the allowlist).
+      if (!isEmbedOriginAllowed(tokenRow.allowedOrigins, req.headers.origin)) {
+        res.status(403).json({ error: "Origin not allowed for this embed token" });
+        return;
       }
 
       // Look up agent + app
@@ -315,8 +314,11 @@ export function registerEmbedRoutes(app: Express): void {
         return;
       }
 
-      // Only allow known object key prefixes (defense in depth)
-      const allowedPrefixes = ["avatars/", "audio/", "images/", "documents/", "crew-outputs/"];
+      // Only allow known PUBLIC object key prefixes. `documents/` is
+      // deliberately excluded: RAG source documents are private and must not be
+      // servable through this unauthenticated proxy (finding #17). Avatars,
+      // images, audio and crew-outputs are intended to be embed-public.
+      const allowedPrefixes = ["avatars/", "audio/", "images/", "crew-outputs/"];
       if (!allowedPrefixes.some((p) => objectKey.startsWith(p))) {
         res.status(403).send("Object key prefix not allowed");
         return;
