@@ -38,6 +38,11 @@ export async function createDatabase(slug: string) {
       await client.query(`CREATE ROLE ${safeUser} WITH LOGIN PASSWORD ${safePassword}`);
     } catch (err: any) {
       if (!String(err).includes("already exists")) throw err;
+      // Role already exists (retry / double-submit). Reconcile its password to
+      // the one we're about to return, otherwise the returned databaseUrl would
+      // carry a password that doesn't match the live role and every connection
+      // using it would fail authentication.
+      await client.query(`ALTER ROLE ${safeUser} WITH LOGIN PASSWORD ${safePassword}`);
     }
 
     try {
