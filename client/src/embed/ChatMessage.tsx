@@ -1,26 +1,6 @@
 import { useMemo, useState } from "react";
-import { marked } from "marked";
-import { rewriteS3UrlsInHtml, toBrowserS3ProxyUrl } from "@/lib/s3ProxyUrl";
-
-// Configure marked for safe rendering
-marked.setOptions({ breaks: true, gfm: true });
-
-/** Strip unsafe HTML while keeping allowed tags and attributes. */
-function sanitizeHtml(html: string): string {
-  // Remove <script> tags and their content
-  let clean = html.replace(/<script[\s\S]*?<\/script>/gi, "");
-  // Remove on* event attributes
-  clean = clean.replace(/\s+on\w+\s*=\s*"[^"]*"/gi, "");
-  clean = clean.replace(/\s+on\w+\s*=\s*'[^']*'/gi, "");
-  // Remove javascript: URLs
-  clean = clean.replace(/href\s*=\s*"javascript:[^"]*"/gi, 'href="#"');
-  clean = clean.replace(/src\s*=\s*"javascript:[^"]*"/gi, 'src=""');
-  // Add target="_blank" rel="noopener noreferrer" to links
-  clean = clean.replace(/<a\s/gi, '<a target="_blank" rel="noopener noreferrer" ');
-  // Add lazy loading and max-width to images
-  clean = clean.replace(/<img\s/gi, '<img loading="lazy" style="max-width:200px;cursor:pointer;border-radius:8px;" ');
-  return clean;
-}
+import { toBrowserS3ProxyUrl } from "@/lib/s3ProxyUrl";
+import { sanitizeRichText } from "@/lib/sanitizeHtml";
 
 // ── Structured message types ────────────────────────────────────
 
@@ -131,14 +111,10 @@ function StatusIndicator({ data }: { data: StructuredStatus }) {
 
 /** Render a summary card with optional citations. */
 function SummaryCard({ data, platformOrigin }: { data: StructuredSummary; platformOrigin?: string }) {
-  const renderedHtml = useMemo(() => {
-    try {
-      const raw = marked.parse(data.content, { async: false }) as string;
-      return rewriteS3UrlsInHtml(sanitizeHtml(raw), platformOrigin);
-    } catch {
-      return data.content;
-    }
-  }, [data.content, platformOrigin]);
+  const renderedHtml = useMemo(
+    () => sanitizeRichText(data.content, platformOrigin),
+    [data.content, platformOrigin],
+  );
 
   return (
     <div className="bionic-summary-card">
@@ -192,12 +168,7 @@ export function ChatMessage({ message, isLocal, name, platformOrigin }: ChatMess
 
   const renderedHtml = useMemo(() => {
     if (!plainParts.length) return "";
-    try {
-      const raw = marked.parse(plainParts.join("\n\n"), { async: false }) as string;
-      return rewriteS3UrlsInHtml(sanitizeHtml(raw), platformOrigin);
-    } catch {
-      return plainParts.join("\n\n");
-    }
+    return sanitizeRichText(plainParts.join("\n\n"), platformOrigin);
   }, [plainParts, platformOrigin]);
 
   const handleClick = (e: React.MouseEvent) => {

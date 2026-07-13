@@ -11,9 +11,9 @@
 import { useMemo, useState } from "react";
 import { LiveKitRoom, VideoConference, useTranscriptions, useChat, RoomAudioRenderer } from "@livekit/components-react";
 import "@livekit/components-styles";
-import { marked } from "marked";
 import { trpc } from "@/lib/trpc";
-import { rewriteS3UrlsInHtml, toBrowserS3ProxyUrl } from "@/lib/s3ProxyUrl";
+import { toBrowserS3ProxyUrl } from "@/lib/s3ProxyUrl";
+import { sanitizeRichText } from "@/lib/sanitizeHtml";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -184,16 +184,7 @@ function SecondaryAgentMessage({ message }: { message: string }) {
           <div
             key={idx}
             className="text-sm prose prose-sm dark:prose-invert max-w-none"
-            dangerouslySetInnerHTML={{
-              __html: (() => {
-                try {
-                  const raw = marked.parse(seg.value, { breaks: true, gfm: true }) as string;
-                  return rewriteS3UrlsInHtml(raw);
-                } catch {
-                  return seg.value;
-                }
-              })(),
-            }}
+            dangerouslySetInnerHTML={{ __html: sanitizeRichText(seg.value) }}
           />
         );
       })}
