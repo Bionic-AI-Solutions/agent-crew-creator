@@ -5,7 +5,7 @@
 import { eq, and, lt } from "drizzle-orm";
 import { randomBytes } from "crypto";
 import { getDb } from "../db.js";
-import { apps, provisioningJobs } from "../../drizzle/platformSchema.js";
+import { apps, provisioningJobs, agentConfigs, userMemoryBlocks } from "../../drizzle/platformSchema.js";
 import { createLogger } from "../_core/logger.js";
 import type { ServiceKey, StepStatus, ProvisioningStep } from "../../shared/provisioningTypes.js";
 import { SERVICE_LABELS, DELETE_LABELS } from "../../shared/provisioningTypes.js";
@@ -514,9 +514,32 @@ export async function runDeletionJob(appId: number): Promise<void> {
     await step("dify-engine", () => k8s.deleteDifyDeployment(app.slug));
   }
 
-  // 1. Letta — delete tenant agents
+  // 1. Letta — delete every agent + its per-user memory blocks.
+  //    Driven by the DB (the authoritative list of lettaAgentIds/blockIds)
+  //    rather than a fragile Letta name-prefix sweep: agents named
+  //    `${agentName}-letta` don't start with the app slug and were being
+  //    orphaned. deleteTenant() still runs afterward as a best-effort sweep
+  //    for any slug-named stragglers not tracked in the DB.
   if (enabledServices.includes("letta")) {
-    await step("letta-agents", () => lettaAdmin.deleteTenant(app.slug));
+    await step("letta-agents", async () => {
+      const { cleanupLettaForAgent } = await import("./agentCleanup.js");
+      const agentRows = await db
+        .select({ id: agentConfigs.id, lettaAgentId: agentConfigs.lettaAgentId })
+        .from(agentConfigs)
+        .where(eq(agentConfigs.appId, appId));
+      for (const a of agentRows) {
+        const blocks = await db
+          .select({ lettaBlockId: userMemoryBlocks.lettaBlockId })
+          .from(userMemoryBlocks)
+          .where(eq(userMemoryBlocks.agentConfigId, a.id));
+        await cleanupLettaForAgent(
+          lettaAdmin,
+          { lettaAgentId: a.lettaAgentId, userBlockIds: blocks.map((b) => b.lettaBlockId).filter(Boolean) },
+          (msg, meta) => log.warn(msg, meta),
+        );
+      }
+      await lettaAdmin.deleteTenant(app.slug);
+    });
   }
 
   // 2. Keycloak — delete clients AND roles
