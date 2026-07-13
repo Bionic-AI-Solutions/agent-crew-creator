@@ -392,7 +392,10 @@ export const userMemoryBlocks = pgTable(
 export interface ProvisioningStepRecord {
   name: string;
   label: string;
-  status: "pending" | "running" | "success" | "failed" | "skipped";
+  // Mirror StepStatus (shared/provisioningTypes.ts) exactly — "rolled_back" is a
+  // real status the provisioner writes, and omitting it here caused a persistent
+  // type error at the provisioningJobs.steps update sites.
+  status: "pending" | "running" | "success" | "failed" | "skipped" | "rolled_back";
   error?: string;
   startedAt?: string;
   completedAt?: string;

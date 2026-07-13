@@ -229,9 +229,13 @@ export function registerEmbedRoutes(app: Express): void {
         canPublishData: true,
         roomCreate: true,
       });
+      // Cast: the top-level @livekit/protocol RoomConfiguration and the copy
+      // livekit-server-sdk resolves are different versions (the newer one adds a
+      // required `tags` field). They are structurally compatible at runtime;
+      // the cast avoids the dual-version compile error.
       at.roomConfig = new RoomConfiguration({
         agents: [new RoomAgentDispatch({ agentName: dispatchName })],
-      });
+      }) as any;
 
       const participantToken = await at.toJwt();
 
