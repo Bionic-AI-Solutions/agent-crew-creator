@@ -19,7 +19,7 @@ let transporterPromise: Promise<any> | null = null;
 
 async function getTransporter() {
   if (transporterPromise) return transporterPromise;
-  transporterPromise = (async () => {
+  const pending = (async () => {
     const nodemailer = (await import("nodemailer")).default;
     const host = process.env.MAIL_SMTP_HOST || "smtp-relay.gmail.com";
     const port = parseInt(process.env.MAIL_SMTP_PORT || "587", 10);
@@ -35,7 +35,12 @@ async function getTransporter() {
     log.info("SMTP transporter ready", { host, port, authenticated: Boolean(user) });
     return transport;
   })();
-  return transporterPromise;
+  // Don't cache a rejected promise — a transient init failure would otherwise
+  // wedge every future send until process restart (finding #32). Only memoize
+  // once it resolves.
+  pending.catch(() => { if (transporterPromise === pending) transporterPromise = null; });
+  transporterPromise = pending;
+  return pending;
 }
 
 export interface SendMailInput {

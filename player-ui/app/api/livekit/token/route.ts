@@ -13,7 +13,11 @@ import { AccessToken } from "livekit-server-sdk";
 import { authOptions } from "@/lib/auth";
 import { randomUUID } from "crypto";
 
-const TTL = 3600; // 1 hour
+// Token lifetime. Was 1h, which silently dropped any longer session with no
+// refresh path (finding #24). Widened to 6h to cover realistic voice sessions;
+// the response also returns expiresAt so the client can refresh proactively.
+// A full refresh-on-expiry + reconnect flow remains the complete fix.
+const TTL = 6 * 3600;
 
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
@@ -72,6 +76,7 @@ export async function POST(req: Request) {
       identity,
       displayName,
       clientId: clientId || undefined,
+      expiresAt: Date.now() + TTL * 1000,
     });
   } catch (err: any) {
     console.error("Token generation error:", err);

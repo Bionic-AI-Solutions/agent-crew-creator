@@ -24,9 +24,17 @@ from dataclasses import dataclass
 from typing import Optional
 
 import livekit.agents
-livekit.agents.DEFAULT_API_CONNECT_OPTIONS = livekit.agents.APIConnectOptions(
+import livekit.agents.types as _lk_types
+# Relax the default connect timeout for slow gpu-ai cold starts. Consumers
+# (SessionConnectOptions, plugin chat()/synthesize() defaults) read the
+# constant from livekit.agents.types, so patching only livekit.agents was a
+# no-op (finding #27). Patch the source symbol too, before the plugins import
+# below bind their defaults.
+_RELAXED_CONNECT_OPTIONS = livekit.agents.APIConnectOptions(
     timeout=120.0, max_retry=3, retry_interval=2.0,
 )
+livekit.agents.DEFAULT_API_CONNECT_OPTIONS = _RELAXED_CONNECT_OPTIONS
+_lk_types.DEFAULT_API_CONNECT_OPTIONS = _RELAXED_CONNECT_OPTIONS
 
 import httpx
 from livekit.agents import (
@@ -40,6 +48,7 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from agent.plugins import (
     create_llm_with_fallback, create_stt_with_fallback, create_tts_with_fallback,
 )
+from agent.async_utils import await_once_with_reassurance
 from config import settings
 from observability import flush_langfuse, init_langfuse
 
@@ -599,20 +608,19 @@ async def _delegation_worker(
                 resp.raise_for_status()
                 return _parse_letta_response(resp.json())
 
-        # Try to get result in 10s; if not, speak a reassurance and keep waiting
-        result = None
-        try:
-            result = await asyncio.wait_for(_letta_call(), timeout=10.0)
-        except asyncio.TimeoutError:
-            # Still working — reassure the user
+        # Run the Letta call exactly once. If it hasn't finished in 10s, speak a
+        # reassurance but keep awaiting the SAME call — never cancel-and-resend,
+        # which made Letta re-execute the whole task (duplicate image
+        # generation, Dify runs, archival writes). See finding #12.
+        def _on_slow():
             if session:
                 try:
                     session.say("Still working on that. One moment please.", allow_interruptions=True)
                 except Exception:
                     pass
             logger.info("[chain] delegation >10s, spoke reassurance")
-            # Continue waiting for the full timeout
-            result = await _letta_call()
+
+        result = await await_once_with_reassurance(_letta_call, 10.0, _on_slow)
 
         if room and result:
             summary = _filter_letta_noise(result.get("summary", ""))
@@ -1955,9 +1963,17 @@ async def entrypoint(ctx: JobContext):
                             parsed = _parse_letta_response(resp.json())
                             summary_md = parsed.get("summary", "")
                             if summary_md and len(summary_md) > 50:
-                                # Send to platform API for email delivery
+                                # Send to platform API for email delivery.
+                                # The endpoint is internal-only; authenticate
+                                # with the shared internal token.
+                                _summary_token = os.environ.get(
+                                    "PLAYER_UI_INTERNAL_TOKEN"
+                                ) or os.environ.get("AGENT_INTERNAL_TOKEN", "")
                                 await hc.post(
                                     f"{platform_api}/api/session-summary/send",
+                                    headers={"X-Internal-Token": _summary_token}
+                                    if _summary_token
+                                    else {},
                                     json={
                                         "email": user_email,
                                         "sessionTitle": f"{settings.agent_name} - Session Summary",

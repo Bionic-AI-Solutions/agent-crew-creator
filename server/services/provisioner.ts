@@ -5,7 +5,7 @@
 import { eq, and, lt } from "drizzle-orm";
 import { randomBytes } from "crypto";
 import { getDb } from "../db.js";
-import { apps, provisioningJobs } from "../../drizzle/platformSchema.js";
+import { apps, provisioningJobs, agentConfigs, userMemoryBlocks } from "../../drizzle/platformSchema.js";
 import { createLogger } from "../_core/logger.js";
 import type { ServiceKey, StepStatus, ProvisioningStep } from "../../shared/provisioningTypes.js";
 import { SERVICE_LABELS, DELETE_LABELS } from "../../shared/provisioningTypes.js";
@@ -134,7 +134,13 @@ const PROVISION_STEPS: Record<ServiceKey, StepHandler> = {
 
   letta: async (ctx) => {
     const { tenantId, mcpUrl } = await lettaAdmin.createTenant(ctx.slug);
-    // Include the shared Letta server API key so agents can authenticate
+    // TRUST BOUNDARY (finding #19): agents authenticate to the SHARED Letta
+    // server with this platform-wide key. Letta as deployed has no per-tenant
+    // key scoping (createTenant is only a health check), so a compromised
+    // tenant pod could use this key against other tenants' agents. Fully
+    // isolating this requires a Letta-side per-tenant auth model (scoped API
+    // keys / orgs); it cannot be closed here without breaking agent→Letta auth.
+    // Until then the key is confined to each tenant's own Vault path + ESO.
     const lettaApiKey = process.env.LETTA_API_KEY || "";
     return {
       letta_tenant_id: tenantId,
@@ -275,9 +281,10 @@ const PROVISION_ORDER: ServiceKey[] = [
 /** Rollback handlers — reverse each provisioning step's side effects. */
 const ROLLBACK_STEPS: Partial<Record<ServiceKey, (ctx: ProvisionContext, secrets: Record<string, string>) => Promise<void>>> = {
   livekit: async (ctx, secrets) => {
-    if (secrets.livekit_api_key) {
-      await k8s.removeLivekitKey(secrets.livekit_api_key);
-    }
+    // Full deregistration (Vault + ESO template + K8s Secret). Editing only the
+    // Secret is not enough — ESO would resurrect the key from Vault/template.
+    const { deregisterAppLivekitKey } = await import("./livekitDeregister.js");
+    await deregisterAppLivekitKey(ctx.slug, secrets.livekit_api_key);
   },
   keycloak: async (ctx) => {
     await keycloakAdmin.deleteClients(ctx.slug);
@@ -295,8 +302,14 @@ const ROLLBACK_STEPS: Partial<Record<ServiceKey, (ctx: ProvisionContext, secrets
     await postgresAdmin.dropDatabase(ctx.slug);
   },
   minio: async (ctx) => {
-    try { await minioAdmin.deleteServiceAccount(ctx.slug); } catch {}
-    try { await minioAdmin.deleteBucket(ctx.slug); } catch {}
+    // Attempt both, but surface failure so the step is not falsely marked
+    // "rolled_back" while the bucket/service-account actually remain (#18).
+    const errors: string[] = [];
+    try { await minioAdmin.deleteServiceAccount(ctx.slug); }
+    catch (e) { errors.push(`service-account: ${e instanceof Error ? e.message : String(e)}`); }
+    try { await minioAdmin.deleteBucket(ctx.slug); }
+    catch (e) { errors.push(`bucket: ${e instanceof Error ? e.message : String(e)}`); }
+    if (errors.length) throw new Error(`MinIO rollback incomplete — ${errors.join("; ")}`);
   },
   letta: async (ctx) => {
     await lettaAdmin.deleteTenant(ctx.slug);
@@ -514,9 +527,32 @@ export async function runDeletionJob(appId: number): Promise<void> {
     await step("dify-engine", () => k8s.deleteDifyDeployment(app.slug));
   }
 
-  // 1. Letta — delete tenant agents
+  // 1. Letta — delete every agent + its per-user memory blocks.
+  //    Driven by the DB (the authoritative list of lettaAgentIds/blockIds)
+  //    rather than a fragile Letta name-prefix sweep: agents named
+  //    `${agentName}-letta` don't start with the app slug and were being
+  //    orphaned. deleteTenant() still runs afterward as a best-effort sweep
+  //    for any slug-named stragglers not tracked in the DB.
   if (enabledServices.includes("letta")) {
-    await step("letta-agents", () => lettaAdmin.deleteTenant(app.slug));
+    await step("letta-agents", async () => {
+      const { cleanupLettaForAgent } = await import("./agentCleanup.js");
+      const agentRows = await db
+        .select({ id: agentConfigs.id, lettaAgentId: agentConfigs.lettaAgentId })
+        .from(agentConfigs)
+        .where(eq(agentConfigs.appId, appId));
+      for (const a of agentRows) {
+        const blocks = await db
+          .select({ lettaBlockId: userMemoryBlocks.lettaBlockId })
+          .from(userMemoryBlocks)
+          .where(eq(userMemoryBlocks.agentConfigId, a.id));
+        await cleanupLettaForAgent(
+          lettaAdmin,
+          { lettaAgentId: a.lettaAgentId, userBlockIds: blocks.map((b) => b.lettaBlockId).filter(Boolean) },
+          (msg, meta) => log.warn(msg, meta),
+        );
+      }
+      await lettaAdmin.deleteTenant(app.slug);
+    });
   }
 
   // 2. Keycloak — delete clients AND roles
@@ -541,61 +577,12 @@ export async function runDeletionJob(appId: number): Promise<void> {
     await step("minio-bucket", () => minioAdmin.deleteBucket(app.slug));
   }
 
-  // 6. LiveKit — remove API key from Vault, ESO template, and K8s secret
+  // 6. LiveKit — remove API key from Vault, ESO template, and K8s secret.
+  //    Shared with provisioning rollback so the two paths can't drift.
   if (enabledServices.includes("livekit") && secrets.livekit_api_key) {
     await step("livekit-key", async () => {
-      const safeSlug = app.slug.replace(/[^a-z0-9]/g, "_");
-      const keyField = `${safeSlug}_api_key`;
-      const secretField = `${safeSlug}_api_secret`;
-
-      // Remove from Vault shared LiveKit config
-      try {
-        const { readPlatformVaultPath, writePlatformVaultPath } = await import("../vaultClient.js");
-        const existing = (await readPlatformVaultPath("t6-apps/livekit/config")) || {};
-        delete existing[keyField];
-        delete existing[secretField];
-        await writePlatformVaultPath("t6-apps/livekit/config", existing);
-        log.info("Removed LiveKit key from Vault", { slug: app.slug });
-      } catch (err) {
-        log.warn("Failed to remove LiveKit key from Vault (non-fatal)", { error: String(err) });
-      }
-
-      // Remove from ESO template (prevents stale refs that break ALL apps' key sync)
-      try {
-        const k8sLib = await import("@kubernetes/client-node");
-        const kc = new k8sLib.KubeConfig();
-        if (process.env.KUBECONFIG) { kc.loadFromFile(process.env.KUBECONFIG); }
-        else { try { kc.loadFromCluster(); } catch { kc.loadFromDefault(); } }
-        const customApi = kc.makeApiClient(k8sLib.CustomObjectsApi);
-        const esoRes = await customApi.getNamespacedCustomObject({
-          group: "external-secrets.io", version: "v1",
-          namespace: "livekit", plural: "externalsecrets", name: "livekit-api-keys",
-        });
-        const eso = (esoRes?.body || esoRes) as any;
-        // Remove data refs for this slug
-        eso.spec.data = (eso.spec.data || []).filter(
-          (d: any) => !d.secretKey?.startsWith(safeSlug),
-        );
-        // Remove template lines for this slug
-        const tpl = eso.spec?.target?.template?.data?.LIVEKIT_KEYS || "";
-        eso.spec.target.template.data.LIVEKIT_KEYS = tpl
-          .split("\n")
-          .filter((l: string) => !l.includes(safeSlug))
-          .join("\n");
-        // Replace the entire ESO (PUT, not PATCH — avoids merge-patch array issues)
-        await customApi.replaceNamespacedCustomObject({
-          group: "external-secrets.io", version: "v1",
-          namespace: "livekit", plural: "externalsecrets", name: "livekit-api-keys",
-          body: eso,
-        });
-        log.info("Removed LiveKit key from ESO template", { slug: app.slug });
-      } catch (esoErr) {
-        log.warn("Failed to clean ESO template (non-fatal)", { error: String(esoErr) });
-      }
-
-      // Remove from K8s secret directly (immediate effect)
-      await k8s.removeLivekitKey(secrets.livekit_api_key);
-      await k8s.restartLivekitServer();
+      const { deregisterAppLivekitKey } = await import("./livekitDeregister.js");
+      await deregisterAppLivekitKey(app.slug, secrets.livekit_api_key);
     });
   }
 

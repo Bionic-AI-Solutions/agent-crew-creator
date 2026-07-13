@@ -537,7 +537,7 @@ async function runCreateTests() {
   printResults("CREATE & DEPLOY PHASE");
   console.log("\n  Screenshots: " + SCREENSHOTS_DIR + "/");
   console.log("  → Validate manually, then run: node tests/e2e-regression.js delete\n");
-  process.exit(totalFailed > 0 ? 1 : 0);
+  return totalFailed;
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -698,7 +698,7 @@ async function runPlayerUiTest() {
 
   printResults("PLAYER-UI E2E PHASE");
   console.log("\n  Screenshots: " + SCREENSHOTS_DIR + "/");
-  process.exit(totalFailed > 0 ? 1 : 0);
+  return totalFailed;
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -842,22 +842,30 @@ async function runDeleteTests() {
   ok("LiveKit API key removed", lkKeys === "0", lkKeys);
 
   printResults("DELETE & CLEANUP PHASE");
-  process.exit(totalFailed > 0 ? 1 : 0);
+  return totalFailed;
 }
 
 // ── Entry Point ─────────────────────────────────────────────────
 const mode = process.argv[2];
+const exitWith = (failed) => process.exit(failed > 0 ? 1 : 0);
+const fatal = (e) => { console.error("FATAL:", e.message); process.exit(1); };
 if (mode === "create") {
-  runCreateTests().catch((e) => { console.error("FATAL:", e.message); process.exit(1); });
+  runCreateTests().then(exitWith).catch(fatal);
 } else if (mode === "delete") {
-  runDeleteTests().catch((e) => { console.error("FATAL:", e.message); process.exit(1); });
+  runDeleteTests().then(exitWith).catch(fatal);
 } else if (mode === "playerui") {
-  runPlayerUiTest().catch((e) => { console.error("FATAL:", e.message); process.exit(1); });
+  runPlayerUiTest().then(exitWith).catch(fatal);
 } else if (mode === "all") {
-  // Full E2E: create → player-ui test → delete
-  runCreateTests()
-    .then(() => { results.length = 0; totalPassed = 0; totalFailed = 0; return runPlayerUiTest(); })
-    .catch((e) => { console.error("FATAL:", e.message); process.exit(1); });
+  // Full E2E: create → player-ui test → delete (phases no longer self-exit).
+  (async () => {
+    let failed = 0;
+    failed += await runCreateTests();
+    results.length = 0; totalPassed = 0; totalFailed = 0;
+    failed += await runPlayerUiTest();
+    results.length = 0; totalPassed = 0; totalFailed = 0;
+    failed += await runDeleteTests();
+    return failed;
+  })().then(exitWith).catch(fatal);
 } else {
   console.log("Usage:");
   console.log("  KC_USER_PASSWORD=... node tests/e2e-regression.cjs create");

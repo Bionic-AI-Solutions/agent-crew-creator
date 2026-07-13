@@ -294,6 +294,7 @@ import {
   STT_PROVIDERS, STT_MODELS,
   LLM_PROVIDERS, LLM_MODELS,
   TTS_PROVIDERS, TTS_VOICES,
+  providerRequiresKey,
 } from "@shared/providerOptions";
 
 interface Props {
@@ -695,7 +696,7 @@ export default function LiveKitSection(props: Props) {
           <p className="text-xs text-muted-foreground">
             {STT_PROVIDERS.find((p) => p.value === props.sttProvider)?.description}
           </p>
-          {props.sttProvider !== "gpu-ai" && props.sttProvider !== "custom" && (
+          {providerRequiresKey(STT_PROVIDERS, props.sttProvider) && (
             <ProviderKeyInput
               agentId={props.agentId}
               provider={props.sttProvider}
@@ -750,7 +751,7 @@ export default function LiveKitSection(props: Props) {
           {/* Always show the key input for non-internal providers — gpu-ai
               has no key. The validation flow re-fetches the model list on
               save success so the dropdown above immediately populates. */}
-          {props.llmProvider !== "gpu-ai" && props.llmProvider !== "custom" && (
+          {providerRequiresKey(LLM_PROVIDERS, props.llmProvider) && (
             <ProviderKeyInput
               agentId={props.agentId}
               provider={props.llmProvider}
@@ -807,7 +808,7 @@ export default function LiveKitSection(props: Props) {
           <p className="text-xs text-muted-foreground">
             {TTS_PROVIDERS.find((p) => p.value === props.ttsProvider)?.description}
           </p>
-          {props.ttsProvider !== "gpu-ai" && props.ttsProvider !== "custom" && (
+          {providerRequiresKey(TTS_PROVIDERS, props.ttsProvider) && (
             <ProviderKeyInput
               agentId={props.agentId}
               provider={props.ttsProvider}

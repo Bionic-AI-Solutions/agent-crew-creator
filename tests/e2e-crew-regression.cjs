@@ -475,7 +475,7 @@ async function runCreateTests() {
   await browser.close();
   printResults("CREW CREATE PHASE");
   console.log("\n  Screenshots: " + SCREENSHOTS_DIR + "/");
-  process.exit(totalFailed > 0 ? 1 : 0);
+  return totalFailed;
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -623,7 +623,7 @@ async function runDeleteTests() {
   ok("DB: 0 orphan crew_executions", dbExecs[0].c === 0, dbExecs[0].c);
 
   printResults("CREW DELETE PHASE");
-  process.exit(totalFailed > 0 ? 1 : 0);
+  return totalFailed;
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -770,7 +770,7 @@ async function runTemplateTests() {
 
   await browser.close();
   printResults("CREW TEMPLATE PHASE");
-  process.exit(totalFailed > 0 ? 1 : 0);
+  return totalFailed;
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -778,44 +778,43 @@ async function runTemplateTests() {
 // ═════════════════════════════════════════════════════════════════
 async function runAll() {
   console.log("Running all crew regression tests...\n");
+  let grandFailed = 0;
 
-  // Phase 1: Create
-  try {
-    await runCreateTests();
-  } catch (e) {
-    if (e.code !== undefined) throw e; // exit code error, propagate
-  }
+  // Phase 1: Create. Phases return their fail count (they no longer call
+  // process.exit, which previously killed the process after phase 1 and meant
+  // `all` only ever ran Create).
+  grandFailed += await runCreateTests();
 
-  // Reset counters for next phase
+  // Reset per-phase counters for the next phase.
   results.length = 0;
   totalPassed = 0;
   totalFailed = 0;
 
   // Phase 3: Template
-  try {
-    await runTemplateTests();
-  } catch (e) {
-    if (e.code !== undefined) throw e;
-  }
+  grandFailed += await runTemplateTests();
 
   results.length = 0;
   totalPassed = 0;
   totalFailed = 0;
 
   // Phase 2: Delete (cleanup)
-  await runDeleteTests();
+  grandFailed += await runDeleteTests();
+
+  return grandFailed;
 }
 
 // ── Entry Point ─────────────────────────────────────────────────
 const mode = process.argv[2];
+const exitWith = (failed) => process.exit(failed > 0 ? 1 : 0);
+const fatal = (e) => { console.error("FATAL:", e.message); process.exit(1); };
 if (mode === "create") {
-  runCreateTests().catch((e) => { console.error("FATAL:", e.message); process.exit(1); });
+  runCreateTests().then(exitWith).catch(fatal);
 } else if (mode === "delete") {
-  runDeleteTests().catch((e) => { console.error("FATAL:", e.message); process.exit(1); });
+  runDeleteTests().then(exitWith).catch(fatal);
 } else if (mode === "template") {
-  runTemplateTests().catch((e) => { console.error("FATAL:", e.message); process.exit(1); });
+  runTemplateTests().then(exitWith).catch(fatal);
 } else if (mode === "all") {
-  runAll().catch((e) => { console.error("FATAL:", e.message); process.exit(1); });
+  runAll().then(exitWith).catch(fatal);
 } else {
   console.log("Bionic Platform — Crew (Dify) E2E Regression Tests\n");
   console.log("Usage:");

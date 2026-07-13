@@ -143,3 +143,6 @@ export async function assertAppMembership(
     throw new TRPCError({ code: "FORBIDDEN", message: "App owner role required" });
   }
 }
+
+// Note: server/_core/appMembership.ts exports a boolean-returning userIsAppMember
+// for plain Express routes; this assert-style guard stays for tRPC procedures.

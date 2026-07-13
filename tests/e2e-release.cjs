@@ -146,17 +146,21 @@ async function run() {
     await page.click('button:has-text("Next")');
     await page.waitForTimeout(500);
     const playerUiLabel = page.locator('label:has-text("Agent player UI")');
-    if (await playerUiLabel.count() > 0) {
+    const playerUiFound = (await playerUiLabel.count()) > 0;
+    if (playerUiFound) {
       await playerUiLabel.click();
       await page.waitForTimeout(300);
     }
-    ok("Player UI service enabled", true);
+    // Assert the toggle was actually present/clicked, not a hardcoded pass (#35).
+    ok("Player UI service enabled", playerUiFound);
 
     // Step 3: Create
     await page.click('button:has-text("Next")');
     await page.waitForTimeout(500);
-    await page.click('button:has-text("Create App")');
-    ok("App creation triggered", true);
+    const createBtn = page.locator('button:has-text("Create App")');
+    const createFound = (await createBtn.count()) > 0;
+    if (createFound) await createBtn.click();
+    ok("App creation triggered", createFound);
 
     // Wait for provisioning
     console.log("  Waiting for provisioning...");

@@ -1,5 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
+import { shouldReseedForm } from "@/lib/formReseed";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { Rocket, Trash2 } from "lucide-react";
@@ -39,9 +40,13 @@ export default function AgentConfigForm({ agentId }: Props) {
   const [lettaLlmModel, setLettaLlmModel] = useState("");
   const [lettaSystemPrompt, setLettaSystemPrompt] = useState("");
 
-  // Sync form state when agent data loads
+  // Seed form state ONLY when a new agent loads (identity change), not on every
+  // background refetch of the same agent — otherwise a sibling panel
+  // invalidating getById would clobber the user's unsaved edits.
+  const seededIdRef = useRef<number | null>(null);
   useEffect(() => {
-    if (agent) {
+    if (agent && shouldReseedForm(seededIdRef.current, agent.id)) {
+      seededIdRef.current = agent.id;
       setSttProvider(agent.sttProvider);
       setSttModel(agent.sttModel || "");
       setLlmProvider(agent.llmProvider);

@@ -119,25 +119,36 @@ export async function handleNotifyWebhook(req: Request, res: Response): Promise<
         return;
       }
 
-      // Resolve hostname to IP and block private/link-local ranges
+      // Resolve hostname to IPs (both A and AAAA) and block private/link-local
+      // ranges. Fails CLOSED — a host we cannot resolve, or one that resolves
+      // to any private address, is rejected. (Residual TOCTOU: the subsequent
+      // fetch re-resolves DNS; `redirect: "error"` plus this check narrow but
+      // do not fully eliminate a rebinding window — acceptable given the
+      // endpoint is already behind the shared internal token.)
       try {
         const dns = await import("dns");
-        const { promisify } = await import("util");
-        const resolve4 = promisify(dns.resolve4);
-        const ips = await resolve4(webhookUrl.hostname);
-        for (const ip of ips) {
-          if (ip.startsWith("10.") || ip.startsWith("172.16.") || ip.startsWith("172.17.") ||
-              ip.startsWith("172.18.") || ip.startsWith("172.19.") || ip.startsWith("172.2") ||
-              ip.startsWith("172.3") || ip.startsWith("192.168.") || ip.startsWith("127.") ||
-              ip.startsWith("169.254.") || ip === "0.0.0.0") {
-            log.warn("Webhook rejected: resolved to private IP", { host: webhookUrl.hostname, ip });
-            res.status(400).json({ error: "Webhook URL resolves to private/internal IP" });
-            return;
-          }
+        const { isPrivateIp } = await import("./ipGuard.js");
+        const resolver = dns.promises;
+        const [v4, v6] = await Promise.all([
+          resolver.resolve4(webhookUrl.hostname).catch(() => [] as string[]),
+          resolver.resolve6(webhookUrl.hostname).catch(() => [] as string[]),
+        ]);
+        const ips = [...v4, ...v6];
+        if (ips.length === 0) {
+          log.warn("Webhook rejected: DNS resolution failed", { host: webhookUrl.hostname });
+          res.status(400).json({ error: "Webhook host could not be resolved" });
+          return;
+        }
+        const badIp = ips.find((ip) => isPrivateIp(ip));
+        if (badIp) {
+          log.warn("Webhook rejected: resolved to private IP", { host: webhookUrl.hostname, ip: badIp });
+          res.status(400).json({ error: "Webhook URL resolves to private/internal IP" });
+          return;
         }
       } catch (dnsErr) {
-        log.warn("Webhook DNS resolution failed", { host: webhookUrl.hostname, error: String(dnsErr) });
-        // Allow the fetch to try (DNS might resolve differently from the fetch perspective)
+        log.warn("Webhook rejected: DNS error", { host: webhookUrl.hostname, error: String(dnsErr) });
+        res.status(400).json({ error: "Webhook host could not be resolved" });
+        return;
       }
 
       // Only allow HTTPS in production

@@ -13,6 +13,26 @@
 import { createLogger } from "../_core/logger.js";
 import nodemailer from "nodemailer";
 import { marked } from "marked";
+import sanitizeHtml from "sanitize-html";
+
+// Allowlist for the email body: formatting tags only, no scripts/handlers.
+// href/src restricted to safe schemes so attacker-supplied markdown cannot
+// smuggle javascript: or data: payloads into the outbound email.
+const SANITIZE_OPTS: sanitizeHtml.IOptions = {
+  allowedTags: [
+    "h1", "h2", "h3", "h4", "h5", "h6", "p", "a", "ul", "ol", "li",
+    "blockquote", "code", "pre", "strong", "em", "b", "i", "u", "br", "hr",
+    "table", "thead", "tbody", "tr", "th", "td", "span", "img",
+  ],
+  allowedAttributes: {
+    a: ["href", "title"],
+    img: ["src", "alt"],
+    span: [],
+  },
+  allowedSchemes: ["http", "https", "mailto"],
+  allowedSchemesByTag: { img: ["http", "https"] },
+  disallowedTagsMode: "discard",
+};
 
 const log = createLogger("SessionSummary");
 
@@ -36,18 +56,21 @@ interface SessionSummaryRequest {
 /**
  * Render a session summary markdown into styled HTML suitable for email/PDF.
  */
-function renderSummaryHtml(req: SessionSummaryRequest): string {
+export function renderSummaryHtml(req: SessionSummaryRequest): string {
   const date = req.sessionDate || new Date().toLocaleDateString("en-US", {
     weekday: "long", year: "numeric", month: "long", day: "numeric",
   });
 
-  const bodyHtml = marked.parse(req.summaryMarkdown, { breaks: true, gfm: true });
+  // Sanitize the markdown-rendered body — this content is caller-supplied and
+  // must never inject <script>/event handlers/javascript: URLs into the email.
+  const rawBodyHtml = marked.parse(req.summaryMarkdown, { breaks: true, gfm: true }) as string;
+  const bodyHtml = sanitizeHtml(rawBodyHtml, SANITIZE_OPTS);
 
-  // Render images as inline <img> tags if provided
+  // Render images as inline <img> tags — only http(s) URLs are allowed.
   const imagesHtml = (req.imageUrls || [])
-    .filter(Boolean)
+    .filter((url): url is string => typeof url === "string" && /^https?:\/\//i.test(url))
     .map((url) => `<div style="margin: 16px 0; text-align: center;">
-      <img src="${url}" alt="Session illustration" style="max-width: 100%; border-radius: 8px; border: 1px solid #e0e0e0;" />
+      <img src="${escapeHtml(url)}" alt="Session illustration" style="max-width: 100%; border-radius: 8px; border: 1px solid #e0e0e0;" />
     </div>`)
     .join("\n");
 

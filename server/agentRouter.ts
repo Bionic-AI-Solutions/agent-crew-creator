@@ -556,6 +556,33 @@ export const agentRouter = router({
         }
       }
 
+      // Tear down the agent's Letta resources (the Letta agent itself + every
+      // per-user memory block). Previously these leaked on the Letta server
+      // forever because delete only removed the K8s deployment + DB row.
+      const blockRows = await ctx.db
+        .select({ id: userMemoryBlocks.id, lettaBlockId: userMemoryBlocks.lettaBlockId })
+        .from(userMemoryBlocks)
+        .where(eq(userMemoryBlocks.agentConfigId, input.id));
+      try {
+        const { lettaAdmin } = await import("./services/lettaAdmin.js");
+        const { cleanupLettaForAgent } = await import("./services/agentCleanup.js");
+        const summary = await cleanupLettaForAgent(
+          lettaAdmin,
+          {
+            lettaAgentId: agent.lettaAgentId,
+            userBlockIds: blockRows.map((b) => b.lettaBlockId).filter(Boolean),
+          },
+          (msg, meta) => log.warn(msg, meta),
+        );
+        log.info("Cleaned up Letta resources for agent", { id: input.id, ...summary });
+      } catch (err) {
+        // cleanupLettaForAgent never throws, but the dynamic imports could;
+        // never let external cleanup block the authoritative DB deletion.
+        log.warn("Letta cleanup failed during agent delete", { id: input.id, error: String(err) });
+      }
+
+      // Remove the agent's user-memory-block rows, then the agent row itself.
+      await ctx.db.delete(userMemoryBlocks).where(eq(userMemoryBlocks.agentConfigId, input.id));
       await ctx.db.delete(agentConfigs).where(eq(agentConfigs.id, input.id));
       log.info("Agent deleted", { id: input.id });
       return { success: true };
@@ -1724,17 +1751,10 @@ export const agentRouter = router({
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
 
-      // SECURITY: bind input.userId to the caller's Keycloak sub. Without
-      // this, any same-app member could pass another user's sub and create
-      // a Letta block under their identity (horizontal privilege escalation
-      // within the app). Admins bypass — they may legitimately need to
-      // pre-create blocks for other users.
-      if (ctx.user!.role !== "admin" && input.userId !== ctx.user!.sub) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "userId must match the caller's sub (or admin role required)",
-        });
-      }
+      // SECURITY: bind input.userId to the caller's Keycloak sub (admins
+      // exempt). Shared guard so the regression test exercises this exact code.
+      const { assertUserIdMatchesCaller } = await import("./_core/userBlockGuard.js");
+      assertUserIdMatchesCaller(ctx.user!, input.userId);
 
       // Check if block already exists
       const [existing] = await ctx.db

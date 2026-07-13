@@ -44,7 +44,14 @@ app.post("/api/webhooks/notify", (req, res) => {
 
 // ── Session summary API (called by agent pod on session end) ────
 import { sendSessionSummary } from "./services/sessionSummaryService.js";
+import { verifyInternalToken } from "./_core/internalAuth.js";
 app.post("/api/session-summary/send", async (req, res) => {
+  // Internal-only: called by the agent pod with X-Internal-Token. Without this
+  // gate the endpoint is an open, unauthenticated HTML-email relay.
+  if (!verifyInternalToken(req)) {
+    res.status(401).json({ success: false, error: "unauthorized" });
+    return;
+  }
   try {
     const result = await sendSessionSummary(req.body);
     res.json(result);
@@ -126,7 +133,7 @@ app.get("/api/apps/:appSlug/agents/:agentName/avatar-image", async (req, res) =>
 app.post("/api/agents/:agentId/documents", upload.single("file"), async (req, res) => {
   try {
     const user = await getUserFromRequest(req);
-    if (!user || user.role !== "admin") {
+    if (!user) {
       res.status(401).json({ error: "Unauthorized" });
       return;
     }
@@ -148,6 +155,15 @@ app.post("/api/agents/:agentId/documents", upload.single("file"), async (req, re
     if (!agent) { res.status(404).json({ error: "Agent not found" }); return; }
     const [appRecord] = await db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
     if (!appRecord) { res.status(404).json({ error: "App not found" }); return; }
+
+    // Authorize on APP MEMBERSHIP (not global admin) — matches every other
+    // agent-scoped route. Previously required a global admin role, which broke
+    // uploads for the app owners who actually build agents.
+    const { userIsAppMember } = await import("./_core/appMembership.js");
+    if (!(await userIsAppMember(db, agent.appId, user))) {
+      res.status(403).json({ error: "Not a member of this app" });
+      return;
+    }
 
     const docId = randomUUID().slice(0, 8);
     // Sanitize filename: strip path separators, control chars, and collapse to safe chars

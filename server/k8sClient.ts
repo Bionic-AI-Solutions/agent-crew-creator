@@ -641,15 +641,29 @@ export async function applyAgentDeployment(
   }
 }
 
-export async function deleteAgentDeployment(namespace: string, agentName: string): Promise<void> {
+export async function deleteConfigMap(namespace: string, name: string): Promise<void> {
   try {
-    const { appsApi } = await getK8sApis();
-    await appsApi.deleteNamespacedDeployment({ name: `agent-${agentName}`, namespace });
-    log.info("Deleted agent deployment", { namespace, agentName });
+    const { coreApi } = await getK8sApis();
+    await coreApi.deleteNamespacedConfigMap({ name, namespace });
+    log.info("Deleted ConfigMap", { namespace, name });
   } catch (err: any) {
     if (is404(err)) return;
     throw err;
   }
+}
+
+export async function deleteAgentDeployment(namespace: string, agentName: string): Promise<void> {
+  const { appsApi } = await getK8sApis();
+  try {
+    await appsApi.deleteNamespacedDeployment({ name: `agent-${agentName}`, namespace });
+    log.info("Deleted agent deployment", { namespace, agentName });
+  } catch (err: any) {
+    if (!is404(err)) throw err;
+  }
+  // Also delete the agent's ConfigMap (created by deployAgent as
+  // `${agentName}-config`) so it doesn't dangle in the namespace across
+  // delete/recreate cycles. Best-effort: a missing ConfigMap is fine.
+  await deleteConfigMap(namespace, `${agentName}-config`);
 }
 
 export async function getDeploymentStatus(
@@ -1222,6 +1236,7 @@ export const k8s = {
   restartLivekitServer,
   applyAgentDeployment,
   deleteAgentDeployment,
+  deleteConfigMap,
   getDeploymentStatus,
   ensureConfigMap,
   applyDifyDeployment,

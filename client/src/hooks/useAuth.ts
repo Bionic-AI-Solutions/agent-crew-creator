@@ -10,6 +10,6 @@ export function useAuth() {
     user: data?.user ?? null,
     isLoading,
     isAuthenticated: !!data?.user,
-    isAdmin: data?.user?.role === "admin",
+    isAdmin: data?.user?.role === "admin" || data?.user?.role === "super_admin",
   };
 }
