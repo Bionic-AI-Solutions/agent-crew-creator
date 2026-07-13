@@ -135,12 +135,19 @@ const PROVISION_STEPS: Record<ServiceKey, StepHandler> = {
   letta: async (ctx) => {
     const { tenantId, mcpUrl } = await lettaAdmin.createTenant(ctx.slug);
     // TRUST BOUNDARY (finding #19): agents authenticate to the SHARED Letta
-    // server with this platform-wide key. Letta as deployed has no per-tenant
-    // key scoping (createTenant is only a health check), so a compromised
-    // tenant pod could use this key against other tenants' agents. Fully
-    // isolating this requires a Letta-side per-tenant auth model (scoped API
-    // keys / orgs); it cannot be closed here without breaking agent→Letta auth.
-    // Until then the key is confined to each tenant's own Vault path + ESO.
+    // server with this platform-wide key. Every tenant currently lives in
+    // Letta's default org, so a compromised tenant pod could use this key
+    // against other tenants' agents.
+    //
+    // Concrete fix path (Letta 0.16.7 supports it — verified via /openapi.json):
+    //   1. createTenant → POST /v1/admin/orgs/ (one org per app) + create a
+    //      user in that org via /v1/admin/users/ and mint an org-scoped key.
+    //   2. Store the per-tenant key (not the platform key) here, so a tenant's
+    //      pod can only reach its own org's agents.
+    //   3. Migrate existing agents into their app's org.
+    // Deferred to a dedicated migration: it rewrites auth for every existing
+    // tenant and must be validated live before rollout. Until then the shared
+    // key is confined to each tenant's own Vault path + ESO.
     const lettaApiKey = process.env.LETTA_API_KEY || "";
     return {
       letta_tenant_id: tenantId,

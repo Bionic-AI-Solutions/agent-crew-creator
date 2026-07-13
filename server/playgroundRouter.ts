@@ -163,9 +163,12 @@ export const playgroundRouter = router({
         });
       }
       const dispatchName = `${app.slug}-${agentDbName}`;
+      // Cast: dual @livekit/protocol versions (see embedPublicRoutes) — the
+      // newer RoomConfiguration adds a required `tags` field; compatible at
+      // runtime.
       at.roomConfig = new RoomConfiguration({
         agents: [new RoomAgentDispatch({ agentName: dispatchName })],
-      });
+      }) as any;
 
       // #region agent log
       const { emitDebugLog } = await import("./debugSessionLog.js");
