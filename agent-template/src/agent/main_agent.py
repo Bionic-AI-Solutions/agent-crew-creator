@@ -40,6 +40,7 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from agent.plugins import (
     create_llm_with_fallback, create_stt_with_fallback, create_tts_with_fallback,
 )
+from agent.async_utils import await_once_with_reassurance
 from config import settings
 from observability import flush_langfuse, init_langfuse
 
@@ -599,20 +600,19 @@ async def _delegation_worker(
                 resp.raise_for_status()
                 return _parse_letta_response(resp.json())
 
-        # Try to get result in 10s; if not, speak a reassurance and keep waiting
-        result = None
-        try:
-            result = await asyncio.wait_for(_letta_call(), timeout=10.0)
-        except asyncio.TimeoutError:
-            # Still working — reassure the user
+        # Run the Letta call exactly once. If it hasn't finished in 10s, speak a
+        # reassurance but keep awaiting the SAME call — never cancel-and-resend,
+        # which made Letta re-execute the whole task (duplicate image
+        # generation, Dify runs, archival writes). See finding #12.
+        def _on_slow():
             if session:
                 try:
                     session.say("Still working on that. One moment please.", allow_interruptions=True)
                 except Exception:
                     pass
             logger.info("[chain] delegation >10s, spoke reassurance")
-            # Continue waiting for the full timeout
-            result = await _letta_call()
+
+        result = await await_once_with_reassurance(_letta_call, 10.0, _on_slow)
 
         if room and result:
             summary = _filter_letta_noise(result.get("summary", ""))
