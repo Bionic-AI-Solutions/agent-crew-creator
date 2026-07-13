@@ -60,12 +60,24 @@ export async function createProject(slug: string) {
     throw new Error("Langfuse admin not configured");
   }
 
+  // Validate config BEFORE any write so a misconfiguration can't leave an
+  // orphaned projects row that the provisioner's rollback can't reach (it only
+  // gets a projectId if this function returns).
+  if (!LANGFUSE_SALT) {
+    throw new Error("LANGFUSE_SALT not configured — fast_hashed_secret_key will not validate");
+  }
+
   const client = new pg.Client({ connectionString: getConnectionUrl() });
   await client.connect();
 
   try {
     const projectId = generateId();
     const now = new Date();
+
+    // Both inserts run in one transaction: either the project AND its API key
+    // land together, or neither does. Avoids orphaned projects rows on a
+    // mid-sequence failure (e.g. an api_keys constraint violation).
+    await client.query("BEGIN");
 
     // Create project under Bionic AI Solutions org
     await client.query(
@@ -76,10 +88,6 @@ export async function createProject(slug: string) {
     );
 
     log.info("Created Langfuse project", { projectId, name: slug, org: LANGFUSE_ORG_ID });
-
-    if (!LANGFUSE_SALT) {
-      throw new Error("LANGFUSE_SALT not configured — fast_hashed_secret_key will not validate");
-    }
 
     // Generate API key pair using Langfuse's exact hashing scheme:
     //  hashed_secret_key       = bcrypt(sk, 11)               -- legacy slow
@@ -100,9 +108,13 @@ export async function createProject(slug: string) {
       [apiKeyId, publicKey, hashedSecret, fastHashedSecret, displaySecret, `Auto-generated for ${slug}`, projectId, now],
     );
 
+    await client.query("COMMIT");
     log.info("Created Langfuse API keys", { projectId, publicKey });
 
     return { projectId, publicKey, secretKey };
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch { /* connection may be dead */ }
+    throw err;
   } finally {
     await client.end();
   }

@@ -13,6 +13,17 @@ export interface ModelOption {
   label: string;
 }
 
+/**
+ * Whether a provider needs an API key (and therefore the "Test & Save key" UI).
+ * Keyless providers (gpu-ai, custom, letta, faster-whisper) route through
+ * in-cluster services and have no key to validate — showing the key input for
+ * them lets a user trigger setProviderKey, which throws PRECONDITION_FAILED.
+ * Gate the key UI on this instead of hardcoded provider lists.
+ */
+export function providerRequiresKey(providers: ProviderOption[], value: string): boolean {
+  return providers.find((p) => p.value === value)?.requiresKey === true;
+}
+
 export const STT_PROVIDERS: ProviderOption[] = [
   { value: "gpu-ai", label: "GPU-AI (Faster Whisper via MCP)", description: "In-cluster GPU, low latency" },
   { value: "faster-whisper", label: "Faster Whisper (Direct)", description: "Direct in-cluster, lowest latency" },
