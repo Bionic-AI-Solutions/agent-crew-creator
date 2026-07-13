@@ -196,9 +196,12 @@ export function createAuthRouter(): Router {
           // Note: KC access tokens typically have aud:"account", not the client ID.
           // The azp (authorized party) claim contains the client ID instead.
         });
-        // Validate azp matches our client (Keycloak's equivalent of audience for access tokens)
-        if (verified.azp && verified.azp !== CLIENT_ID) {
-          throw new Error(`Token azp "${verified.azp}" does not match expected client "${CLIENT_ID}"`);
+        // Validate azp matches our client (Keycloak's equivalent of audience
+        // for access tokens). Reject a MISSING azp too (defense in depth): this
+        // token was just minted via our own authorization_code exchange, so it
+        // must carry our client as the authorized party (finding #30).
+        if (verified.azp !== CLIENT_ID) {
+          throw new Error(`Token azp "${verified.azp ?? "(absent)"}" does not match expected client "${CLIENT_ID}"`);
         }
         payload = verified;
       } catch (verifyErr) {
@@ -258,7 +261,7 @@ export function createAuthRouter(): Router {
     if (token) {
       try {
         const { payload } = await jwtVerify(token, secret);
-        if (payload.jti) revokeSessionToken(payload.jti as string);
+        if (payload.jti) await revokeSessionToken(payload.jti as string);
       } catch { /* token already expired or invalid — fine */ }
     }
     res.clearCookie(COOKIE_NAME, { path: "/" });

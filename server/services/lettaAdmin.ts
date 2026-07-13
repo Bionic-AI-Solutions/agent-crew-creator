@@ -6,7 +6,10 @@ import { createLogger } from "../_core/logger.js";
 
 const log = createLogger("LettaAdmin");
 
-const LETTA_BASE_URL = process.env.LETTA_BASE_URL || "";
+// Default to the in-cluster Letta service (matches server/config.ts) rather
+// than empty string, so a missing env var doesn't fail-closed every Letta op
+// (finding #28).
+const LETTA_BASE_URL = process.env.LETTA_BASE_URL || "http://letta-server.letta.svc.cluster.local:8283";
 const LETTA_API_KEY = process.env.LETTA_API_KEY || "";
 
 // Internal Dify API URL — used in Letta tool source_code

@@ -79,6 +79,7 @@ export interface AgentConfigFull {
     filename: string;
     fileSizeBytes: number | null;
     processingStatus: string;
+    chunkCount: number | null;
     createdAt: string;
   }[];
 

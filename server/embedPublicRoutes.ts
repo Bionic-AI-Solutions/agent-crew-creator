@@ -91,11 +91,6 @@ function isRateLimitedMemory(token: string): boolean {
   return false;
 }
 
-function isRateLimited(token: string): boolean {
-  // Synchronous check for backward compat — async Redis version used where possible
-  return isRateLimitedMemory(token);
-}
-
 // Clean up stale in-memory entries
 setInterval(() => {
   const now = Date.now();
