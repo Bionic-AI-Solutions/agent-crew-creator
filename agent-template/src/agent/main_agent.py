@@ -1955,9 +1955,17 @@ async def entrypoint(ctx: JobContext):
                             parsed = _parse_letta_response(resp.json())
                             summary_md = parsed.get("summary", "")
                             if summary_md and len(summary_md) > 50:
-                                # Send to platform API for email delivery
+                                # Send to platform API for email delivery.
+                                # The endpoint is internal-only; authenticate
+                                # with the shared internal token.
+                                _summary_token = os.environ.get(
+                                    "PLAYER_UI_INTERNAL_TOKEN"
+                                ) or os.environ.get("AGENT_INTERNAL_TOKEN", "")
                                 await hc.post(
                                     f"{platform_api}/api/session-summary/send",
+                                    headers={"X-Internal-Token": _summary_token}
+                                    if _summary_token
+                                    else {},
                                     json={
                                         "email": user_email,
                                         "sessionTitle": f"{settings.agent_name} - Session Summary",

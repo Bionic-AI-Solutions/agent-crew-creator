@@ -44,7 +44,14 @@ app.post("/api/webhooks/notify", (req, res) => {
 
 // ── Session summary API (called by agent pod on session end) ────
 import { sendSessionSummary } from "./services/sessionSummaryService.js";
+import { verifyInternalToken } from "./_core/internalAuth.js";
 app.post("/api/session-summary/send", async (req, res) => {
+  // Internal-only: called by the agent pod with X-Internal-Token. Without this
+  // gate the endpoint is an open, unauthenticated HTML-email relay.
+  if (!verifyInternalToken(req)) {
+    res.status(401).json({ success: false, error: "unauthorized" });
+    return;
+  }
   try {
     const result = await sendSessionSummary(req.body);
     res.json(result);
