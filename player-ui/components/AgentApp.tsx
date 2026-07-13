@@ -141,7 +141,9 @@ function AuthenticatedApp({ session }: { session: any }) {
     } finally {
       setConnecting(false);
     }
-  }, [selectedAgent]);
+    // clientId is read from the closure — must be a dependency, otherwise a
+    // client reference typed after auto-select is silently dropped.
+  }, [selectedAgent, clientId]);
 
   const disconnect = useCallback(() => {
     setConnection(null);
@@ -399,8 +401,15 @@ function ActiveSession({
   const toggleMic = async () => { await localParticipant.setMicrophoneEnabled(!micEnabled); setMicEnabled(!micEnabled); };
   const toggleCam = async () => { await localParticipant.setCameraEnabled(!camEnabled); setCamEnabled(!camEnabled); };
   const toggleScreen = async () => {
-    if (screenEnabled) { setScreenEnabled(false); }
-    else { await localParticipant.setScreenShareEnabled(true); setScreenEnabled(true); }
+    if (screenEnabled) {
+      // Must actually stop the track — updating UI state alone left the screen
+      // broadcasting after the button showed "off" (privacy leak).
+      await localParticipant.setScreenShareEnabled(false);
+      setScreenEnabled(false);
+    } else {
+      await localParticipant.setScreenShareEnabled(true);
+      setScreenEnabled(true);
+    }
   };
 
   // Parse presentation streams into renderable slides
