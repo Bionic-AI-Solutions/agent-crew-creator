@@ -43,25 +43,33 @@ export async function preparePlayerUiDockerBuildContext(
   const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "bionic-player-ui-"));
   const contextPath = path.join(tmpRoot, "buildctx");
 
-  fs.cpSync(template, contextPath, {
-    recursive: true,
-    filter: (src) => shouldCopySourcePath(src),
-  });
+  // If any setup step throws, remove the temp dir before rethrowing — otherwise
+  // it leaks under os.tmpdir() forever (the caller only wraps the subsequent
+  // build in try/finally, not this preparation) (finding #23).
+  try {
+    fs.cpSync(template, contextPath, {
+      recursive: true,
+      filter: (src) => shouldCopySourcePath(src),
+    });
 
-  const publicDir = path.join(contextPath, "public");
-  await fs.promises.mkdir(publicDir, { recursive: true });
-  const payload = {
-    slug: input.slug,
-    appName: input.name,
-    description: input.description,
-    livekitUrl: input.livekitUrl,
-    generatedAt: new Date().toISOString(),
-  };
-  await fs.promises.writeFile(
-    path.join(publicDir, "bionic-app.json"),
-    `${JSON.stringify(payload, null, 2)}\n`,
-    "utf8",
-  );
+    const publicDir = path.join(contextPath, "public");
+    await fs.promises.mkdir(publicDir, { recursive: true });
+    const payload = {
+      slug: input.slug,
+      appName: input.name,
+      description: input.description,
+      livekitUrl: input.livekitUrl,
+      generatedAt: new Date().toISOString(),
+    };
+    await fs.promises.writeFile(
+      path.join(publicDir, "bionic-app.json"),
+      `${JSON.stringify(payload, null, 2)}\n`,
+      "utf8",
+    );
+  } catch (err) {
+    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* best effort */ }
+    throw err;
+  }
 
   log.info("Generated player-ui Docker build context", { contextPath, slug: input.slug });
   return {

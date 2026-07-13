@@ -391,8 +391,6 @@ function renderCode(
   ensureSpace(doc, theme, 60);
   const x = theme.margins.left;
   const w = doc.page.width - theme.margins.left - theme.margins.right;
-  // Shaded background
-  const startY = doc.y + 4;
   doc
     .font(theme.fonts.mono)
     .fontSize(9)
@@ -400,7 +398,11 @@ function renderCode(
   // Estimate height by line count (~12pt per line)
   const lines = tok.text.split(/\r?\n/);
   const blockHeight = lines.length * 12 + 16;
+  // ensureSpace may add a page and reset doc.y — capture startY AFTER it, else
+  // the shaded rect + code text render at a stale coordinate on the new page
+  // (finding #21).
   ensureSpace(doc, theme, blockHeight + 8);
+  const startY = doc.y + 4;
   doc.rect(x, startY, w, blockHeight).fill("#f3f4f6");
   doc
     .fillColor("#111827")
