@@ -16,36 +16,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { TRPCError } from "@trpc/server";
-
-/** Replicates the guard added to ensureUserBlock in agentRouter.ts. */
-function guardEnsureUserBlock(
-  user: { sub: string; role: "admin" | "user" },
-  input: { userId: string },
-): void {
-  if (user.role !== "admin" && input.userId !== user.sub) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "userId must match the caller's sub (or admin role required)",
-    });
-  }
-}
+// Import the REAL guard used by ensureUserBlock — not a reimplementation — so a
+// regression in the actual code path fails this test (finding #25).
+import { assertUserIdMatchesCaller } from "../server/_core/userBlockGuard.ts";
 
 test("ensureUserBlock: non-admin caller passing own sub → allowed", () => {
   assert.doesNotThrow(() =>
-    guardEnsureUserBlock(
-      { sub: "kc-sub-self", role: "user" },
-      { userId: "kc-sub-self" },
-    ),
+    assertUserIdMatchesCaller({ sub: "kc-sub-self", role: "user" }, "kc-sub-self"),
   );
 });
 
 test("ensureUserBlock: non-admin caller passing another user's sub → FORBIDDEN", () => {
   assert.throws(
-    () =>
-      guardEnsureUserBlock(
-        { sub: "kc-sub-attacker", role: "user" },
-        { userId: "kc-sub-victim" },
-      ),
+    () => assertUserIdMatchesCaller({ sub: "kc-sub-attacker", role: "user" }, "kc-sub-victim"),
     (err: unknown) =>
       err instanceof TRPCError &&
       err.code === "FORBIDDEN" &&
@@ -55,18 +38,12 @@ test("ensureUserBlock: non-admin caller passing another user's sub → FORBIDDEN
 
 test("ensureUserBlock: admin passing another user's sub → allowed (legitimate pre-create path)", () => {
   assert.doesNotThrow(() =>
-    guardEnsureUserBlock(
-      { sub: "kc-sub-admin", role: "admin" },
-      { userId: "kc-sub-anyone" },
-    ),
+    assertUserIdMatchesCaller({ sub: "kc-sub-admin", role: "admin" }, "kc-sub-anyone"),
   );
 });
 
 test("ensureUserBlock: admin passing own sub → allowed", () => {
   assert.doesNotThrow(() =>
-    guardEnsureUserBlock(
-      { sub: "kc-sub-admin", role: "admin" },
-      { userId: "kc-sub-admin" },
-    ),
+    assertUserIdMatchesCaller({ sub: "kc-sub-admin", role: "admin" }, "kc-sub-admin"),
   );
 });

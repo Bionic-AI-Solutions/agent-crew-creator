@@ -1751,17 +1751,10 @@ export const agentRouter = router({
     .mutation(async ({ ctx, input }) => {
       if (!ctx.db) throw new Error("Database not available");
 
-      // SECURITY: bind input.userId to the caller's Keycloak sub. Without
-      // this, any same-app member could pass another user's sub and create
-      // a Letta block under their identity (horizontal privilege escalation
-      // within the app). Admins bypass — they may legitimately need to
-      // pre-create blocks for other users.
-      if (ctx.user!.role !== "admin" && input.userId !== ctx.user!.sub) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "userId must match the caller's sub (or admin role required)",
-        });
-      }
+      // SECURITY: bind input.userId to the caller's Keycloak sub (admins
+      // exempt). Shared guard so the regression test exercises this exact code.
+      const { assertUserIdMatchesCaller } = await import("./_core/userBlockGuard.js");
+      assertUserIdMatchesCaller(ctx.user!, input.userId);
 
       // Check if block already exists
       const [existing] = await ctx.db
