@@ -50,6 +50,7 @@ export interface AgentConfigFull {
   llmModel: string | null;
   ttsProvider: string;
   ttsVoice: string | null;
+  ttsLanguage: string | null;
   systemPrompt: string | null;
   avatarEnabled: boolean;
   avatarProvider: string | null;

@@ -293,7 +293,7 @@ function LiveModelPicker({
 import {
   STT_PROVIDERS, STT_MODELS,
   LLM_PROVIDERS, LLM_MODELS,
-  TTS_PROVIDERS, TTS_VOICES,
+  TTS_PROVIDERS, TTS_VOICES, TTS_LANGUAGES,
   providerRequiresKey,
 } from "@shared/providerOptions";
 
@@ -310,6 +310,8 @@ interface Props {
   setTtsProvider: (v: string) => void;
   ttsVoice: string;
   setTtsVoice: (v: string) => void;
+  ttsLanguage: string;
+  setTtsLanguage: (v: string) => void;
   systemPrompt: string;
   setSystemPrompt: (v: string) => void;
   avatarEnabled: boolean;
@@ -473,6 +475,13 @@ export default function LiveKitSection(props: Props) {
       props.setTtsVoice(voices[0].value);
     }
   }, [props.ttsProvider, props.ttsVoice, props.setTtsVoice]);
+
+  useEffect(() => {
+    if (props.ttsProvider !== "sarvam") return;
+    if (!TTS_LANGUAGES.some((lang) => lang.value === props.ttsLanguage)) {
+      props.setTtsLanguage(TTS_LANGUAGES[0].value);
+    }
+  }, [props.ttsProvider, props.ttsLanguage, props.setTtsLanguage]);
 
   const handleAvatarFile = (file: File) => {
     if (!file.type.startsWith("image/")) {
@@ -808,6 +817,22 @@ export default function LiveKitSection(props: Props) {
           <p className="text-xs text-muted-foreground">
             {TTS_PROVIDERS.find((p) => p.value === props.ttsProvider)?.description}
           </p>
+          {props.ttsProvider === "sarvam" && (
+            <div>
+              <Label className="text-xs">Language</Label>
+              <Select value={props.ttsLanguage} onValueChange={props.setTtsLanguage}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {TTS_LANGUAGES.map((l) => (
+                    <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[10px] text-muted-foreground mt-1">
+                Sarvam requires an explicit target language — it does not auto-detect.
+              </p>
+            </div>
+          )}
           {providerRequiresKey(TTS_PROVIDERS, props.ttsProvider) && (
             <ProviderKeyInput
               agentId={props.agentId}

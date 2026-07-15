@@ -311,6 +311,7 @@ export const agentRouter = router({
         llmModel: z.string().nullable().optional(),
         ttsProvider: z.string().optional(),
         ttsVoice: z.string().nullable().optional(),
+        ttsLanguage: z.string().nullable().optional(),
         systemPrompt: z.string().nullable().optional(),
         visionEnabled: z.boolean().optional(),
         avatarEnabled: z.boolean().optional(),

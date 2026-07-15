@@ -28,6 +28,7 @@ export default function AgentConfigForm({ agentId }: Props) {
   const [llmModel, setLlmModel] = useState("");
   const [ttsProvider, setTtsProvider] = useState("");
   const [ttsVoice, setTtsVoice] = useState("");
+  const [ttsLanguage, setTtsLanguage] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
   const [avatarEnabled, setAvatarEnabled] = useState(false);
   const [avatarProvider, setAvatarProvider] = useState("flashhead");
@@ -53,6 +54,7 @@ export default function AgentConfigForm({ agentId }: Props) {
       setLlmModel(agent.llmModel || "");
       setTtsProvider(agent.ttsProvider);
       setTtsVoice(agent.ttsVoice || "");
+      setTtsLanguage((agent as any).ttsLanguage || "en-IN");
       setSystemPrompt(agent.systemPrompt || "");
       setAvatarEnabled(Boolean(agent.avatarEnabled));
       setAvatarProvider((agent as any).avatarProvider || "flashhead");
@@ -105,6 +107,7 @@ export default function AgentConfigForm({ agentId }: Props) {
         llmModel: llmModel || null,
         ttsProvider,
         ttsVoice: ttsVoice || null,
+        ttsLanguage: ttsLanguage || null,
         systemPrompt: systemPrompt || null,
         avatarEnabled,
         avatarProvider: avatarProvider || "flashhead",
@@ -165,6 +168,8 @@ export default function AgentConfigForm({ agentId }: Props) {
             setTtsProvider={setTtsProvider}
             ttsVoice={ttsVoice}
             setTtsVoice={setTtsVoice}
+            ttsLanguage={ttsLanguage}
+            setTtsLanguage={setTtsLanguage}
             systemPrompt={systemPrompt}
             setSystemPrompt={setSystemPrompt}
             avatarEnabled={avatarEnabled}

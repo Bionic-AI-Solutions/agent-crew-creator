@@ -16,6 +16,7 @@ import {
   LLM_MODELS,
   TTS_PROVIDERS,
   TTS_VOICES,
+  TTS_LANGUAGES,
 } from "../shared/providerOptions.ts";
 
 test("keyless providers do not require a key (no key UI, no throw)", () => {
@@ -54,5 +55,15 @@ test("sarvam TTS provider exposes exactly the 7 bulbul:v2-compatible speaker pre
   assert.deepEqual(
     sarvam.map((v) => v.value),
     ["anushka", "abhilash", "manisha", "vidya", "arya", "karun", "hitesh"],
+  );
+});
+
+// Regression test: every Sarvam TTS call used to hardcode target_language_code
+// to "en-IN", mispronouncing genuine Hindi/Devanagari LLM output. TTS_LANGUAGES
+// must expose exactly Sarvam's 11 supported codes, en-IN first/default.
+test("TTS_LANGUAGES exposes exactly Sarvam's 11 supported codes, en-IN first", () => {
+  assert.deepEqual(
+    TTS_LANGUAGES.map((l) => l.value),
+    ["en-IN", "bn-IN", "gu-IN", "hi-IN", "kn-IN", "ml-IN", "mr-IN", "od-IN", "pa-IN", "ta-IN", "te-IN"],
   );
 });

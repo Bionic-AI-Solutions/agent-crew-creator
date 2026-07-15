@@ -154,6 +154,23 @@ export const TTS_VOICES: Record<string, ModelOption[]> = {
   ],
 };
 
+// Sarvam's supported target_language_code values for TTS synthesis. Only
+// consumed by the sarvam provider — its API requires an explicit code (no
+// auto-detect). en-IN is first/default to preserve existing agent behavior.
+export const TTS_LANGUAGES: ModelOption[] = [
+  { value: "en-IN", label: "English (India)" },
+  { value: "bn-IN", label: "Bengali" },
+  { value: "gu-IN", label: "Gujarati" },
+  { value: "hi-IN", label: "Hindi" },
+  { value: "kn-IN", label: "Kannada" },
+  { value: "ml-IN", label: "Malayalam" },
+  { value: "mr-IN", label: "Marathi" },
+  { value: "od-IN", label: "Odia" },
+  { value: "pa-IN", label: "Punjabi" },
+  { value: "ta-IN", label: "Tamil" },
+  { value: "te-IN", label: "Telugu" },
+];
+
 // ── Letta LLM Models (for secondary agent) ──────────────────────
 
 // Letta (secondary executor) defaults to the thinking variant — this

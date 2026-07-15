@@ -206,6 +206,7 @@ export async function deployAgent(
     STT_MODEL: agent.sttModel || "",
     TTS_PROVIDER: agent.ttsProvider,
     TTS_VOICE: agent.ttsVoice || "Sudhir-IndexTTS2",
+    TTS_LANGUAGE: agent.ttsLanguage || "en-IN",
     SYSTEM_PROMPT: agent.systemPrompt || "",
 
     // ── Secondary brain (Letta) ─────────────────────────────────

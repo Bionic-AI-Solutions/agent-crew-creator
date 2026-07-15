@@ -336,6 +336,11 @@ def _create_primary_tts():
         return sarvam.TTS(
             model="bulbul:v2",
             speaker=settings.tts_voice or "anushka",
+            # Sarvam requires an explicit target language — it does not
+            # auto-detect from the synthesized text. Defaults to en-IN
+            # (the plugin's own default) when unset, matching every
+            # agent that predates this setting.
+            target_language_code=settings.tts_language or "en-IN",
             api_key=settings.sarvam_api_key or None,
         )
 

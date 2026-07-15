@@ -47,5 +47,31 @@ def test_sarvam_respects_tts_voice_override(monkeypatch):
     assert result._opts.speaker == "hitesh"
 
 
+def test_sarvam_defaults_target_language_to_en_in(monkeypatch):
+    # Regression test: every Sarvam TTS call used to hardcode en-IN
+    # regardless of the agent's configured tts_language, mispronouncing
+    # genuine Hindi/Devanagari LLM output. Unset tts_language must still
+    # resolve to en-IN (preserves every pre-existing agent's behavior).
+    monkeypatch.setattr(settings, "tts_provider", "sarvam")
+    monkeypatch.setattr(settings, "sarvam_api_key", "test-key-123")
+    monkeypatch.setattr(settings, "tts_voice", "")
+    monkeypatch.setattr(settings, "tts_language", "")
+
+    result = _create_primary_tts()
+
+    assert str(result._opts.target_language_code) == "en-IN"
+
+
+def test_sarvam_respects_tts_language_override(monkeypatch):
+    monkeypatch.setattr(settings, "tts_provider", "sarvam")
+    monkeypatch.setattr(settings, "sarvam_api_key", "test-key-123")
+    monkeypatch.setattr(settings, "tts_voice", "")
+    monkeypatch.setattr(settings, "tts_language", "hi-IN")
+
+    result = _create_primary_tts()
+
+    assert str(result._opts.target_language_code) == "hi-IN"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

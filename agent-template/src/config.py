@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     tts_provider: str = "gpu-ai"
     tts_voice: str = "Sudhir-IndexTTS2"
     tts_model: str = "tts-1"
+    # Target language for TTS synthesis. Only consumed by the sarvam
+    # provider — its API requires an explicit target_language_code (no
+    # auto-detect from the synthesized text).
+    tts_language: str = "en-IN"
 
     # ── Fallback providers (keys from Vault, not user-configurable) ──
     deepgram_api_key: str = ""
