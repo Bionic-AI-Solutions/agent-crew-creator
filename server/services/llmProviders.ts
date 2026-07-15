@@ -70,6 +70,13 @@ const PROVIDERS: Record<string, ProviderConfig> = {
     filter: (id) =>
       !/embedding|whisper|tts|parler|index/i.test(id),
   },
+  gemini: {
+    key: "gemini",
+    label: "Gemini",
+    // Google's OpenAI-compatible endpoint — same shape as openai/openrouter.
+    modelsUrl: "https://generativelanguage.googleapis.com/v1beta/openai/models",
+    filter: (id) => /^gemini-/i.test(id),
+  },
 };
 
 /** True if the provider is internal (gpu-ai) and the API key is unused. */
