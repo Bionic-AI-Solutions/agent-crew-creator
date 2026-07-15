@@ -10,12 +10,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildSharedProviderKeyDataEntries, buildSharedBithumanDataEntries, renderProviderExtraEnv } from "../server/k8sClient.ts";
+import { LLM_PROVIDERS, STT_PROVIDERS, TTS_PROVIDERS } from "../shared/providerOptions.ts";
 
-test("buildSharedProviderKeyDataEntries covers the 8 reachable cloud providers with shared_<provider>_api_key target names (groq excluded — see k8sClient.ts comment)", () => {
+test("buildSharedProviderKeyDataEntries covers the 7 reachable cloud providers with shared_<provider>_api_key target names (groq, anthropic excluded — see k8sClient.ts comment)", () => {
   const entries = buildSharedProviderKeyDataEntries();
   const secretKeys = entries.map((e) => e.secretKey).sort();
   assert.deepEqual(secretKeys, [
-    "shared_anthropic_api_key",
     "shared_async_api_key",
     "shared_cartesia_api_key",
     "shared_deepgram_api_key",
@@ -26,9 +26,26 @@ test("buildSharedProviderKeyDataEntries covers the 8 reachable cloud providers w
   ]);
 });
 
-test("buildSharedProviderKeyDataEntries excludes groq (unreachable via any provider option list; no Vault key exists)", () => {
+test("buildSharedProviderKeyDataEntries excludes groq and anthropic (unreachable via any provider option list; groq also has no Vault key)", () => {
   const entries = buildSharedProviderKeyDataEntries();
   assert.equal(entries.some((e) => e.secretKey.includes("groq")), false);
+  assert.equal(entries.some((e) => e.secretKey.includes("anthropic")), false);
+});
+
+test("every SHARED_KEY_PROVIDERS entry is reachable via some *_PROVIDERS list (guards against the groq/anthropic bug class generically)", () => {
+  const reachable = new Set([
+    ...LLM_PROVIDERS.map((p) => p.value),
+    ...STT_PROVIDERS.map((p) => p.value),
+    ...TTS_PROVIDERS.map((p) => p.value),
+  ]);
+  const entries = buildSharedProviderKeyDataEntries();
+  for (const { secretKey } of entries) {
+    const provider = secretKey.replace(/^shared_/, "").replace(/_api_key$/, "");
+    assert.ok(
+      reachable.has(provider),
+      `${provider} is in SHARED_KEY_PROVIDERS but not selectable via any LLM_PROVIDERS/STT_PROVIDERS/TTS_PROVIDERS entry — it can never actually be agent.llmProvider/sttProvider/ttsProvider, so referencing it in the ExternalSecret's data: list risks the same all-or-nothing sync failure groq caused`,
+    );
+  }
 });
 
 test("buildSharedProviderKeyDataEntries points each entry at shared/api-keys with the matching property", () => {

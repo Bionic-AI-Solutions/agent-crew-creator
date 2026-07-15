@@ -424,22 +424,29 @@ export async function restartLivekitServer(): Promise<void> {
 // ── ExternalSecret Management ───────────────────────────────────
 
 /**
- * The 8 cloud LLM/STT/TTS providers whose API keys flow through
+ * The 7 cloud LLM/STT/TTS providers whose API keys flow through
  * agentDeployer.ts's `pipelines` loop. Each gets a shared, org-wide
  * fallback key at secret/shared/api-keys:<provider>_api_key.
  *
- * "groq" is deliberately excluded: providerEnvName has a case for it,
- * but it's dead code — no LLM_PROVIDERS/STT_PROVIDERS/TTS_PROVIDERS
- * entry ever lets the UI select "groq", so agent.llmProvider/sttProvider/
- * ttsProvider can never actually be "groq". Vault has no groq_api_key
- * at secret/shared/api-keys, and ExternalSecrets Operator fails the
- * ENTIRE sync (not just the missing entry) if any one `data:` remoteRef
- * points at a property that doesn't exist — confirmed live 2026-07-15
- * (the jarvis namespace ExternalSecret went to SecretSyncedError after
- * a groq entry was added, breaking sync for every key in the Secret).
+ * The inclusion rule is deliberately "reachable via some *_PROVIDERS
+ * list in shared/providerOptions.ts", not "providerEnvName has a case
+ * for it" — providerEnvName's switch is a superset that includes dead
+ * cases with no way to ever be selected. Including an unreachable
+ * provider here is actively dangerous, not just inert: ExternalSecrets
+ * Operator fails the ENTIRE sync (not just the missing entry) if any
+ * one `data:` remoteRef points at a Vault property that doesn't exist.
+ * "groq" and "anthropic" are both excluded for this reason — neither
+ * appears as a value in LLM_PROVIDERS/STT_PROVIDERS/TTS_PROVIDERS (the
+ * "anthropic/claude-sonnet-4-..." strings in LLM_MODELS.openrouter are
+ * OpenRouter *model* ids, not a standalone "anthropic" provider value),
+ * so agent.llmProvider/sttProvider/ttsProvider can never actually equal
+ * either string. Confirmed live 2026-07-15: the jarvis namespace
+ * ExternalSecret went to SecretSyncedError — breaking sync for every
+ * key in the Secret, including unrelated ones like Langfuse/MinIO —
+ * after a groq entry (no matching Vault key) was added.
  */
 const SHARED_KEY_PROVIDERS = [
-  "openai", "openrouter", "anthropic", "deepgram",
+  "openai", "openrouter", "deepgram",
   "cartesia", "elevenlabs", "async", "gemini",
 ] as const;
 
@@ -480,6 +487,7 @@ export function buildSharedBithumanDataEntries(): Array<{
 }
 
 export async function createExternalSecret(namespace: string): Promise<void> {
+  const sharedKeyData = [...buildSharedProviderKeyDataEntries(), ...buildSharedBithumanDataEntries()];
   try {
     const { customApi } = await getK8sApis();
     await customApi.createNamespacedCustomObject({
@@ -496,18 +504,73 @@ export async function createExternalSecret(namespace: string): Promise<void> {
           secretStoreRef: { name: "vault-backend", kind: "ClusterSecretStore" },
           target: { name: `${namespace}-secrets` },
           dataFrom: [{ extract: { key: `t6-apps/${namespace}/config` } }],
-          data: [...buildSharedProviderKeyDataEntries(), ...buildSharedBithumanDataEntries()],
+          data: sharedKeyData,
         },
       },
     });
     log.info("Created ExternalSecret", { namespace });
   } catch (err: any) {
     if (is409(err)) {
-      log.info("ExternalSecret already exists", { namespace });
+      // Namespace was provisioned before the restart-only key-rotation
+      // retrofit (2026-07-15) added the shared-key `data:` entries, so
+      // its ExternalSecret predates them. Reconcile them in now —
+      // idempotent, only patches when something's actually missing —
+      // so already-provisioned namespaces get the same secretKeyRef-
+      // backed keys as newly-provisioned ones instead of silently
+      // resolving empty (see spec addendum, 2026-07-15).
+      await ensureSharedKeyDataEntries(namespace, sharedKeyData);
       return;
     }
     log.warn("Failed to create ExternalSecret", { error: String(err?.body?.message || err) });
   }
+}
+
+/**
+ * Patch an existing `${namespace}-secrets` ExternalSecret to add any of
+ * `desiredData`'s entries it's missing. Idempotent — reads current
+ * `spec.data`, diffs by `secretKey`, and only issues a PATCH when at
+ * least one entry is absent. Uses the same raw-merge-patch approach as
+ * `ensureLivekitEsoFields` (`patchNamespacedCustomObject` defaults to
+ * json-patch, which K8s rejects for this CRD).
+ */
+async function ensureSharedKeyDataEntries(
+  namespace: string,
+  desiredData: Array<{ secretKey: string; remoteRef: { key: string; property: string } }>,
+): Promise<void> {
+  const name = `${namespace}-secrets`;
+  const { customApi } = await getK8sApis();
+  let es: any;
+  try {
+    const res = await customApi.getNamespacedCustomObject({
+      group: "external-secrets.io",
+      version: "v1",
+      namespace,
+      plural: "externalsecrets",
+      name,
+    });
+    es = res?.body || res;
+  } catch (err) {
+    log.warn("ExternalSecret already exists but could not be read for reconciliation", {
+      namespace, error: String(err),
+    });
+    return;
+  }
+
+  const existing: any[] = es.spec?.data || [];
+  const existingKeys = new Set(existing.map((d) => d.secretKey));
+  const missing = desiredData.filter((d) => !existingKeys.has(d.secretKey));
+  if (missing.length === 0) {
+    log.info("ExternalSecret already has all shared-key data entries", { namespace });
+    return;
+  }
+
+  await k8sMergePatch(
+    `/apis/external-secrets.io/v1/namespaces/${namespace}/externalsecrets/${name}`,
+    { spec: { data: [...existing, ...missing] } },
+  );
+  log.info("Reconciled ExternalSecret with missing shared-key data entries", {
+    namespace, added: missing.map((d) => d.secretKey),
+  });
 }
 
 /**
