@@ -54,7 +54,7 @@ function getToolPipRequirements(toolName: string): { name: string }[] {
  * Used to inject the per-agent API key from Vault into the worker pod.
  * gpu-ai is intentionally excluded — internal cluster GPU has no auth.
  */
-function providerEnvName(provider: string): string | null {
+export function providerEnvName(provider: string): string | null {
   switch (provider) {
     case "openai":
       return "OPENAI_API_KEY";
@@ -62,6 +62,8 @@ function providerEnvName(provider: string): string | null {
       return "OPENROUTER_API_KEY";
     case "anthropic":
       return "ANTHROPIC_API_KEY";
+    case "gemini":
+      return "GEMINI_API_KEY";
     case "deepgram":
       return "DEEPGRAM_API_KEY";
     case "cartesia":
@@ -75,6 +77,25 @@ function providerEnvName(provider: string): string | null {
     default:
       return null;
   }
+}
+
+/**
+ * Which key *name* within the per-namespace K8s Secret an env var
+ * should reference — the per-agent override if one exists in Vault,
+ * else the shared org-wide fallback. Only existence is checked by the
+ * caller, never the key's value: the secret material itself flows
+ * Vault -> ExternalSecret -> K8s Secret -> secretKeyRef, refreshed on a
+ * timer, so rotating a key only requires a pod restart, not a redeploy
+ * through this app (see spec addendum, 2026-07-15).
+ */
+export function resolveProviderSecretKey(
+  agentId: number,
+  provider: string,
+  hasPerAgentKey: boolean,
+): string {
+  return hasPerAgentKey
+    ? `agent_${agentId}_${provider}_api_key`
+    : `shared_${provider}_api_key`;
 }
 
 const AGENT_IMAGE = process.env.AGENT_TEMPLATE_IMAGE || "docker4zerocool/bionic-agent:latest";
@@ -477,16 +498,18 @@ export async function deployAgent(
   //
   // Deduped: a single provider used for two pipelines (e.g. openai for
   // both STT and TTS) only gets one env var injection.
-  const extraEnv: Array<{ name: string; value: string }> = [];
+  const extraEnv: Array<{ name: string; secretKey: string }> = [];
   const injected = new Set<string>();
   try {
     const { readAppSecret, readPlatformVaultPath } = await import("../vaultClient.js");
     const vault = (await readAppSecret(app.slug)) || {};
 
-    // Load shared fallback keys (secret/shared/api-keys) once — used when
-    // per-agent keys are not configured. This allows agents to work out of
-    // the box with shared org-wide keys while still supporting per-agent
-    // overrides via the UI's "Test & Save" flow.
+    // Load shared fallback keys (secret/shared/api-keys) once — used to
+    // check *existence* only (never the value) when deciding whether a
+    // pipeline has a per-agent override or falls back to the shared
+    // org-wide key. The actual key material is delivered to the pod via
+    // ExternalSecret + secretKeyRef (see k8sClient.ts), never resolved
+    // or baked into a literal value here — see spec addendum, 2026-07-15.
     let sharedKeys: Record<string, string> = {};
     try {
       sharedKeys = (await readPlatformVaultPath("shared/api-keys")) || {};
@@ -506,26 +529,25 @@ export async function deployAgent(
       if (!envName) continue;
       if (injected.has(envName)) continue; // already added by another pipeline
 
-      // Priority: per-agent key > shared fallback key
-      const perAgentKey = vault[`agent_${agent.id}_${provider}_api_key`];
-      const sharedKey = sharedKeys[`${provider}_api_key`];
-      const key = perAgentKey || sharedKey;
+      const hasPerAgentKey = Boolean(vault[`agent_${agent.id}_${provider}_api_key`]);
+      const hasSharedKey = Boolean(sharedKeys[`${provider}_api_key`]);
 
-      if (!key) {
+      if (!hasPerAgentKey && !hasSharedKey) {
         log.warn("No provider key found (per-agent or shared)", {
           agent: agent.id, pipeline: kind, provider,
         });
         continue;
       }
-      extraEnv.push({ name: envName, value: key.trim() });
+      const secretKey = resolveProviderSecretKey(agent.id, provider, hasPerAgentKey);
+      extraEnv.push({ name: envName, secretKey });
       injected.add(envName);
-      log.info("Injected provider key", {
-        agent: agent.id, pipeline: kind, provider, envName,
-        source: perAgentKey ? "per-agent" : "shared",
+      log.info("Wired provider key reference", {
+        agent: agent.id, pipeline: kind, provider, envName, secretKey,
+        source: hasPerAgentKey ? "per-agent" : "shared",
       });
     }
   } catch (err) {
-    log.warn("Failed to resolve provider keys (non-fatal)", { error: String(err) });
+    log.warn("Failed to resolve provider key references (non-fatal)", { error: String(err) });
   }
 
   // 5c. BitHuman avatar keys — shared across all agents (one GPU server).
