@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { buildSharedProviderKeyDataEntries, buildSharedBithumanDataEntries, renderProviderExtraEnv } from "../server/k8sClient.ts";
 import { LLM_PROVIDERS, STT_PROVIDERS, TTS_PROVIDERS } from "../shared/providerOptions.ts";
 
-test("buildSharedProviderKeyDataEntries covers the 7 reachable cloud providers with shared_<provider>_api_key target names (groq, anthropic excluded — see k8sClient.ts comment)", () => {
+test("buildSharedProviderKeyDataEntries covers the 8 reachable cloud providers with shared_<provider>_api_key target names (groq, anthropic excluded — see k8sClient.ts comment)", () => {
   const entries = buildSharedProviderKeyDataEntries();
   const secretKeys = entries.map((e) => e.secretKey).sort();
   assert.deepEqual(secretKeys, [
@@ -23,6 +23,7 @@ test("buildSharedProviderKeyDataEntries covers the 7 reachable cloud providers w
     "shared_gemini_api_key",
     "shared_openai_api_key",
     "shared_openrouter_api_key",
+    "shared_sarvam_api_key",
   ]);
 });
 
@@ -53,6 +54,13 @@ test("buildSharedProviderKeyDataEntries points each entry at shared/api-keys wit
   const gemini = entries.find((e) => e.secretKey === "shared_gemini_api_key");
   assert.ok(gemini, "gemini entry must exist");
   assert.deepEqual(gemini.remoteRef, { key: "shared/api-keys", property: "gemini_api_key" });
+});
+
+test("buildSharedProviderKeyDataEntries maps sarvam to the exact uppercase SARVAM_API_KEY Vault property, not the templated lowercase form", () => {
+  const entries = buildSharedProviderKeyDataEntries();
+  const sarvam = entries.find((e) => e.secretKey === "shared_sarvam_api_key");
+  assert.ok(sarvam, "sarvam entry must exist");
+  assert.deepEqual(sarvam.remoteRef, { key: "shared/api-keys", property: "SARVAM_API_KEY" });
 });
 
 test("renderProviderExtraEnv produces secretKeyRef entries, never a literal value", () => {

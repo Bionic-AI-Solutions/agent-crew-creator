@@ -19,6 +19,7 @@ test("providerEnvName maps known cloud providers to their SDK env var", () => {
   assert.equal(providerEnvName("openrouter"), "OPENROUTER_API_KEY");
   assert.equal(providerEnvName("anthropic"), "ANTHROPIC_API_KEY");
   assert.equal(providerEnvName("gemini"), "GEMINI_API_KEY");
+  assert.equal(providerEnvName("sarvam"), "SARVAM_API_KEY");
 });
 
 test("providerEnvName returns null for keyless/unknown providers", () => {

@@ -64,6 +64,8 @@ export function providerEnvName(provider: string): string | null {
       return "ANTHROPIC_API_KEY";
     case "gemini":
       return "GEMINI_API_KEY";
+    case "sarvam":
+      return "SARVAM_API_KEY";
     case "deepgram":
       return "DEEPGRAM_API_KEY";
     case "cartesia":

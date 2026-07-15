@@ -424,9 +424,11 @@ export async function restartLivekitServer(): Promise<void> {
 // ── ExternalSecret Management ───────────────────────────────────
 
 /**
- * The 7 cloud LLM/STT/TTS providers whose API keys flow through
+ * The 8 cloud LLM/STT/TTS providers whose API keys flow through
  * agentDeployer.ts's `pipelines` loop. Each gets a shared, org-wide
- * fallback key at secret/shared/api-keys:<provider>_api_key.
+ * fallback key at secret/shared/api-keys:<provider>_api_key (or the
+ * VAULT_PROPERTY_OVERRIDES entry below, for the rare provider whose
+ * Vault key doesn't follow that lowercase convention).
  *
  * The inclusion rule is deliberately "reachable via some *_PROVIDERS
  * list in shared/providerOptions.ts", not "providerEnvName has a case
@@ -447,8 +449,22 @@ export async function restartLivekitServer(): Promise<void> {
  */
 const SHARED_KEY_PROVIDERS = [
   "openai", "openrouter", "deepgram",
-  "cartesia", "elevenlabs", "async", "gemini",
+  "cartesia", "elevenlabs", "async", "gemini", "sarvam",
 ] as const;
+
+/**
+ * Vault's secret/shared/api-keys stores this one uppercase, unlike
+ * every other provider's lowercase `<provider>_api_key` — verified
+ * live 2026-07-15. Referencing the wrong casing here doesn't just
+ * leave this one key unresolved: ExternalSecrets Operator fails the
+ * ENTIRE ${namespace}-secrets sync when any data: remoteRef points at
+ * a nonexistent Vault property (the groq/anthropic incident, same
+ * day). Add further entries here only when confirmed live against
+ * Vault, never assumed from the general naming convention.
+ */
+const VAULT_PROPERTY_OVERRIDES: Record<string, string> = {
+  sarvam: "SARVAM_API_KEY",
+};
 
 /**
  * ExternalSecret `data:` entries pulling each cloud provider's shared,
@@ -464,7 +480,7 @@ export function buildSharedProviderKeyDataEntries(): Array<{
 }> {
   return SHARED_KEY_PROVIDERS.map((provider) => ({
     secretKey: `shared_${provider}_api_key`,
-    remoteRef: { key: "shared/api-keys", property: `${provider}_api_key` },
+    remoteRef: { key: "shared/api-keys", property: VAULT_PROPERTY_OVERRIDES[provider] ?? `${provider}_api_key` },
   }));
 }
 
