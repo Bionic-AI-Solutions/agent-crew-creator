@@ -133,9 +133,16 @@ export const TTS_VOICES: Record<string, ModelOption[]> = {
   "async": [
     { value: "e0f39dc4-f691-4e78-bba5-5c636692cc04", label: "Default" },
   ],
-  // Bulbul v2 speaker catalog — matches the mcp-api-server reference
-  // implementation's SARVAM_VOICES exactly (no live list endpoint exists;
-  // this is a fixed preset set per Sarvam's own docs).
+  // Bulbul v2 speaker catalog. The mcp-api-server reference
+  // implementation's SARVAM_VOICES lists 9 (also including diya/
+  // maitreyi), but livekit-plugins-sarvam 1.6.5's own client-side
+  // MODEL_SPEAKER_COMPATIBILITY table for bulbul:v2 — the model
+  // agent-template pins for compatibility with this exact voice set,
+  // see plugins.py — only accepts these 7; diya/maitreyi 400 against
+  // this package version. Confirmed live 2026-07-15 by inspecting the
+  // installed package directly. Do not add them back without
+  // re-verifying against the then-installed livekit-plugins-sarvam
+  // version's compatibility table.
   "sarvam": [
     { value: "anushka", label: "Anushka (female)" },
     { value: "abhilash", label: "Abhilash (male)" },
@@ -144,8 +151,6 @@ export const TTS_VOICES: Record<string, ModelOption[]> = {
     { value: "arya", label: "Arya (female)" },
     { value: "karun", label: "Karun (male)" },
     { value: "hitesh", label: "Hitesh (male)" },
-    { value: "diya", label: "Diya (female)" },
-    { value: "maitreyi", label: "Maitreyi (female)" },
   ],
 };
 

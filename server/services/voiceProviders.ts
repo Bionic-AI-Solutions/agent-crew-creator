@@ -142,7 +142,10 @@ const PROVIDERS: Record<string, VoiceProviderConfig> = {
     body: { inputs: ["ok"], target_language_code: "en-IN", speaker: "anushka", model: "bulbul:v2" },
     // Static preset set (no live discovery) — same shape as openai's
     // hardcoded voice list below. Must match TTS_VOICES.sarvam in
-    // shared/providerOptions.ts exactly.
+    // shared/providerOptions.ts exactly — 7 voices, not the 9 the
+    // mcp-api-server reference implementation lists; diya/maitreyi
+    // aren't in bulbul:v2's compatibility table for this package
+    // version (confirmed live 2026-07-15, see providerOptions.ts).
     parse: (_raw) => [
       { id: "anushka", name: "Anushka", description: "female" },
       { id: "abhilash", name: "Abhilash", description: "male" },
@@ -151,8 +154,6 @@ const PROVIDERS: Record<string, VoiceProviderConfig> = {
       { id: "arya", name: "Arya", description: "female" },
       { id: "karun", name: "Karun", description: "male" },
       { id: "hitesh", name: "Hitesh", description: "male" },
-      { id: "diya", name: "Diya", description: "female" },
-      { id: "maitreyi", name: "Maitreyi", description: "female" },
     ],
   },
   // ── STT side ────────────────────────────────────────────────

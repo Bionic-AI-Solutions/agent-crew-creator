@@ -48,11 +48,11 @@ test("gemini LLM provider exposes gemini-2.5-flash as its only model", () => {
   );
 });
 
-test("sarvam TTS provider exposes exactly its 9 real speaker presets, anushka first", () => {
+test("sarvam TTS provider exposes exactly the 7 bulbul:v2-compatible speaker presets, anushka first", () => {
   const sarvam = TTS_VOICES["sarvam"];
   assert.ok(sarvam, "TTS_VOICES.sarvam must exist");
   assert.deepEqual(
     sarvam.map((v) => v.value),
-    ["anushka", "abhilash", "manisha", "vidya", "arya", "karun", "hitesh", "diya", "maitreyi"],
+    ["anushka", "abhilash", "manisha", "vidya", "arya", "karun", "hitesh"],
   );
 });
