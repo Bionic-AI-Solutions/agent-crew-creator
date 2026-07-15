@@ -104,6 +104,7 @@ export const TTS_PROVIDERS: ProviderOption[] = [
   { value: "async", label: "Async (Cloud)", description: "Streaming-first, ultra-low latency TTS", requiresKey: true, keyEnvName: "ASYNC_API_KEY" },
   { value: "elevenlabs", label: "ElevenLabs (Cloud)", description: "Cloud API, premium voices", requiresKey: true, keyEnvName: "ELEVENLABS_API_KEY" },
   { value: "cartesia", label: "Cartesia (Cloud)", description: "Cloud API, fast low-latency TTS", requiresKey: true, keyEnvName: "CARTESIA_API_KEY" },
+  { value: "sarvam", label: "Sarvam AI", description: "Indic-focused voices, 9 presets", requiresKey: true, keyEnvName: "SARVAM_API_KEY" },
 ];
 
 export const TTS_VOICES: Record<string, ModelOption[]> = {
@@ -131,6 +132,20 @@ export const TTS_VOICES: Record<string, ModelOption[]> = {
   ],
   "async": [
     { value: "e0f39dc4-f691-4e78-bba5-5c636692cc04", label: "Default" },
+  ],
+  // Bulbul v2 speaker catalog — matches the mcp-api-server reference
+  // implementation's SARVAM_VOICES exactly (no live list endpoint exists;
+  // this is a fixed preset set per Sarvam's own docs).
+  "sarvam": [
+    { value: "anushka", label: "Anushka (female)" },
+    { value: "abhilash", label: "Abhilash (male)" },
+    { value: "manisha", label: "Manisha (female)" },
+    { value: "vidya", label: "Vidya (female)" },
+    { value: "arya", label: "Arya (female)" },
+    { value: "karun", label: "Karun (male)" },
+    { value: "hitesh", label: "Hitesh (male)" },
+    { value: "diya", label: "Diya (female)" },
+    { value: "maitreyi", label: "Maitreyi (female)" },
   ],
 };
 

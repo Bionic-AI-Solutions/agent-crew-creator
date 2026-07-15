@@ -15,6 +15,7 @@ import {
   LLM_PROVIDERS,
   LLM_MODELS,
   TTS_PROVIDERS,
+  TTS_VOICES,
 } from "../shared/providerOptions.ts";
 
 test("keyless providers do not require a key (no key UI, no throw)", () => {
@@ -31,6 +32,7 @@ test("cloud providers still require a key", () => {
   assert.equal(providerRequiresKey(STT_PROVIDERS, "deepgram"), true);
   assert.equal(providerRequiresKey(TTS_PROVIDERS, "elevenlabs"), true);
   assert.equal(providerRequiresKey(TTS_PROVIDERS, "cartesia"), true);
+  assert.equal(providerRequiresKey(TTS_PROVIDERS, "sarvam"), true);
 });
 
 test("unknown provider is treated as keyless (safe default)", () => {
@@ -43,5 +45,14 @@ test("gemini LLM provider exposes gemini-2.5-flash as its only model", () => {
   assert.deepEqual(
     gemini.map((m) => m.value),
     ["gemini-2.5-flash"],
+  );
+});
+
+test("sarvam TTS provider exposes exactly its 9 real speaker presets, anushka first", () => {
+  const sarvam = TTS_VOICES["sarvam"];
+  assert.ok(sarvam, "TTS_VOICES.sarvam must exist");
+  assert.deepEqual(
+    sarvam.map((v) => v.value),
+    ["anushka", "abhilash", "manisha", "vidya", "arya", "karun", "hitesh", "diya", "maitreyi"],
   );
 });
