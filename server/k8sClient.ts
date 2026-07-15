@@ -423,6 +423,52 @@ export async function restartLivekitServer(): Promise<void> {
 
 // ── ExternalSecret Management ───────────────────────────────────
 
+/**
+ * The 9 cloud LLM/STT/TTS providers whose API keys flow through
+ * agentDeployer.ts's `pipelines` loop. Each gets a shared, org-wide
+ * fallback key at secret/shared/api-keys:<provider>_api_key.
+ */
+const SHARED_KEY_PROVIDERS = [
+  "openai", "openrouter", "anthropic", "deepgram",
+  "cartesia", "elevenlabs", "groq", "async", "gemini",
+] as const;
+
+/**
+ * ExternalSecret `data:` entries pulling each cloud provider's shared,
+ * org-wide fallback API key from secret/shared/api-keys into the
+ * per-namespace K8s Secret, under a `shared_`-prefixed target key name
+ * — distinct from the per-app-path keys the same Secret already gets
+ * via `dataFrom` below, so there's no ambiguity about which value a
+ * given key name holds. See spec addendum, 2026-07-15.
+ */
+export function buildSharedProviderKeyDataEntries(): Array<{
+  secretKey: string;
+  remoteRef: { key: string; property: string };
+}> {
+  return SHARED_KEY_PROVIDERS.map((provider) => ({
+    secretKey: `shared_${provider}_api_key`,
+    remoteRef: { key: "shared/api-keys", property: `${provider}_api_key` },
+  }));
+}
+
+/**
+ * ExternalSecret `data:` entries for the 3 BitHuman avatar fields at
+ * secret/shared/bithuman — unconditionally shared (no per-agent
+ * override), same restart-only rationale as the provider keys above.
+ * Separate from buildSharedProviderKeyDataEntries because the Vault
+ * path and field-naming convention differ. See spec addendum, 2026-07-15.
+ */
+export function buildSharedBithumanDataEntries(): Array<{
+  secretKey: string;
+  remoteRef: { key: string; property: string };
+}> {
+  return [
+    { secretKey: "shared_bithuman_api_key", remoteRef: { key: "shared/bithuman", property: "bithuman_api_key" } },
+    { secretKey: "shared_bithuman_api_secret", remoteRef: { key: "shared/bithuman", property: "bithuman_api_secret" } },
+    { secretKey: "shared_bithuman_livekit_url", remoteRef: { key: "shared/bithuman", property: "bithuman_livekit_url" } },
+  ];
+}
+
 export async function createExternalSecret(namespace: string): Promise<void> {
   try {
     const { customApi } = await getK8sApis();
@@ -440,6 +486,7 @@ export async function createExternalSecret(namespace: string): Promise<void> {
           secretStoreRef: { name: "vault-backend", kind: "ClusterSecretStore" },
           target: { name: `${namespace}-secrets` },
           dataFrom: [{ extract: { key: `t6-apps/${namespace}/config` } }],
+          data: [...buildSharedProviderKeyDataEntries(), ...buildSharedBithumanDataEntries()],
         },
       },
     });
@@ -531,15 +578,34 @@ export async function ensureConfigMap(
 
 // ── Agent Deployment ────────────────────────────────────────────
 
+/**
+ * Render agentDeployer's { name, secretKey } provider-key references as
+ * K8s env entries sourced from the per-namespace Secret via
+ * secretKeyRef — never a literal value baked into the Deployment spec,
+ * so a Vault key rotation (synced into the Secret by ExternalSecret on
+ * its refresh interval) only requires a pod restart to take effect. See
+ * spec addendum, 2026-07-15.
+ */
+export function renderProviderExtraEnv(
+  secretName: string,
+  extraEnv: Array<{ name: string; secretKey: string }>,
+): Array<{ name: string; valueFrom: { secretKeyRef: { name: string; key: string; optional: true } } }> {
+  return extraEnv.map(({ name, secretKey }) => ({
+    name,
+    valueFrom: { secretKeyRef: { name: secretName, key: secretKey, optional: true } },
+  }));
+}
+
 export async function applyAgentDeployment(
   namespace: string,
   agentName: string,
   image: string,
   configMapName: string,
   secretName: string,
-  /** Extra plain env vars (no secret refs). Used for per-agent provider
-   *  API keys read from Vault at deploy time — see agentDeployer.ts. */
-  extraEnv: Array<{ name: string; value: string }> = [],
+  /** Provider API key references — rendered as secretKeyRef entries
+   *  against the per-namespace Secret, never a literal value. See
+   *  agentDeployer.ts and renderProviderExtraEnv. */
+  extraEnv: Array<{ name: string; secretKey: string }> = [],
 ): Promise<void> {
   const { appsApi } = await getK8sApis();
   const deploymentName = `agent-${agentName}`;
@@ -604,8 +670,9 @@ export async function applyAgentDeployment(
               { name: "HF_HOME", value: "/models/hf" },
               { name: "TRANSFORMERS_CACHE", value: "/models/hf" },
               { name: "XDG_CACHE_HOME", value: "/models/cache" },
-              // Per-agent provider API keys passed in from agentDeployer.
-              ...extraEnv,
+              // Per-agent provider API key references passed in from
+              // agentDeployer — rendered as secretKeyRef, never literal.
+              ...renderProviderExtraEnv(secretName, extraEnv),
             ],
             volumeMounts: [
               { name: "model-cache", mountPath: "/models" },
