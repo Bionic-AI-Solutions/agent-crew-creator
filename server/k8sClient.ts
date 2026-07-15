@@ -462,7 +462,7 @@ const SHARED_KEY_PROVIDERS = [
  * day). Add further entries here only when confirmed live against
  * Vault, never assumed from the general naming convention.
  */
-const VAULT_PROPERTY_OVERRIDES: Record<string, string> = {
+export const VAULT_PROPERTY_OVERRIDES: Record<string, string> = {
   sarvam: "SARVAM_API_KEY",
 };
 

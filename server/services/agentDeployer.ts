@@ -9,7 +9,7 @@
  */
 import { eq } from "drizzle-orm";
 import { createLogger } from "../_core/logger.js";
-import { k8s } from "../k8sClient.js";
+import { k8s, VAULT_PROPERTY_OVERRIDES } from "../k8sClient.js";
 import {
   agentConfigs,
   agentTools,
@@ -532,7 +532,15 @@ export async function deployAgent(
       if (injected.has(envName)) continue; // already added by another pipeline
 
       const hasPerAgentKey = Boolean(vault[`agent_${agent.id}_${provider}_api_key`]);
-      const hasSharedKey = Boolean(sharedKeys[`${provider}_api_key`]);
+      // Per-agent keys are always written under the lowercase convention
+      // by this app's own "Test & Save" flow, so no override is needed
+      // there. Shared keys are read from an externally-managed Vault
+      // path this app doesn't control the casing of — same
+      // VAULT_PROPERTY_OVERRIDES exception k8sClient.ts's
+      // buildSharedProviderKeyDataEntries() uses, kept in sync from the
+      // same source so this existence check and the ExternalSecret's
+      // remoteRef never disagree about which Vault field to look at.
+      const hasSharedKey = Boolean(sharedKeys[VAULT_PROPERTY_OVERRIDES[provider] ?? `${provider}_api_key`]);
 
       if (!hasPerAgentKey && !hasSharedKey) {
         log.warn("No provider key found (per-agent or shared)", {
