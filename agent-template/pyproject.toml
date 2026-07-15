@@ -8,7 +8,12 @@ dependencies = [
     "livekit-plugins-silero>=1.0.0",
     "livekit-plugins-openai>=1.0.0",
     "livekit-plugins-turn-detector>=1.0.0",
-    "livekit-plugins-sarvam>=1.6.0",
+    # Pinned exact (not >=): the 7-voice list and the bulbul:v2 model
+    # pin in plugins.py are both verified against this specific
+    # version's MODEL_SPEAKER_COMPATIBILITY table (2026-07-15) — a
+    # later minor/patch bump could silently change that table with no
+    # test catching it until a live synthesis call fails.
+    "livekit-plugins-sarvam==1.6.5",
     "pydantic-settings>=2.0.0",
     "httpx>=0.27.0",
     "langfuse>=3.0.0",

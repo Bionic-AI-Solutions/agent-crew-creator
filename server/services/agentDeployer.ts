@@ -100,6 +100,25 @@ export function resolveProviderSecretKey(
     : `shared_${provider}_api_key`;
 }
 
+/**
+ * Whether a provider's shared, org-wide fallback key is present in the
+ * already-fetched shared/api-keys map. Reads through
+ * VAULT_PROPERTY_OVERRIDES first — imported from k8sClient.ts, the
+ * same map buildSharedProviderKeyDataEntries() uses for the
+ * ExternalSecret's remoteRef.property — so this existence check and
+ * the actual Vault field the ExternalSecret pulls from can never
+ * silently disagree about a provider's casing again (they used to be
+ * two independent lowercase-template guesses; that's exactly how
+ * SARVAM_API_KEY's key delivery broke live on 2026-07-15 despite
+ * k8sClient.ts's own override already being correct).
+ */
+export function hasSharedProviderKey(
+  sharedKeys: Record<string, string>,
+  provider: string,
+): boolean {
+  return Boolean(sharedKeys[VAULT_PROPERTY_OVERRIDES[provider] ?? `${provider}_api_key`]);
+}
+
 const AGENT_IMAGE = process.env.AGENT_TEMPLATE_IMAGE || "docker4zerocool/bionic-agent:latest";
 // All internal cluster URLs — agents run inside the cluster, no need for external hops
 const LETTA_MCP_URL = process.env.LETTA_INTERNAL_URL
@@ -534,13 +553,10 @@ export async function deployAgent(
       const hasPerAgentKey = Boolean(vault[`agent_${agent.id}_${provider}_api_key`]);
       // Per-agent keys are always written under the lowercase convention
       // by this app's own "Test & Save" flow, so no override is needed
-      // there. Shared keys are read from an externally-managed Vault
-      // path this app doesn't control the casing of — same
-      // VAULT_PROPERTY_OVERRIDES exception k8sClient.ts's
-      // buildSharedProviderKeyDataEntries() uses, kept in sync from the
-      // same source so this existence check and the ExternalSecret's
-      // remoteRef never disagree about which Vault field to look at.
-      const hasSharedKey = Boolean(sharedKeys[VAULT_PROPERTY_OVERRIDES[provider] ?? `${provider}_api_key`]);
+      // there. Shared keys go through hasSharedProviderKey — see its
+      // doc comment for why this can't independently drift from
+      // k8sClient.ts's casing again.
+      const hasSharedKey = hasSharedProviderKey(sharedKeys, provider);
 
       if (!hasPerAgentKey && !hasSharedKey) {
         log.warn("No provider key found (per-agent or shared)", {

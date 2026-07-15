@@ -104,7 +104,7 @@ export const TTS_PROVIDERS: ProviderOption[] = [
   { value: "async", label: "Async (Cloud)", description: "Streaming-first, ultra-low latency TTS", requiresKey: true, keyEnvName: "ASYNC_API_KEY" },
   { value: "elevenlabs", label: "ElevenLabs (Cloud)", description: "Cloud API, premium voices", requiresKey: true, keyEnvName: "ELEVENLABS_API_KEY" },
   { value: "cartesia", label: "Cartesia (Cloud)", description: "Cloud API, fast low-latency TTS", requiresKey: true, keyEnvName: "CARTESIA_API_KEY" },
-  { value: "sarvam", label: "Sarvam AI", description: "Indic-focused voices, 9 presets", requiresKey: true, keyEnvName: "SARVAM_API_KEY" },
+  { value: "sarvam", label: "Sarvam AI", description: "Indic-focused voices, 7 presets", requiresKey: true, keyEnvName: "SARVAM_API_KEY" },
 ];
 
 export const TTS_VOICES: Record<string, ModelOption[]> = {

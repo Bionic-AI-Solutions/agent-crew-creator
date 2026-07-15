@@ -137,9 +137,15 @@ const PROVIDERS: Record<string, VoiceProviderConfig> = {
     // No free liveness/list endpoint exists — a real (billed) synthesis
     // call is the only way to validate a key. Response content is
     // ignored; only a non-401/403 status confirms the key works.
+    // Payload field names match the installed livekit-plugins-sarvam's
+    // own REST request shape exactly (tts.py's _run() payload dict) —
+    // an earlier version of this body used "inputs": [...] (the legacy
+    // mcp-api-server reference implementation's field name), which the
+    // real API likely 400s on since the actual field is "text": <str>.
+    // Confirmed against the installed package 2026-07-15.
     listUrl: "https://api.sarvam.ai/text-to-speech",
     method: "POST",
-    body: { inputs: ["ok"], target_language_code: "en-IN", speaker: "anushka", model: "bulbul:v2" },
+    body: { target_language_code: "en-IN", text: "ok", speaker: "anushka", model: "bulbul:v2" },
     // Static preset set (no live discovery) — same shape as openai's
     // hardcoded voice list below. Must match TTS_VOICES.sarvam in
     // shared/providerOptions.ts exactly — 7 voices, not the 9 the

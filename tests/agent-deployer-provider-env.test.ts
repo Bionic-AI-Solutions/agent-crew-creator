@@ -12,7 +12,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { providerEnvName, resolveProviderSecretKey } from "../server/services/agentDeployer.ts";
+import { providerEnvName, resolveProviderSecretKey, hasSharedProviderKey } from "../server/services/agentDeployer.ts";
 
 test("providerEnvName maps known cloud providers to their SDK env var", () => {
   assert.equal(providerEnvName("openai"), "OPENAI_API_KEY");
@@ -38,5 +38,35 @@ test("resolveProviderSecretKey falls back to the shared key name when no overrid
   assert.equal(
     resolveProviderSecretKey(30, "gemini", false),
     "shared_gemini_api_key",
+  );
+});
+
+// Regression test for the bug found live 2026-07-15: this exact check
+// used its own independent lowercase-template guess (`${provider}_api_key`)
+// instead of reading VAULT_PROPERTY_OVERRIDES, so deploying an agent with
+// ttsProvider=sarvam silently never wired SARVAM_API_KEY at all, even
+// though k8sClient.ts's ExternalSecret side already had the correct
+// uppercase override. Covers one overridden provider (sarvam) and one
+// non-overridden provider (gemini) to prove the lookup handles both paths.
+test("hasSharedProviderKey reads through VAULT_PROPERTY_OVERRIDES for the exact casing Vault actually uses", () => {
+  assert.equal(
+    hasSharedProviderKey({ SARVAM_API_KEY: "x" }, "sarvam"),
+    true,
+  );
+  assert.equal(
+    hasSharedProviderKey({ sarvam_api_key: "x" }, "sarvam"),
+    false,
+    "the lowercase templated form must NOT satisfy the check for an overridden provider",
+  );
+});
+
+test("hasSharedProviderKey falls back to the lowercase template for a non-overridden provider", () => {
+  assert.equal(
+    hasSharedProviderKey({ gemini_api_key: "x" }, "gemini"),
+    true,
+  );
+  assert.equal(
+    hasSharedProviderKey({}, "gemini"),
+    false,
   );
 });
