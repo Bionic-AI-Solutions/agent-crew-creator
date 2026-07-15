@@ -424,13 +424,23 @@ export async function restartLivekitServer(): Promise<void> {
 // ── ExternalSecret Management ───────────────────────────────────
 
 /**
- * The 9 cloud LLM/STT/TTS providers whose API keys flow through
+ * The 8 cloud LLM/STT/TTS providers whose API keys flow through
  * agentDeployer.ts's `pipelines` loop. Each gets a shared, org-wide
  * fallback key at secret/shared/api-keys:<provider>_api_key.
+ *
+ * "groq" is deliberately excluded: providerEnvName has a case for it,
+ * but it's dead code — no LLM_PROVIDERS/STT_PROVIDERS/TTS_PROVIDERS
+ * entry ever lets the UI select "groq", so agent.llmProvider/sttProvider/
+ * ttsProvider can never actually be "groq". Vault has no groq_api_key
+ * at secret/shared/api-keys, and ExternalSecrets Operator fails the
+ * ENTIRE sync (not just the missing entry) if any one `data:` remoteRef
+ * points at a property that doesn't exist — confirmed live 2026-07-15
+ * (the jarvis namespace ExternalSecret went to SecretSyncedError after
+ * a groq entry was added, breaking sync for every key in the Secret).
  */
 const SHARED_KEY_PROVIDERS = [
   "openai", "openrouter", "anthropic", "deepgram",
-  "cartesia", "elevenlabs", "groq", "async", "gemini",
+  "cartesia", "elevenlabs", "async", "gemini",
 ] as const;
 
 /**

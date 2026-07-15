@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildSharedProviderKeyDataEntries, buildSharedBithumanDataEntries, renderProviderExtraEnv } from "../server/k8sClient.ts";
 
-test("buildSharedProviderKeyDataEntries covers all 9 cloud providers with shared_<provider>_api_key target names", () => {
+test("buildSharedProviderKeyDataEntries covers the 8 reachable cloud providers with shared_<provider>_api_key target names (groq excluded — see k8sClient.ts comment)", () => {
   const entries = buildSharedProviderKeyDataEntries();
   const secretKeys = entries.map((e) => e.secretKey).sort();
   assert.deepEqual(secretKeys, [
@@ -21,10 +21,14 @@ test("buildSharedProviderKeyDataEntries covers all 9 cloud providers with shared
     "shared_deepgram_api_key",
     "shared_elevenlabs_api_key",
     "shared_gemini_api_key",
-    "shared_groq_api_key",
     "shared_openai_api_key",
     "shared_openrouter_api_key",
   ]);
+});
+
+test("buildSharedProviderKeyDataEntries excludes groq (unreachable via any provider option list; no Vault key exists)", () => {
+  const entries = buildSharedProviderKeyDataEntries();
+  assert.equal(entries.some((e) => e.secretKey.includes("groq")), false);
 });
 
 test("buildSharedProviderKeyDataEntries points each entry at shared/api-keys with the matching property", () => {
