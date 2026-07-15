@@ -557,14 +557,14 @@ export async function deployAgent(
       const { readPlatformVaultPath } = await import("../vaultClient.js");
       const bhData = (await readPlatformVaultPath("shared/bithuman")) || {};
       if (bhData.bithuman_api_key) {
-        extraEnv.push({ name: "BITHUMAN_API_KEY", value: bhData.bithuman_api_key });
+        extraEnv.push({ name: "BITHUMAN_API_KEY", secretKey: "shared_bithuman_api_key" });
       }
       if (bhData.bithuman_api_secret) {
-        extraEnv.push({ name: "BITHUMAN_API_SECRET", value: bhData.bithuman_api_secret });
+        extraEnv.push({ name: "BITHUMAN_API_SECRET", secretKey: "shared_bithuman_api_secret" });
       }
       // External LiveKit URL for BitHuman (BitHuman is outside K8s, can't use internal URL)
       if (bhData.bithuman_livekit_url) {
-        extraEnv.push({ name: "BITHUMAN_LIVEKIT_URL", value: bhData.bithuman_livekit_url });
+        extraEnv.push({ name: "BITHUMAN_LIVEKIT_URL", secretKey: "shared_bithuman_livekit_url" });
       }
       log.info("Injected BitHuman keys from shared Vault", { agentId: agent.id });
     } catch (err) {
