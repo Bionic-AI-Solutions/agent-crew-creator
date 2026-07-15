@@ -26,6 +26,7 @@ RUN pip install --no-cache-dir \
     "livekit-plugins-deepgram>=1.0.0" \
     "livekit-plugins-cartesia>=1.0.0" \
     "livekit-plugins-elevenlabs>=1.0.0" \
+    "livekit-plugins-sarvam>=1.6.0" \
     # Avatar — FlashHead (default, pre-built wheel) + BitHuman (legacy)
     "./livekit_plugins_flashhead-0.3.6-py3-none-any.whl" \
     "livekit-plugins-bithuman>=0.1.0" \

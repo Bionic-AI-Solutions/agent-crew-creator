@@ -8,6 +8,7 @@ dependencies = [
     "livekit-plugins-silero>=1.0.0",
     "livekit-plugins-openai>=1.0.0",
     "livekit-plugins-turn-detector>=1.0.0",
+    "livekit-plugins-sarvam>=1.6.0",
     "pydantic-settings>=2.0.0",
     "httpx>=0.27.0",
     "langfuse>=3.0.0",

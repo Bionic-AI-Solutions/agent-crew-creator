@@ -315,6 +315,30 @@ def _create_primary_tts():
             voice=settings.tts_voice or "e0f39dc4-f691-4e78-bba5-5c636692cc04",
         )
 
+    if provider == "sarvam":
+        # Native livekit-plugins-sarvam — same shape as cartesia/
+        # elevenlabs above, not an OpenAI-compat shim. Key is injected
+        # as SARVAM_API_KEY env var by agentDeployer.providerEnvName,
+        # sourced via secretKeyRef from the per-namespace Secret (see
+        # k8sClient.ts), kept in sync with Vault
+        # secret/shared/api-keys:SARVAM_API_KEY (exact uppercase — or a
+        # per-agent override) by an ExternalSecret on a 5-minute
+        # refresh interval — rotating the key only requires a pod
+        # restart, not a redeploy.
+        #
+        # model pinned to "bulbul:v2": the plugin's own default model
+        # is "bulbul:v3", but "bulbul:v3" validates speaker/model
+        # compatibility and does NOT include "anushka" (our default
+        # voice) or other legacy speaker names in its allowed set —
+        # only "bulbul:v2" does. Verified against the installed
+        # livekit-plugins-sarvam==1.6.5 (MODEL_SPEAKER_COMPATIBILITY).
+        from livekit.plugins import sarvam
+        return sarvam.TTS(
+            model="bulbul:v2",
+            speaker=settings.tts_voice or "anushka",
+            api_key=settings.sarvam_api_key or None,
+        )
+
     raise ValueError(f"Unknown TTS provider: {provider}")
 
 

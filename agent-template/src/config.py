@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     cartesia_api_key: str = ""
     elevenlabs_api_key: str = ""
     async_api_key: str = ""
+    sarvam_api_key: str = ""
 
     # System prompt (primary agent)
     system_prompt: str = ""
