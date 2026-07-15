@@ -13,6 +13,7 @@ import {
   providerRequiresKey,
   STT_PROVIDERS,
   LLM_PROVIDERS,
+  LLM_MODELS,
   TTS_PROVIDERS,
 } from "../shared/providerOptions.ts";
 
@@ -26,6 +27,7 @@ test("keyless providers do not require a key (no key UI, no throw)", () => {
 test("cloud providers still require a key", () => {
   assert.equal(providerRequiresKey(LLM_PROVIDERS, "openai"), true);
   assert.equal(providerRequiresKey(LLM_PROVIDERS, "openrouter"), true);
+  assert.equal(providerRequiresKey(LLM_PROVIDERS, "gemini"), true);
   assert.equal(providerRequiresKey(STT_PROVIDERS, "deepgram"), true);
   assert.equal(providerRequiresKey(TTS_PROVIDERS, "elevenlabs"), true);
   assert.equal(providerRequiresKey(TTS_PROVIDERS, "cartesia"), true);
@@ -33,4 +35,13 @@ test("cloud providers still require a key", () => {
 
 test("unknown provider is treated as keyless (safe default)", () => {
   assert.equal(providerRequiresKey(LLM_PROVIDERS, "does-not-exist"), false);
+});
+
+test("gemini LLM provider exposes gemini-2.5-flash as its only model", () => {
+  const gemini = LLM_MODELS["gemini"];
+  assert.ok(gemini, "LLM_MODELS.gemini must exist");
+  assert.deepEqual(
+    gemini.map((m) => m.value),
+    ["gemini-2.5-flash"],
+  );
 });

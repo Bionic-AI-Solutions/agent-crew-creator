@@ -60,6 +60,7 @@ export const LLM_PROVIDERS: ProviderOption[] = [
   { value: "openrouter", label: "OpenRouter", description: "Multi-model router", requiresKey: true, keyEnvName: "OPENROUTER_API_KEY" },
   { value: "gpu-ai", label: "GPU-AI (Local)", description: "In-cluster GPU inference" },
   { value: "custom", label: "Custom (OpenAI-compatible)", description: "Self-hosted endpoint", requiresKey: true, keyEnvName: "CUSTOM_LLM_API_KEY" },
+  { value: "gemini", label: "Gemini", description: "Google Gemini 2.5 Flash — fast, smart, economical", requiresKey: true, keyEnvName: "GEMINI_API_KEY" },
 ];
 
 export const LLM_MODELS: Record<string, ModelOption[]> = {
@@ -91,6 +92,9 @@ export const LLM_MODELS: Record<string, ModelOption[]> = {
     { value: "qwen3.5-27b-fp8", label: "Qwen 3.5 27B" },
   ],
   "custom": [],
+  "gemini": [
+    { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+  ],
 };
 
 // ── TTS Providers ───────────────────────────────────────────────
