@@ -30,11 +30,11 @@ Confirmed live: `secret/shared/api-keys` in Vault already has a Sarvam key — b
        { value: "arya", label: "Arya (female)" },
        { value: "karun", label: "Karun (male)" },
        { value: "hitesh", label: "Hitesh (male)" },
-       { value: "diya", label: "Diya (female)" },
-       { value: "maitreyi", label: "Maitreyi (female)" },
      ]
      ```
      (First entry, `anushka`, is the default via the existing client-side "auto-select first model" effect — same mechanism Gemini's single-model dropdown relies on.)
+
+     **AMENDED during implementation (2026-07-15):** this list originally also included `diya` and `maitreyi` (9 voices total, from the mcp-api-server reference implementation's `SARVAM_VOICES`). Verified live against the installed `livekit-plugins-sarvam==1.6.5` package's own `MODEL_SPEAKER_COMPATIBILITY` table: `diya`/`maitreyi` are not in `bulbul:v2`'s compatible speaker set for this package version (and `bulbul:v3`, the plugin's own default model, supports none of the originally-chosen 9 names at all — see the model-pin note below). The shipped list is the 7 voices above. Do not re-add `diya`/`maitreyi` without re-verifying against the then-installed package version's compatibility table.
 
 2. **`agent-template/pyproject.toml`** and **`agent-template/Dockerfile`**
    - Add `livekit-plugins-sarvam` to the same unconditional install tier as `livekit-plugins-deepgram`/`livekit-plugins-cartesia`/`livekit-plugins-elevenlabs` (not gated behind an optional extra — those three aren't either, despite `pyproject.toml`'s `[project.optional-dependencies]` groups listing some of them; the Dockerfile's `pip install` list is the actual source of truth for what ships in the image).
@@ -45,10 +45,12 @@ Confirmed live: `secret/shared/api-keys` in Vault already has a Sarvam key — b
      if provider == "sarvam":
          from livekit.plugins import sarvam
          return sarvam.TTS(
+             model="bulbul:v2",
              speaker=settings.tts_voice or "anushka",
              api_key=settings.sarvam_api_key or None,
          )
      ```
+     **AMENDED during implementation (2026-07-15):** the `model="bulbul:v2"` pin was added after discovering the plugin's own default model, `bulbul:v3`, validates speaker/model compatibility client-side and rejects `anushka` (and every other originally-chosen voice) — only `bulbul:v2` accepts them. Without this pin, every sarvam TTS call would raise at synthesis time regardless of which listed voice was selected.
    - `config.py`: add `sarvam_api_key: str = ""` alongside the other fallback-provider key fields. The `sarvam` branch reads it via `settings.sarvam_api_key`, matching its true siblings — every other *native-plugin* TTS branch (`cartesia`, `elevenlabs`, `async`) reads through a `settings.X_api_key` pydantic field, not a raw `os.environ.get(...)` call. (Only the OpenAI-compat branches — `openrouter`, `gemini` — read the raw env var directly, because they predate/bypass the settings field for that specific shape; sarvam is not one of those.)
 
 4. **`server/services/agentDeployer.ts`**
