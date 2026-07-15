@@ -82,6 +82,26 @@ def _create_primary_llm():
             timeout=httpx.Timeout(connect=15.0, read=60.0, write=15.0, pool=15.0),
         )
 
+    if provider == "gemini":
+        # Gemini's OpenAI-compatible endpoint — same shape as openrouter.
+        # Key is injected as GEMINI_API_KEY env var by
+        # agentDeployer.providerEnvName, sourced via secretKeyRef from
+        # the per-namespace Secret (see k8sClient.ts), which is kept in
+        # sync with Vault secret/shared/api-keys:gemini_api_key (or a
+        # per-agent override) by an ExternalSecret on a 5-minute
+        # refresh interval — rotating the key only requires a pod
+        # restart, not a redeploy.
+        import os
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            raise ValueError("Gemini API key not configured (expected GEMINI_API_KEY env)")
+        return openai_plugin.LLM(
+            model=settings.llm_model or "gemini-2.5-flash",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            api_key=api_key,
+            timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
+        )
+
     if provider == "anthropic":
         # Anthropic via the dedicated livekit plugin (not openai-compat).
         try:
