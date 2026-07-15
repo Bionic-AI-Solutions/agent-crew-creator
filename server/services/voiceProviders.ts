@@ -37,6 +37,15 @@ interface VoiceProviderConfig {
   listUrl: string;
   /** HTTP method — defaults to GET. Async uses POST. */
   method?: "GET" | "POST";
+  /**
+   * Request body for POST providers. Defaults to `{}` when omitted
+   * (matches the pre-existing behavior for `async`). Providers with no
+   * free validation endpoint (e.g. sarvam, whose only auth probe is a
+   * real synthesis call) set this to a real request body — the call
+   * still incurs the provider's normal usage cost, same as their own
+   * health_check() would.
+   */
+  body?: unknown;
   /** Parse the raw API response into VoiceOption[]. */
   parse: (raw: any) => VoiceOption[];
 }
@@ -120,6 +129,32 @@ const PROVIDERS: Record<string, VoiceProviderConfig> = {
       }));
     },
   },
+  sarvam: {
+    key: "sarvam",
+    label: "Sarvam AI",
+    pipeline: "tts",
+    authHeader: (key) => ({ "api-subscription-key": key, "Content-Type": "application/json" }),
+    // No free liveness/list endpoint exists — a real (billed) synthesis
+    // call is the only way to validate a key. Response content is
+    // ignored; only a non-401/403 status confirms the key works.
+    listUrl: "https://api.sarvam.ai/text-to-speech",
+    method: "POST",
+    body: { inputs: ["ok"], target_language_code: "en-IN", speaker: "anushka", model: "bulbul:v2" },
+    // Static preset set (no live discovery) — same shape as openai's
+    // hardcoded voice list below. Must match TTS_VOICES.sarvam in
+    // shared/providerOptions.ts exactly.
+    parse: (_raw) => [
+      { id: "anushka", name: "Anushka", description: "female" },
+      { id: "abhilash", name: "Abhilash", description: "male" },
+      { id: "manisha", name: "Manisha", description: "female" },
+      { id: "vidya", name: "Vidya", description: "female" },
+      { id: "arya", name: "Arya", description: "female" },
+      { id: "karun", name: "Karun", description: "male" },
+      { id: "hitesh", name: "Hitesh", description: "male" },
+      { id: "diya", name: "Diya", description: "female" },
+      { id: "maitreyi", name: "Maitreyi", description: "female" },
+    ],
+  },
   // ── STT side ────────────────────────────────────────────────
   deepgram: {
     key: "deepgram",
@@ -171,7 +206,7 @@ export async function listVoicesForProvider(
       headers: cfg.authHeader(apiKey),
     };
     if (cfg.method === "POST") {
-      fetchOpts.body = JSON.stringify({});
+      fetchOpts.body = JSON.stringify(cfg.body ?? {});
     }
     res = await fetch(cfg.listUrl, fetchOpts);
   } catch (err) {
