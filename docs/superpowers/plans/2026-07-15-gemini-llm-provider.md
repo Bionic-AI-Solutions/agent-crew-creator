@@ -13,7 +13,7 @@
 - Provider value across all layers is the literal string `"gemini"` (matches Vault key `gemini_api_key` exactly — confirmed in spec).
 - Only one model is exposed for now: `gemini-2.5-flash`. No other Gemini models, no fallback-chain wiring (matches `openrouter`/`anthropic`/`custom` precedent — primary-provider-only).
 - Base URL is exactly `https://generativelanguage.googleapis.com/v1beta/openai/` (trailing slash) for the Python LLM factory, and `https://generativelanguage.googleapis.com/v1beta/openai/models` for the server-side model-discovery/key-validation call.
-- **No provider API key value is ever baked as a literal string into a K8s manifest.** The 9 providers routed through `agentDeployer.ts`'s `pipelines` loop (`openai`, `openrouter`, `anthropic`, `deepgram`, `cartesia`, `elevenlabs`, `groq`, `async`, `gemini`) must all resolve to a `secretKeyRef` pointing at a key already present in the per-namespace `${namespace}-secrets` K8s Secret — never a resolved literal value.
+- **No provider API key value is ever baked as a literal string into a K8s manifest.** The 9 providers routed through `agentDeployer.ts`'s `pipelines` loop (`openai`, `openrouter`, `anthropic`, `deepgram`, `cartesia`, `elevenlabs`, `groq`, `async`, `gemini`) must all resolve to a `secretKeyRef` pointing at a key already present in the per-namespace `${namespace}-secrets` K8s Secret — never a resolved literal value. The same rule applies to the BitHuman avatar keys (`BITHUMAN_API_KEY`, `BITHUMAN_API_SECRET`, `BITHUMAN_LIVEKIT_URL`, sourced from `secret/shared/bithuman`) — found mid-implementation to have the identical staleness bug via a separate code block that pushes into the same `extraEnv` array (user decision, 2026-07-15: retrofit these too).
 - The separate, unconditional `OPENAI_API_KEY` `secretKeyRef` line in `applyAgentDeployment` (serves `create_llm_with_fallback()`'s always-on fallback safety net, independent of the user's explicit provider choice) is a different concern and is not touched by this plan.
 - Reference spec: `docs/superpowers/specs/2026-07-15-gemini-llm-provider-design.md` (see the "Addendum: restart-only key rotation" section for the full rationale).
 
@@ -273,6 +273,52 @@ git add server/services/agentDeployer.ts tests/agent-deployer-provider-env.test.
 git commit -m "feat(llm): resolve provider secret-key references instead of baking literal values (adds Gemini, restart-only rotation for all 9 cloud providers)"
 ```
 
+- [ ] **Step 8: Fix the BitHuman avatar-key block to use the same `{ name, secretKey }` shape**
+
+Found during implementation: a separate code block (~15 lines after the `pipelines` loop) pushes BitHuman avatar keys into the same `extraEnv` array using the old literal-value shape, which no longer type-checks against `extraEnv`'s new `Array<{ name: string; secretKey: string }>` type. These keys have the identical staleness bug (read from `secret/shared/bithuman`, baked as a literal at deploy time) — user decision, 2026-07-15: retrofit them too, same mechanism, same as the 9 LLM/STT/TTS providers. Unlike those, BitHuman keys have no per-agent override — they're unconditionally shared-only, so this is existence-check-and-reference, no priority branching needed.
+
+In `server/services/agentDeployer.ts`, find the block (locate it by searching for `bithuman_api_key` — it comes after the `pipelines` loop, inside the same `try` region that reads `readPlatformVaultPath("shared/bithuman")`):
+
+```ts
+      if (bhData.bithuman_api_key) {
+        extraEnv.push({ name: "BITHUMAN_API_KEY", value: bhData.bithuman_api_key });
+      }
+      if (bhData.bithuman_api_secret) {
+        extraEnv.push({ name: "BITHUMAN_API_SECRET", value: bhData.bithuman_api_secret });
+      }
+      // External LiveKit URL for BitHuman (BitHuman is outside K8s, can't use internal URL)
+      if (bhData.bithuman_livekit_url) {
+        extraEnv.push({ name: "BITHUMAN_LIVEKIT_URL", value: bhData.bithuman_livekit_url });
+      }
+```
+
+Change to:
+
+```ts
+      if (bhData.bithuman_api_key) {
+        extraEnv.push({ name: "BITHUMAN_API_KEY", secretKey: "shared_bithuman_api_key" });
+      }
+      if (bhData.bithuman_api_secret) {
+        extraEnv.push({ name: "BITHUMAN_API_SECRET", secretKey: "shared_bithuman_api_secret" });
+      }
+      // External LiveKit URL for BitHuman (BitHuman is outside K8s, can't use internal URL)
+      if (bhData.bithuman_livekit_url) {
+        extraEnv.push({ name: "BITHUMAN_LIVEKIT_URL", secretKey: "shared_bithuman_livekit_url" });
+      }
+```
+
+Task 3 adds the matching `shared_bithuman_*` entries to the ExternalSecret so these key names actually resolve once deployed.
+
+- [ ] **Step 9: Run tests to verify they still pass, then commit**
+
+Run: `npx tsx --test tests/agent-deployer-provider-env.test.ts`
+Expected: PASS (4 passing — this block isn't covered by a test itself, since it requires live Vault data; the existing 4 tests just confirm the pure functions this task added still behave correctly)
+
+```bash
+git add server/services/agentDeployer.ts
+git commit -m "fix(llm): route BitHuman avatar keys through the same secretKeyRef shape as provider keys"
+```
+
 ---
 
 ### Task 3: Deliver provider keys via `secretKeyRef` in `k8sClient.ts`
@@ -282,8 +328,8 @@ git commit -m "feat(llm): resolve provider secret-key references instead of baki
 - Test: `tests/k8s-client-provider-secrets.test.ts` (new file)
 
 **Interfaces:**
-- Consumes: the `{ name: string; secretKey: string }` shape Task 2's `extraEnv` now produces.
-- Produces: `buildSharedProviderKeyDataEntries()` returns the 9 ExternalSecret `data:` entries. `renderProviderExtraEnv(secretName, extraEnv)` returns the K8s env-entry objects `applyAgentDeployment` splices into its container spec.
+- Consumes: the `{ name: string; secretKey: string }` shape Task 2's `extraEnv` now produces (including the BitHuman keys from Task 2 Step 8 — `shared_bithuman_api_key`, `shared_bithuman_api_secret`, `shared_bithuman_livekit_url`).
+- Produces: `buildSharedProviderKeyDataEntries()` returns the 9 LLM/STT/TTS ExternalSecret `data:` entries. `buildSharedBithumanDataEntries()` returns the 3 BitHuman ExternalSecret `data:` entries (separate function — different Vault path, different naming convention, one clear responsibility each). `renderProviderExtraEnv(secretName, extraEnv)` returns the K8s env-entry objects `applyAgentDeployment` splices into its container spec.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -301,7 +347,7 @@ Create `tests/k8s-client-provider-secrets.test.ts`:
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildSharedProviderKeyDataEntries, renderProviderExtraEnv } from "../server/k8sClient.ts";
+import { buildSharedProviderKeyDataEntries, buildSharedBithumanDataEntries, renderProviderExtraEnv } from "../server/k8sClient.ts";
 
 test("buildSharedProviderKeyDataEntries covers all 9 cloud providers with shared_<provider>_api_key target names", () => {
   const entries = buildSharedProviderKeyDataEntries();
@@ -348,12 +394,22 @@ test("renderProviderExtraEnv produces secretKeyRef entries, never a literal valu
 test("renderProviderExtraEnv handles an empty list", () => {
   assert.deepEqual(renderProviderExtraEnv("myapp-secrets", []), []);
 });
+
+test("buildSharedBithumanDataEntries covers all 3 BitHuman fields from secret/shared/bithuman", () => {
+  const entries = buildSharedBithumanDataEntries();
+  assert.deepEqual(
+    entries.map((e) => e.secretKey).sort(),
+    ["shared_bithuman_api_key", "shared_bithuman_api_secret", "shared_bithuman_livekit_url"],
+  );
+  const apiKey = entries.find((e) => e.secretKey === "shared_bithuman_api_key");
+  assert.deepEqual(apiKey.remoteRef, { key: "shared/bithuman", property: "bithuman_api_key" });
+});
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `npx tsx --test tests/k8s-client-provider-secrets.test.ts`
-Expected: FAIL — neither `buildSharedProviderKeyDataEntries` nor `renderProviderExtraEnv` exist yet (import resolves to `undefined`, calls throw `TypeError`).
+Expected: FAIL — none of `buildSharedProviderKeyDataEntries`, `buildSharedBithumanDataEntries`, or `renderProviderExtraEnv` exist yet (import resolves to `undefined`, calls throw `TypeError`).
 
 - [ ] **Step 3: Add `buildSharedProviderKeyDataEntries` and wire it into `createExternalSecret`**
 
@@ -387,6 +443,24 @@ export function buildSharedProviderKeyDataEntries(): Array<{
     remoteRef: { key: "shared/api-keys", property: `${provider}_api_key` },
   }));
 }
+
+/**
+ * ExternalSecret `data:` entries for the 3 BitHuman avatar fields at
+ * secret/shared/bithuman — unconditionally shared (no per-agent
+ * override), same restart-only rationale as the provider keys above.
+ * Separate from buildSharedProviderKeyDataEntries because the Vault
+ * path and field-naming convention differ. See spec addendum, 2026-07-15.
+ */
+export function buildSharedBithumanDataEntries(): Array<{
+  secretKey: string;
+  remoteRef: { key: string; property: string };
+}> {
+  return [
+    { secretKey: "shared_bithuman_api_key", remoteRef: { key: "shared/bithuman", property: "bithuman_api_key" } },
+    { secretKey: "shared_bithuman_api_secret", remoteRef: { key: "shared/bithuman", property: "bithuman_api_secret" } },
+    { secretKey: "shared_bithuman_livekit_url", remoteRef: { key: "shared/bithuman", property: "bithuman_livekit_url" } },
+  ];
+}
 ```
 
 Then change:
@@ -408,7 +482,7 @@ to:
           secretStoreRef: { name: "vault-backend", kind: "ClusterSecretStore" },
           target: { name: `${namespace}-secrets` },
           dataFrom: [{ extract: { key: `t6-apps/${namespace}/config` } }],
-          data: buildSharedProviderKeyDataEntries(),
+          data: [...buildSharedProviderKeyDataEntries(), ...buildSharedBithumanDataEntries()],
         },
 ```
 
@@ -487,7 +561,7 @@ to:
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `npx tsx --test tests/k8s-client-provider-secrets.test.ts`
-Expected: PASS (4 passing)
+Expected: PASS (5 passing)
 
 - [ ] **Step 6: Commit**
 
