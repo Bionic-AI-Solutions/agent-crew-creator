@@ -1,0 +1,13 @@
+-- Adds tts_language: target language for TTS synthesis, currently only
+-- consumed by the sarvam provider (its API requires an explicit
+-- target_language_code). Nullable, defaults to "en-IN" to preserve
+-- existing behavior for every agent predating this column.
+--
+-- Hand-authored and scoped to exactly this one column: `drizzle-kit
+-- generate` bundled in ~15 unrelated ALTER statements for schema
+-- changes that were already applied to the live database via db:push
+-- without a corresponding migration file ever being committed (a
+-- pre-existing drift between drizzle/migrations/ and the live schema,
+-- not something this change created or attempts to fix). See
+-- docs/superpowers/specs/2026-07-15-tts-language-fix.md.
+ALTER TABLE "agent_configs" ADD COLUMN "tts_language" varchar(10) DEFAULT 'en-IN';

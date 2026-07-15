@@ -95,6 +95,12 @@ export const agentConfigs = pgTable(
     llmModel: varchar("llm_model", { length: 200 }).default("gemma-4-e4b-it"),
     ttsProvider: varchar("tts_provider", { length: 50 }).default("gpu-ai").notNull(),
     ttsVoice: varchar("tts_voice", { length: 200 }).default("Sudhir-IndexTTS2"),
+    // Target language for TTS synthesis — currently only consumed by the
+    // sarvam provider (its API requires an explicit target_language_code;
+    // other providers infer language from the voice/model itself). Default
+    // "en-IN" preserves existing behavior for every agent predating this
+    // column. See docs/superpowers/specs/2026-07-15-tts-language-fix.md.
+    ttsLanguage: varchar("tts_language", { length: 10 }).default("en-IN"),
     systemPrompt: text("system_prompt"),
     visionEnabled: boolean("vision_enabled").default(false).notNull(),
     avatarEnabled: boolean("avatar_enabled").default(false).notNull(),
