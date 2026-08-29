@@ -440,11 +440,146 @@ class MainAgent(Agent):
         self._is_delegating = False  # Set during tool execution
         self._user_email: str | None = None  # Collected during session
 
+        # Vision state — see start_vision() for why the agent tracks frames
+        # itself rather than relying on RoomOptions(video_input=True).
+        self._latest_frame = None          # newest rtc.VideoFrame, or None
+        self._latest_frame_source = ""     # "screenshare" | "camera"
+        self._video_tasks: dict[str, asyncio.Task] = {}
+
         # Prompt = user persona (or default) + hardcoded rules (always last).
         persona = settings.system_prompt or self._default_persona()
         super().__init__(
             instructions=persona + "\n\n" + PRIMARY_HARDCODED_RULES,
         )
+
+    # ── Vision ───────────────────────────────────────────────
+    #
+    # WHY THE AGENT DOES THIS ITSELF (2026-08-29).
+    #
+    # `RoomOptions(video_input=True)` does subscribe to the user's camera and
+    # screenshare and hand frames to AgentSession -- the logs even say
+    # "input stream attached (SOURCE_CAMERA, SOURCE_SCREENSHARE)". But in
+    # livekit-agents 1.6.5 the frames end here (voice/agent_activity.py:1217):
+    #
+    #     def push_video(self, frame: rtc.VideoFrame) -> None:
+    #         if not self._started: return
+    #         if self._rt_session is not None:        # <-- the ONLY consumer
+    #             self._rt_session.push_video(frame)
+    #
+    # `_rt_session` exists only for a RealtimeModel (Gemini Live, OpenAI
+    # Realtime). This agent is an STT -> LLM -> TTS pipeline, so it is None and
+    # every frame was silently discarded -- camera and screenshare alike.
+    # Vision had therefore never worked, despite VISION_ENABLED=true; measured
+    # by prompt_tokens, which only ever grew in text-sized increments.
+    #
+    # A pipeline agent must put the image into the chat context itself, which
+    # is what start_vision() + on_user_turn_completed() below do.
+
+    # Which-frame-to-hold and how-to-downscale live in agent.vision so they can
+    # be unit-tested without importing the livekit stack.
+
+    async def start_vision(self, room) -> None:
+        """Keep the newest camera/screenshare frame from remote participants."""
+        from livekit import rtc
+
+        from agent.vision import CAMERA, SCREENSHARE
+
+        # NOTE: the enum is SOURCE_SCREENSHARE, not SOURCE_SCREEN_SHARE.
+        sources = {
+            rtc.TrackSource.SOURCE_SCREENSHARE: SCREENSHARE,
+            rtc.TrackSource.SOURCE_CAMERA: CAMERA,
+        }
+
+        def _consume(track, publication, participant) -> None:
+            label = sources.get(publication.source)
+            if label is None or track.kind != rtc.TrackKind.KIND_VIDEO:
+                return
+            key = f"{participant.identity}:{publication.sid}"
+            if key in self._video_tasks:
+                return
+            self._video_tasks[key] = asyncio.create_task(
+                self._read_video_track(track, label, key), name=f"vision-{key}")
+            logger.info("Vision: reading %s track from %s", label, participant.identity)
+
+        @room.on("track_subscribed")
+        def _on_track_subscribed(track, publication, participant):
+            _consume(track, publication, participant)
+
+        @room.on("track_unsubscribed")
+        def _on_track_unsubscribed(track, publication, participant):
+            key = f"{participant.identity}:{publication.sid}"
+            task = self._video_tasks.pop(key, None)
+            if task:
+                task.cancel()
+            # Drop the stale frame so the LLM is not shown a screen the user
+            # already stopped sharing.
+            from agent.vision import should_drop_on_unsubscribe
+            if should_drop_on_unsubscribe(
+                    self._latest_frame_source, sources.get(publication.source, "")):
+                self._latest_frame = None
+                self._latest_frame_source = ""
+
+        # Tracks published before this handler was attached.
+        for participant in room.remote_participants.values():
+            for publication in participant.track_publications.values():
+                if publication.track:
+                    _consume(publication.track, publication, participant)
+
+    async def _read_video_track(self, track, label: str, key: str) -> None:
+        """Hold only the newest frame; older ones are worthless for a still."""
+        from livekit import rtc
+
+        from agent.vision import should_replace
+
+        stream = rtc.VideoStream(track, format=rtc.VideoBufferType.RGBA)
+        try:
+            async for event in stream:
+                # Never let a camera frame displace a live screenshare.
+                if should_replace(self._latest_frame_source, label):
+                    self._latest_frame = event.frame
+                    self._latest_frame_source = label
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # a dead track must not kill the session
+            logger.warning("Vision: %s stream ended: %s", label, exc)
+        finally:
+            await stream.aclose()
+            self._video_tasks.pop(key, None)
+
+    async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
+        """Attach the current frame to the user's message, if we have one."""
+        if not settings.vision_enabled or self._latest_frame is None:
+            return
+
+        frame, label = self._latest_frame, self._latest_frame_source
+        # Cleared so a frozen track cannot keep re-sending one stale image
+        # forever; a live track refills this within ~33 ms.
+        self._latest_frame = None
+        self._latest_frame_source = ""
+
+        try:
+            import base64
+            from livekit.agents.llm import ImageContent
+            from livekit.agents.utils.images import (
+                EncodeOptions, ResizeOptions, encode,
+            )
+
+            from agent.vision import encode_params
+
+            max_dim, quality = encode_params()
+            jpeg = encode(frame, EncodeOptions(
+                format="JPEG",
+                quality=quality,
+                resize_options=ResizeOptions(
+                    width=max_dim, height=max_dim, strategy="scale_aspect_fit"),
+            ))
+            data_url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+            new_message.content.append(ImageContent(image=data_url))
+            logger.info("Vision: attached %s frame (%dx%d -> %d KB)",
+                        label, frame.width, frame.height, len(jpeg) // 1024)
+        except Exception as exc:
+            # Vision is an enhancement; a failure here must not drop the turn.
+            logger.warning("Vision: could not attach frame (non-fatal): %s", exc)
 
     def tts_node(self, text, model_settings):
         """Override tts_node to strip tool-call narration from the TTS stream.
@@ -1137,7 +1272,11 @@ class CaptureManager:
             return True
         if mode == "camera" and source == rtc.TrackSource.SOURCE_CAMERA:
             return True
-        if mode == "screen" and source == rtc.TrackSource.SOURCE_SCREEN_SHARE:
+        # SOURCE_SCREENSHARE, not SOURCE_SCREEN_SHARE: the latter does not
+        # exist on the protobuf enum and raised AttributeError here, which the
+        # caller swallowed as "Capture frame failed". Dormant until now only
+        # because CAPTURE_MODE defaults to off.
+        if mode == "screen" and source == rtc.TrackSource.SOURCE_SCREENSHARE:
             return True
         return False
 
@@ -1775,7 +1914,12 @@ async def entrypoint(ctx: JobContext):
     asyncio.create_task(_warmup_tts(), name="warmup-tts")
 
     if settings.vision_enabled:
-        logger.info("Vision enabled — primary LLM receives video frames from user")
+        # This used to only log the claim. RoomOptions(video_input=True) alone
+        # does NOT deliver frames to a pipeline agent's LLM -- see the comment
+        # above MainAgent.start_vision() -- so the agent wires up its own frame
+        # capture here and attaches images in on_user_turn_completed().
+        await agent.start_vision(ctx.room)
+        logger.info("Vision enabled — camera/screenshare frames attach to user turns")
 
     # ── Background audio ────────────────────────────────────
     if settings.background_audio_enabled:
