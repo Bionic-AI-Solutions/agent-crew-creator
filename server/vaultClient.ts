@@ -38,7 +38,11 @@ async function vaultRequest(
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Vault ${method} ${path} failed (${res.status}): ${text}`);
+    const err = new Error(
+      `Vault ${method} ${path} failed (${res.status}): ${text}`,
+    ) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
 
   if (res.status === 204) return null;
@@ -75,6 +79,34 @@ export async function deleteAppSecret(slug: string): Promise<void> {
   }
 }
 
+/**
+ * Handle a failed Vault read.
+ *
+ * A read *miss* and a read *failure* are different things. Vault answers 404
+ * for a path that genuinely holds no data, and callers reasonably treat that
+ * as "absent". Anything else — a 403 from an expired token, a connection
+ * error — means we do not know what is there, and collapsing it to null makes
+ * a broken credential look identical to an unprovisioned app.
+ *
+ * That is not hypothetical: when the platform's Vault token expired, every
+ * read 403'd, readAppSecret returned null, and the Playground reported
+ * "LiveKit not provisioned" — sending debugging at LiveKit for hours when the
+ * fault was an expired token. Callers still receive null so behaviour is
+ * unchanged, but a real failure is now loud instead of silent.
+ */
+function handleReadFailure(path: string, err: unknown): null {
+  const status = (err as { status?: number } | undefined)?.status;
+  if (status === 404) {
+    log.debug("Vault path holds no data", { path });
+  } else {
+    log.error(
+      "Vault read FAILED — returning null, but this does NOT mean the secret is absent",
+      { path, status: status ?? "none", error: String(err) },
+    );
+  }
+  return null;
+}
+
 export async function readAppSecret(
   slug: string,
 ): Promise<Record<string, string> | null> {
@@ -84,8 +116,8 @@ export async function readAppSecret(
       data?: { data?: Record<string, string> };
     } | null;
     return result?.data?.data || null;
-  } catch {
-    return null;
+  } catch (err) {
+    return handleReadFailure(path, err);
   }
 }
 
@@ -103,8 +135,8 @@ export async function readPlatformSecret(
       data?: { data?: Record<string, string> };
     } | null;
     return result?.data?.data || null;
-  } catch {
-    return null;
+  } catch (err) {
+    return handleReadFailure(path, err);
   }
 }
 
@@ -130,8 +162,8 @@ export async function readPlatformVaultPath(
       data?: { data?: Record<string, string>; metadata?: { version?: number } };
     } | null;
     return result?.data?.data || null;
-  } catch {
-    return null;
+  } catch (err) {
+    return handleReadFailure(`secret/data/${path}`, err);
   }
 }
 
@@ -147,8 +179,8 @@ export async function readPlatformVaultPathWithVersion(
     const version = result?.data?.metadata?.version ?? 0;
     if (!data) return null;
     return { data, version };
-  } catch {
-    return null;
+  } catch (err) {
+    return handleReadFailure(`secret/data/${path}`, err);
   }
 }
 
