@@ -216,7 +216,6 @@ export async function deployAgent(
     // is done here so CoT pays off.
     LETTA_LLM_MODEL: (agent.lettaLlmModel || "qwen3.6-35b-a3b-fp8-think").replace(/^openai-proxy\//, ""),
     LETTA_SYSTEM_PROMPT: agent.lettaSystemPrompt || "",
-    LETTA_SERVER_PASSWORD: "",  // Populated below from shared Vault
 
     // ── Infrastructure URLs (internal cluster) ──────────────────
     LIVEKIT_URL: LIVEKIT_INTERNAL_URL,
@@ -495,16 +494,11 @@ export async function deployAgent(
 
   // 4. Resolve Vault secrets BEFORE applying ConfigMap so all values are populated.
 
-  // 4a. Letta server password — shared infrastructure secret.
-  try {
-    const { readPlatformVaultPath } = await import("../vaultClient.js");
-    const infraData = (await readPlatformVaultPath("shared/infra")) || {};
-    if (infraData.letta_server_password) {
-      configData.LETTA_SERVER_PASSWORD = infraData.letta_server_password;
-    }
-  } catch (err) {
-    log.warn("Failed to read Letta server password from Vault (non-fatal)", { error: String(err) });
-  }
+  // 4a. Letta server password is NOT resolved here any more. It reaches the
+  // agent as LETTA_SERVER_PASSWORD via the namespace ExternalSecret
+  // (shared/infra:letta_server_password) -> Secret -> secretKeyRef, so no
+  // credential is written into the ConfigMap and a rotation propagates
+  // without redeploying every agent. See buildSharedInfraDataEntries().
 
   // 4b. ExternalSecret (ConfigMap written AFTER presigned URLs are generated below)
   await k8s.createExternalSecret(namespace);
