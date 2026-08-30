@@ -120,6 +120,32 @@ export function hasSharedProviderKey(
 }
 
 const AGENT_IMAGE = process.env.AGENT_TEMPLATE_IMAGE || "docker4zerocool/bionic-agent:latest";
+
+/**
+ * Split an image reference into repo and tag.
+ *
+ * A colon can also introduce a registry port (registry:5000/img), so only a
+ * colon *after* the last slash separates the tag. The previous code did a
+ * bare split(":")[0], which mangled such references.
+ */
+function splitImageRef(ref: string): { repo: string; tag: string } {
+  const slash = ref.lastIndexOf("/");
+  const colon = ref.lastIndexOf(":");
+  return colon > slash
+    ? { repo: ref.slice(0, colon), tag: ref.slice(colon + 1) }
+    : { repo: ref, tag: "latest" };
+}
+
+/**
+ * Fleet-wide default agent image. The tag on AGENT_TEMPLATE_IMAGE is the
+ * default every agent gets; a per-agent `imageTag` still overrides it.
+ *
+ * This tag used to be discarded and "latest" hardcoded as the fallback, so
+ * AGENT_TEMPLATE_IMAGE could never actually pin the fleet — every agent
+ * tracked a mutable tag, and what a pod ran depended on when it last pulled.
+ * Pinning to an immutable commit tag makes the running image auditable.
+ */
+const { repo: AGENT_IMAGE_REPO, tag: AGENT_IMAGE_DEFAULT_TAG } = splitImageRef(AGENT_IMAGE);
 // All internal cluster URLs — agents run inside the cluster, no need for external hops
 const LETTA_MCP_URL = process.env.LETTA_INTERNAL_URL
   ? `${process.env.LETTA_INTERNAL_URL}/mcp`
@@ -157,7 +183,7 @@ export async function deployAgent(
   const agentName = agent.name;
   const configMapName = `${agentName}-config`;
   const secretName = `${namespace}-secrets`; // ExternalSecret created during app provisioning
-  const image = `${AGENT_IMAGE.split(":")[0]}:${agent.imageTag || "latest"}`;
+  const image = `${AGENT_IMAGE_REPO}:${agent.imageTag || AGENT_IMAGE_DEFAULT_TAG}`;
 
   // LiveKit dispatch key — must be unique across the shared LiveKit instance.
   // We share one LiveKit (wss://livekit.bionicaisolutions.com) across all
