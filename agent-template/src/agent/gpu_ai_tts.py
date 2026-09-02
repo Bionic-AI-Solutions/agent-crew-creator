@@ -12,6 +12,7 @@ livekit-plugins/flashhead/examples/tools/local_tts.py.
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 
@@ -25,6 +26,8 @@ from livekit.agents import (
     utils,
 )
 from livekit.agents.types import DEFAULT_API_CONNECT_OPTIONS
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -86,7 +89,11 @@ class GpuAiTTS(tts.TTS):
         model: str = "indextts2",
         voice: str = "aditya",
         response_format: str = "wav",
-        sample_rate: int = 22050,
+        # The gpu-ai TTS service returns 24 kHz WAV. The declared rate is
+        # only a fallback: _run() reads the actual rate from the WAV header,
+        # because announcing the wrong rate makes the whole pipeline run off
+        # its true time base (22050 vs 24000 is ~9%) and audibly glitches.
+        sample_rate: int = 24000,
         http_session: aiohttp.ClientSession | None = None,
     ) -> None:
         opts = _GpuAiTTSOpts(
@@ -131,6 +138,22 @@ class _GpuAiStream(tts.ChunkedStream):
         super().__init__(tts=tts, input_text=input_text, conn_options=conn_options)
         self._tts: GpuAiTTS = tts
 
+    @staticmethod
+    def _wav_sample_rate(data: bytes) -> int | None:
+        """Sample rate from a RIFF/WAVE header, or None if not parseable."""
+        import struct
+
+        if len(data) < 44 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+            return None
+        i = 12
+        while i + 8 <= len(data):
+            cid = data[i:i + 4]
+            size = struct.unpack("<I", data[i + 4:i + 8])[0]
+            if cid == b"fmt " and i + 8 + 16 <= len(data):
+                return struct.unpack("<I", data[i + 12:i + 16])[0]
+            i += 8 + size + (size % 2)
+        return None
+
     async def _run(self, output_emitter: tts.AudioEmitter) -> None:
         opts = self._tts._opts
         request_id = utils.shortuuid()
@@ -173,9 +196,22 @@ class _GpuAiStream(tts.ChunkedStream):
         if not body_bytes:
             raise APIConnectionError("gpu-ai TTS returned empty body")
 
+        # Trust the bytes over the config: a mismatch here silently retimes
+        # everything downstream.
+        actual_sr = self._wav_sample_rate(body_bytes) or opts.sample_rate
+        if actual_sr != opts.sample_rate and not getattr(
+            self._tts, "_warned_actual_sr", False
+        ):
+            logger.warning(
+                "gpu-ai TTS returned %d Hz but the client was configured for "
+                "%d Hz; using the rate from the WAV header",
+                actual_sr, opts.sample_rate,
+            )
+            self._tts._warned_actual_sr = True
+
         output_emitter.initialize(
             request_id=request_id,
-            sample_rate=opts.sample_rate,
+            sample_rate=actual_sr,
             num_channels=1,
             mime_type=f"audio/{opts.response_format}",
         )
