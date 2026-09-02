@@ -267,6 +267,10 @@ export async function deployAgent(
     FLASHHEAD_ENGINE_URL,
     FLASHHEAD_REFERENCE_IMAGE: getAvatarReferenceImage(app.slug, agent),
     FLASHHEAD_AVATAR_NAME: (agent as any).avatarName || agent.name,
+    // Publish the whole reference still with only the face animated, rather
+    // than the engine bare 512x512 face crop. Off by default: it changes how
+    // every existing avatar looks, so it is opted into per agent.
+    FLASHHEAD_COMPOSITE_FULL: String((agent as any).avatarCompositeFull ?? false),
     BACKGROUND_AUDIO_ENABLED: String(agent.backgroundAudioEnabled),
     BUSY_AUDIO_ENABLED: String((agent as any).busyAudioEnabled ?? false),
     AMBIENT_AUDIO_URL: "",  // Populated below with presigned URL if audio file exists
