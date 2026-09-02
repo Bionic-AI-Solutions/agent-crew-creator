@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy pre-built flashhead wheel (avoids needing GitHub auth in the build)
-COPY livekit_plugins_flashhead-0.5.1-py3-none-any.whl ./
+COPY livekit_plugins_flashhead-0.5.2-py3-none-any.whl ./
 
 # Install Python dependencies
 RUN pip install --no-cache-dir \
@@ -30,7 +30,7 @@ RUN pip install --no-cache-dir \
     # are verified against this version's speaker-compatibility table.
     "livekit-plugins-sarvam==1.6.5" \
     # Avatar — FlashHead (default, pre-built wheel) + BitHuman (legacy)
-    "./livekit_plugins_flashhead-0.5.1-py3-none-any.whl" \
+    "./livekit_plugins_flashhead-0.5.2-py3-none-any.whl" \
     "livekit-plugins-bithuman>=0.1.0" \
     # Async TTS — streaming-first, low-latency
     "livekit-plugins-asyncai>=1.5.0" \
