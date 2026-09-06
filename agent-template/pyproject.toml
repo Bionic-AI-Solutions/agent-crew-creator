@@ -4,10 +4,15 @@ version = "0.3.0"
 description = "LiveKit voice agent with two-brain architecture: fast primary LLM + Letta secondary executor"
 requires-python = ">=3.11"
 dependencies = [
-    "livekit-agents>=1.5.0",
-    "livekit-plugins-silero>=1.0.0",
-    "livekit-plugins-openai>=1.0.0",
-    "livekit-plugins-turn-detector>=1.0.0",
+    # Pinned exact, as a set. The agents core and its first-party plugins
+    # are released in lockstep on one version number, so a floating
+    # constraint lets an unrelated rebuild move the whole runtime: the
+    # 2026-09-06 image silently went 1.7.1 -> 1.8.0 with no code change.
+    # Bump these together and deliberately, never incidentally.
+    "livekit-agents==1.8.0",
+    "livekit-plugins-silero==1.8.0",
+    "livekit-plugins-openai==1.8.0",
+    "livekit-plugins-turn-detector==1.8.0",
     # Pinned exact (not >=): the 7-voice list and the bulbul:v2 model
     # pin in plugins.py are both verified against this specific
     # version's MODEL_SPEAKER_COMPATIBILITY table (2026-07-15) — a
@@ -26,8 +31,8 @@ dependencies = [
 
 [project.optional-dependencies]
 fallback = [
-    "livekit-plugins-deepgram>=1.0.0",
-    "livekit-plugins-cartesia>=1.0.0",
+    "livekit-plugins-deepgram==1.8.0",
+    "livekit-plugins-cartesia==1.8.0",
 ]
 # Default avatar provider — flashhead is a Bionic fork plugin that
 # speaks to an in-cluster flashhead-engine over WebSocket.
@@ -36,14 +41,14 @@ avatar = [
 ]
 # Legacy BitHuman runtime — still wired behind avatar_provider=bithuman.
 avatar-bithuman = [
-    "livekit-plugins-bithuman>=0.1.0",
+    "livekit-plugins-bithuman==1.8.0",
 ]
 all-providers = [
-    "livekit-plugins-deepgram>=1.0.0",
-    "livekit-plugins-elevenlabs>=1.0.0",
-    "livekit-plugins-cartesia>=1.0.0",
+    "livekit-plugins-deepgram==1.8.0",
+    "livekit-plugins-elevenlabs==1.8.0",
+    "livekit-plugins-cartesia==1.8.0",
     "livekit-plugins-flashhead @ git+https://github.com/Bionic-AI-Solutions/livekit-plugins.git#subdirectory=flashhead",
-    "livekit-plugins-bithuman>=0.1.0",
+    "livekit-plugins-bithuman==1.8.0",
 ]
 dev = [
     "pytest>=8.0",
