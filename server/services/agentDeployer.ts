@@ -120,6 +120,32 @@ export function hasSharedProviderKey(
 }
 
 const AGENT_IMAGE = process.env.AGENT_TEMPLATE_IMAGE || "docker4zerocool/bionic-agent:latest";
+
+/**
+ * Split an image reference into repo and tag.
+ *
+ * A colon can also introduce a registry port (registry:5000/img), so only a
+ * colon *after* the last slash separates the tag. The previous code did a
+ * bare split(":")[0], which mangled such references.
+ */
+function splitImageRef(ref: string): { repo: string; tag: string } {
+  const slash = ref.lastIndexOf("/");
+  const colon = ref.lastIndexOf(":");
+  return colon > slash
+    ? { repo: ref.slice(0, colon), tag: ref.slice(colon + 1) }
+    : { repo: ref, tag: "latest" };
+}
+
+/**
+ * Fleet-wide default agent image. The tag on AGENT_TEMPLATE_IMAGE is the
+ * default every agent gets; a per-agent `imageTag` still overrides it.
+ *
+ * This tag used to be discarded and "latest" hardcoded as the fallback, so
+ * AGENT_TEMPLATE_IMAGE could never actually pin the fleet — every agent
+ * tracked a mutable tag, and what a pod ran depended on when it last pulled.
+ * Pinning to an immutable commit tag makes the running image auditable.
+ */
+const { repo: AGENT_IMAGE_REPO, tag: AGENT_IMAGE_DEFAULT_TAG } = splitImageRef(AGENT_IMAGE);
 // All internal cluster URLs — agents run inside the cluster, no need for external hops
 const LETTA_MCP_URL = process.env.LETTA_INTERNAL_URL
   ? `${process.env.LETTA_INTERNAL_URL}/mcp`
@@ -157,7 +183,7 @@ export async function deployAgent(
   const agentName = agent.name;
   const configMapName = `${agentName}-config`;
   const secretName = `${namespace}-secrets`; // ExternalSecret created during app provisioning
-  const image = `${AGENT_IMAGE.split(":")[0]}:${agent.imageTag || "latest"}`;
+  const image = `${AGENT_IMAGE_REPO}:${agent.imageTag || AGENT_IMAGE_DEFAULT_TAG}`;
 
   // LiveKit dispatch key — must be unique across the shared LiveKit instance.
   // We share one LiveKit (wss://livekit.bionicaisolutions.com) across all
@@ -216,7 +242,6 @@ export async function deployAgent(
     // is done here so CoT pays off.
     LETTA_LLM_MODEL: (agent.lettaLlmModel || "qwen3.6-35b-a3b-fp8-think").replace(/^openai-proxy\//, ""),
     LETTA_SYSTEM_PROMPT: agent.lettaSystemPrompt || "",
-    LETTA_SERVER_PASSWORD: "",  // Populated below from shared Vault
 
     // ── Infrastructure URLs (internal cluster) ──────────────────
     LIVEKIT_URL: LIVEKIT_INTERNAL_URL,
@@ -242,6 +267,10 @@ export async function deployAgent(
     FLASHHEAD_ENGINE_URL,
     FLASHHEAD_REFERENCE_IMAGE: getAvatarReferenceImage(app.slug, agent),
     FLASHHEAD_AVATAR_NAME: (agent as any).avatarName || agent.name,
+    // Publish the whole reference still with only the face animated, rather
+    // than the engine bare 512x512 face crop. Off by default: it changes how
+    // every existing avatar looks, so it is opted into per agent.
+    FLASHHEAD_COMPOSITE_FULL: String((agent as any).avatarCompositeFull ?? false),
     BACKGROUND_AUDIO_ENABLED: String(agent.backgroundAudioEnabled),
     BUSY_AUDIO_ENABLED: String((agent as any).busyAudioEnabled ?? false),
     AMBIENT_AUDIO_URL: "",  // Populated below with presigned URL if audio file exists
@@ -495,16 +524,11 @@ export async function deployAgent(
 
   // 4. Resolve Vault secrets BEFORE applying ConfigMap so all values are populated.
 
-  // 4a. Letta server password — shared infrastructure secret.
-  try {
-    const { readPlatformVaultPath } = await import("../vaultClient.js");
-    const infraData = (await readPlatformVaultPath("shared/infra")) || {};
-    if (infraData.letta_server_password) {
-      configData.LETTA_SERVER_PASSWORD = infraData.letta_server_password;
-    }
-  } catch (err) {
-    log.warn("Failed to read Letta server password from Vault (non-fatal)", { error: String(err) });
-  }
+  // 4a. Letta server password is NOT resolved here any more. It reaches the
+  // agent as LETTA_SERVER_PASSWORD via the namespace ExternalSecret
+  // (shared/infra:letta_server_password) -> Secret -> secretKeyRef, so no
+  // credential is written into the ConfigMap and a rotation propagates
+  // without redeploying every agent. See buildSharedInfraDataEntries().
 
   // 4b. ExternalSecret (ConfigMap written AFTER presigned URLs are generated below)
   await k8s.createExternalSecret(namespace);

@@ -502,8 +502,31 @@ export function buildSharedBithumanDataEntries(): Array<{
   ];
 }
 
+/**
+ * ExternalSecret `data:` entry for the shared Letta server password at
+ * secret/shared/infra. Previously agentDeployer read this from Vault and
+ * baked the literal into each agent's ConfigMap, which meant (a) a
+ * credential sitting in a non-secret object and (b) every existing
+ * ConfigMap silently holding a stale value after a rotation — the cause
+ * of the 401s from Letta on 9 of 10 agents. Routing it through the
+ * ExternalSecret keeps it out of the ConfigMap and lets a rotation
+ * propagate on the normal 5m refresh + restart.
+ */
+export function buildSharedInfraDataEntries(): Array<{
+  secretKey: string;
+  remoteRef: { key: string; property: string };
+}> {
+  return [
+    { secretKey: "letta_server_password", remoteRef: { key: "shared/infra", property: "letta_server_password" } },
+  ];
+}
+
 export async function createExternalSecret(namespace: string): Promise<void> {
-  const sharedKeyData = [...buildSharedProviderKeyDataEntries(), ...buildSharedBithumanDataEntries()];
+  const sharedKeyData = [
+    ...buildSharedProviderKeyDataEntries(),
+    ...buildSharedBithumanDataEntries(),
+    ...buildSharedInfraDataEntries(),
+  ];
   try {
     const { customApi } = await getK8sApis();
     await customApi.createNamespacedCustomObject({
@@ -749,6 +772,7 @@ export async function applyAgentDeployment(
               { name: "LIVEKIT_API_SECRET", valueFrom: { secretKeyRef: { name: secretName, key: "livekit_api_secret", optional: true } } },
               { name: "OPENAI_API_KEY", valueFrom: { secretKeyRef: { name: secretName, key: "openai_api_key", optional: true } } },
               { name: "LETTA_API_KEY", valueFrom: { secretKeyRef: { name: secretName, key: "letta_api_key", optional: true } } },
+              { name: "LETTA_SERVER_PASSWORD", valueFrom: { secretKeyRef: { name: secretName, key: "letta_server_password", optional: true } } },
               // Langfuse tracing
               { name: "LANGFUSE_PUBLIC_KEY", valueFrom: { secretKeyRef: { name: secretName, key: "langfuse_public_key", optional: true } } },
               { name: "LANGFUSE_SECRET_KEY", valueFrom: { secretKeyRef: { name: secretName, key: "langfuse_secret_key", optional: true } } },
