@@ -23,7 +23,7 @@ import { RoomAgentDispatch, RoomConfiguration } from "@livekit/protocol";
 import { router, appScopedProcedure, assertAppMembership, protectedProcedure } from "./_core/trpc.js";
 import { createLogger } from "./_core/logger.js";
 import { apps, agentConfigs } from "../drizzle/platformSchema.js";
-import { readAppSecret } from "./vaultClient.js";
+import { readAppSecret, readAppSecretStrict } from "./vaultClient.js";
 import { randomUUID } from "crypto";
 
 const log = createLogger("PlaygroundRouter");
@@ -119,8 +119,22 @@ export const playgroundRouter = router({
         });
       }
 
-      // Vault read — single source of truth for LiveKit creds.
-      const vault = await readAppSecret(app.slug);
+      // Vault read — single source of truth for LiveKit creds. Strict read:
+      // a credential/connectivity fault must not be reported as an
+      // unprovisioned app, or the operator re-provisions and needlessly
+      // rotates this app's LiveKit keys.
+      let vault: Record<string, string> | null;
+      try {
+        vault = await readAppSecretStrict(app.slug);
+      } catch (err) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message:
+            `Could not read Vault secrets for '${app.slug}': the platform's Vault ` +
+            `credential is rejected or Vault is unreachable. This is NOT missing ` +
+            `provisioning — do not re-provision the app. (${String(err)})`,
+        });
+      }
       const lk = pickLiveKit(vault, app.slug);
 
       // Room name must be unique per session so concurrent testers don't
