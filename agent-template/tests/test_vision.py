@@ -14,8 +14,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from agent.vision import (  # noqa: E402
-    CAMERA, SCREENSHARE, encode_params, should_drop_on_unsubscribe,
-    should_replace, source_rank,
+    CAMERA, SCREENSHARE, SERVER_IMAGE_LIMIT, encode_params, images_over_budget,
+    max_images, should_drop_on_unsubscribe, should_replace, source_rank,
 )
 
 
@@ -100,3 +100,71 @@ def test_nonpositive_dimensions_fall_back():
 def test_quality_is_capped_at_100():
     """PIL rejects quality > 100, which would raise inside the turn."""
     assert encode_params({"VISION_JPEG_QUALITY": "9000"})[1] == 100
+
+
+# --- image budget --------------------------------------------------------
+#
+# Regression cover for the production outage where a jarvis voice session went
+# silent partway through. A frame is attached on every user turn and nothing
+# ever evicted the old ones, so once the context carried 17 images vLLM
+# answered 400 ("At most 16 image(s) may be provided in one prompt"). The agent
+# saw only "peer closed connection without sending complete message body" and
+# retried, resending the same over-limit history — so the session stayed dead
+# until the user reconnected.
+
+def test_budget_defaults_well_below_the_server_cap():
+    assert max_images({}) < SERVER_IMAGE_LIMIT
+    assert max_images({}) == 4
+
+
+def test_budget_override_is_honoured():
+    assert max_images({"VISION_MAX_IMAGES": "8"}) == 8
+
+
+def test_budget_override_cannot_reintroduce_the_400():
+    # Even an operator asking for more than the server allows stays legal.
+    assert max_images({"VISION_MAX_IMAGES": "99"}) == SERVER_IMAGE_LIMIT - 1
+    assert max_images({"VISION_MAX_IMAGES": str(SERVER_IMAGE_LIMIT)}) < SERVER_IMAGE_LIMIT
+
+
+def test_budget_malformed_override_falls_back():
+    assert max_images({"VISION_MAX_IMAGES": "lots"}) == 4
+    assert max_images({"VISION_MAX_IMAGES": ""}) == 4
+
+
+def test_budget_floor_is_one_not_zero():
+    # 0 would strip the frame we just attached, silently disabling vision.
+    assert max_images({"VISION_MAX_IMAGES": "0"}) == 1
+    assert max_images({"VISION_MAX_IMAGES": "-5"}) == 1
+
+
+def test_nothing_evicted_while_under_budget():
+    assert images_over_budget(0, 4) == 0
+    assert images_over_budget(3, 4) == 0
+    assert images_over_budget(4, 4) == 0
+
+
+def test_oldest_evicted_once_over_budget():
+    assert images_over_budget(5, 4) == 1
+    assert images_over_budget(20, 4) == 16
+
+
+def test_the_production_case_stays_under_the_cap():
+    # 17 images is what produced the 400. After eviction the next prompt
+    # carries the budget, not the backlog.
+    keep = max_images({})
+    total_before = 17
+    remaining = total_before - images_over_budget(total_before, keep)
+    assert remaining == keep
+    assert remaining < SERVER_IMAGE_LIMIT
+
+
+def test_a_long_session_never_grows_past_the_budget():
+    # Simulate 50 turns, evicting before each attach the way the agent does.
+    keep = max_images({})
+    held = 0
+    for _ in range(50):
+        held -= images_over_budget(held, keep - 1)   # make room
+        held += 1                                    # attach this turn's frame
+        assert held <= keep
+        assert held < SERVER_IMAGE_LIMIT

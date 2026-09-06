@@ -546,6 +546,44 @@ class MainAgent(Agent):
             await stream.aclose()
             self._video_tasks.pop(key, None)
 
+    def _evict_old_images(self, turn_ctx, keep: int) -> None:
+        """Strip the oldest images so the next prompt stays under the cap.
+
+        The server rejects a prompt carrying more than SERVER_IMAGE_LIMIT
+        images with a 400, which reaches us as a truncated stream rather than
+        a readable error. Retrying cannot help — the same over-limit history
+        goes back out — so a long conversation stays broken until the user
+        reconnects. Only the image parts are removed; the turn's text stays,
+        so the model keeps the full spoken history.
+        """
+        try:
+            from livekit.agents.llm import ImageContent
+        except Exception:  # pragma: no cover - import shape varies by version
+            return
+
+        from agent.vision import images_over_budget
+
+        carriers: list[tuple[object, int]] = []
+        for msg in getattr(turn_ctx, "items", []) or []:
+            content = getattr(msg, "content", None)
+            if not isinstance(content, list):
+                continue
+            for idx, part in enumerate(content):
+                if isinstance(part, ImageContent):
+                    carriers.append((msg, idx))
+
+        drop = images_over_budget(len(carriers), keep)
+        if drop <= 0:
+            return
+
+        doomed: dict[int, tuple[object, set[int]]] = {}
+        for msg, idx in carriers[:drop]:
+            doomed.setdefault(id(msg), (msg, set()))[1].add(idx)
+        for msg, idxs in doomed.values():
+            msg.content = [p for i, p in enumerate(msg.content) if i not in idxs]
+
+        logger.info("Vision: evicted %d old image(s), keeping %d", drop, keep)
+
     async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
         """Attach the current frame to the user's message, if we have one."""
         if not settings.vision_enabled or self._latest_frame is None:
@@ -564,7 +602,7 @@ class MainAgent(Agent):
                 EncodeOptions, ResizeOptions, encode,
             )
 
-            from agent.vision import encode_params
+            from agent.vision import encode_params, max_images
 
             max_dim, quality = encode_params()
             jpeg = encode(frame, EncodeOptions(
@@ -574,6 +612,8 @@ class MainAgent(Agent):
                     width=max_dim, height=max_dim, strategy="scale_aspect_fit"),
             ))
             data_url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+            # Make room first: keep-1 old images plus the one being added.
+            self._evict_old_images(turn_ctx, max_images() - 1)
             new_message.content.append(ImageContent(image=data_url))
             logger.info("Vision: attached %s frame (%dx%d -> %d KB)",
                         label, frame.width, frame.height, len(jpeg) // 1024)
