@@ -487,11 +487,8 @@ export const agentRouter = router({
       // transient endpoint error so saves aren't blocked by infra blips.
       if (ttsChanged && newTtsVoice && newTtsProvider === "gpu-ai") {
         try {
-          const base = (
-            process.env.GPU_AI_LLM_INTERNAL_URL ||
-            "http://mcp-api-server.mcp.svc.cluster.local:8000"
-          ).replace(/\/+$/, "").replace(/\/v1$/, "");
-          const res = await fetch(`${base}/v1/audio/voices`, {
+          const { gpuAiBase } = await import("./services/voiceProviders.js");
+          const res = await fetch(`${gpuAiBase()}/v1/audio/voices`, {
             signal: AbortSignal.timeout(6000),
           });
           if (res.ok) {
@@ -793,14 +790,18 @@ export const agentRouter = router({
       if (!agent) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
       await assertAppMembership(ctx, agent.appId);
 
-      const { listVoicesForProvider, isSupportedVoiceProvider } = await import(
-        "./services/voiceProviders.js"
-      );
-      // gpu-ai TTS uses static voice IDs (Sudhir-IndexTTS2 etc.) and is
-      // not in the voiceProviders table — let the UI fall back to a
-      // small static list.
+      const { listVoicesForProvider, isSupportedVoiceProvider, voiceProviderNeedsKey } =
+        await import("./services/voiceProviders.js");
+      // Unknown providers (e.g. "custom") still fall back to the static list
+      // in shared/providerOptions.
       if (!isSupportedVoiceProvider(input.provider)) {
         return { voices: [], hasKey: false as const, supported: false as const };
+      }
+      // Keyless in-cluster providers (gpu-ai) have no Vault entry to read and
+      // must not be gated on one -- that gate is what hid the cloned voices.
+      if (!voiceProviderNeedsKey(input.provider)) {
+        const voices = await listVoicesForProvider(input.provider, "");
+        return { voices, hasKey: true as const, supported: true as const };
       }
       let apiKey = input.apiKey;
       if (!apiKey) {

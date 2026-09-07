@@ -33,8 +33,13 @@ interface VoiceProviderConfig {
   pipeline: "tts" | "stt";
   /** Authentication header. Most are Bearer; cartesia is X-API-Key. */
   authHeader: (apiKey: string) => Record<string, string>;
-  /** URL returning the list. */
-  listUrl: string;
+  /** URL returning the list, or a thunk for providers whose base is env-derived. */
+  listUrl: string | (() => string);
+  /**
+   * False for in-cluster providers reached without credentials. Defaults to
+   * true: every external provider's list endpoint doubles as its key probe.
+   */
+  requiresKey?: boolean;
   /** HTTP method — defaults to GET. Async uses POST. */
   method?: "GET" | "POST";
   /**
@@ -50,7 +55,68 @@ interface VoiceProviderConfig {
   parse: (raw: any) => VoiceOption[];
 }
 
+/**
+ * Base URL of the in-cluster mcp-api-server that serves gpu-ai voices.
+ *
+ * Exported so the Agent Builder dropdown and the save-time voice validation
+ * in agentRouter resolve the SAME endpoint. They used to derive it
+ * separately, which is how the dropdown came to offer 7 voices while the
+ * validator accepted 190.
+ */
+export function gpuAiBase(): string {
+  return (
+    process.env.GPU_AI_LLM_INTERNAL_URL ||
+    "http://mcp-api-server.mcp.svc.cluster.local:8000"
+  )
+    .replace(/\/+$/, "")
+    .replace(/\/v1$/, "");
+}
+
 const PROVIDERS: Record<string, VoiceProviderConfig> = {
+  "gpu-ai": {
+    key: "gpu-ai",
+    label: "GPU-AI",
+    pipeline: "tts",
+    // In-cluster and unauthenticated -- there is no key to send or validate.
+    requiresKey: false,
+    authHeader: () => ({}),
+    listUrl: () => `${gpuAiBase()}/v1/audio/voices`,
+    // This is where the cloned voices live. Without this entry the provider
+    // fell through to `supported: false` and the builder showed the seven
+    // hardcoded names in TTS_VOICES["gpu-ai"], while the endpoint served 190
+    // -- so no cloned voice was selectable, even though save-time validation
+    // already accepted every one of them.
+    parse: (raw) => {
+      const arr: any[] = raw?.data?.voices ?? raw?.voices ?? [];
+      return arr.flatMap((v): VoiceOption[] => {
+        // The endpoint keys voices by name; id is absent on some entries.
+        const id = v?.id || v?.name;
+        if (typeof id !== "string" || !id) return [];
+        // 30 display names repeat across engines (two "Adam", two "Sarah",
+        // a "Aditya" from sarvam and an "aditya" from omnivoice), so the
+        // engine has to appear in the label or the list is unusable. It also
+        // makes the picker's search box filter by engine and by "cloned",
+        // since it searches id + name + description.
+        const bits = [
+          v.engine_display || v.engine || undefined,
+          // Two engines mark clones differently: elevenlabs sets
+          // meta.category, omnivoice instead carries a registry_voice_id
+          // (37 of them). Neither appears on kokoro/openai/sarvam, so this
+          // labels exactly the 42 cloned voices and nothing else.
+          v.meta?.category === "cloned" || v.meta?.registry_voice_id
+            ? "cloned"
+            : undefined,
+          v.gender || undefined,
+        ].filter(Boolean);
+        return [{
+          id,
+          name: v.name || undefined,
+          language: v.language || v.lang || undefined,
+          description: bits.length ? bits.join(" • ") : undefined,
+        }];
+      });
+    },
+  },
   cartesia: {
     key: "cartesia",
     label: "Cartesia",
@@ -183,6 +249,15 @@ const PROVIDERS: Record<string, VoiceProviderConfig> = {
   },
 };
 
+/**
+ * Whether this provider's voice list needs an API key. False for in-cluster
+ * providers, whose list can be fetched for any agent with no key configured.
+ */
+export function voiceProviderNeedsKey(provider: string): boolean {
+  const cfg = PROVIDERS[provider.toLowerCase()];
+  return cfg ? cfg.requiresKey !== false : true;
+}
+
 export function isSupportedVoiceProvider(provider: string): boolean {
   return Object.prototype.hasOwnProperty.call(PROVIDERS, provider.toLowerCase());
 }
@@ -211,11 +286,14 @@ export async function listVoicesForProvider(
     const fetchOpts: RequestInit = {
       method: cfg.method || "GET",
       headers: cfg.authHeader(apiKey),
+      // An in-cluster endpoint that hangs must not hang the builder dropdown.
+      signal: AbortSignal.timeout(8000),
     };
     if (cfg.method === "POST") {
       fetchOpts.body = JSON.stringify(cfg.body ?? {});
     }
-    res = await fetch(cfg.listUrl, fetchOpts);
+    const url = typeof cfg.listUrl === "function" ? cfg.listUrl() : cfg.listUrl;
+    res = await fetch(url, fetchOpts);
   } catch (err) {
     log.error("Provider list fetch failed", { provider, error: String(err) });
     throw new TRPCError({
