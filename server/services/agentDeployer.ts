@@ -470,7 +470,7 @@ export async function deployAgent(
             }
             log.info("MCP server wired to Letta agent", { server: lettaServerName, toolsAttached: attached });
           } catch (err) {
-            log.warn("MCP server wiring failed (non-fatal) — verify the server URL and auth token in the UI", {
+            log.warn("MCP server wiring failed (non-fatal) — the agent has no MCP tools attached; check the server URL and auth token in the UI", {
               server: lettaServerName,
               error: String((err as any)?.body?.message || (err as any)?.message || err),
             });

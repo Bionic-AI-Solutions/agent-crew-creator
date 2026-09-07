@@ -44,7 +44,10 @@ async function lettaRequest(method: string, path: string, body?: unknown): Promi
       });
       if (!res2.ok) {
         const text = await res2.text();
-        throw new Error(`Letta ${method} ${path} failed after redirect (${res2.status}): ${text}`);
+        throw Object.assign(
+        new Error(`Letta ${method} ${path} failed after redirect (${res2.status}): ${text}`),
+        { status: res2.status },
+      );
       }
       const ct = res2.headers.get("content-type") || "";
       if (ct.includes("json")) return res2.json();
@@ -54,7 +57,10 @@ async function lettaRequest(method: string, path: string, body?: unknown): Promi
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Letta ${method} ${path} failed (${res.status}): ${text}`);
+    throw Object.assign(
+      new Error(`Letta ${method} ${path} failed (${res.status}): ${text}`),
+      { status: res.status },
+    );
   }
 
   const ct = res.headers.get("content-type") || "";
@@ -361,8 +367,21 @@ export async function registerMcpServer(config: LettaMcpServerConfig): Promise<v
       body.custom_headers = config.customHeaders;
     }
   }
-  await lettaRequest("PUT", "/v1/tools/mcp/servers", body);
-  log.info("Registered MCP server with Letta", { server: config.name, type });
+  try {
+    await lettaRequest("PUT", "/v1/tools/mcp/servers", body);
+    log.info("Registered MCP server with Letta", { server: config.name, type });
+  } catch (err) {
+    // Letta answers 409 when a server of this name already exists in the org.
+    // That is the normal state on every redeploy, not a failure — and letting
+    // it throw aborted the caller before it could list and attach the tools,
+    // so a redeployed agent silently lost its MCP tools while the log blamed
+    // the server URL and auth token. Matches registerMcpToolFromServer, which
+    // is already idempotent by name.
+    if ((err as { status?: number } | undefined)?.status !== 409) throw err;
+    log.info("MCP server already registered with Letta — reusing", {
+      server: config.name, type,
+    });
+  }
 }
 
 /** List the tools an MCP server exposes (Letta connects out to fetch them). */
