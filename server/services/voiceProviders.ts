@@ -258,6 +258,71 @@ export function voiceProviderNeedsKey(provider: string): boolean {
   return cfg ? cfg.requiresKey !== false : true;
 }
 
+/**
+ * Last-resort lists, used only when live discovery cannot run — no key yet,
+ * an unknown provider, or an unreachable endpoint.
+ *
+ * These live HERE, next to the live discovery they stand in for, because the
+ * client used to keep its own copy. Two hand-maintained answers to one
+ * question drift, and this pair drifted badly: the client's gpu-ai list held 7
+ * names while this endpoint served 191, and a client-side guard then reset any
+ * choice outside those 7 — so 184 voices, every cloned one included, could be
+ * offered and not kept. The same file still listed Indic-Parler names the
+ * endpoint had already dropped.
+ *
+ * A fallback is for keeping the form usable while something is down. It is not
+ * a catalogue, and nothing should ever validate a user's choice against it.
+ */
+const FALLBACK_VOICES: Record<string, VoiceOption[]> = {
+  "gpu-ai": [
+    { id: "Sudhir", name: "Sudhir", language: "en" },
+    { id: "Severus", name: "Severus", language: "en" },
+    { id: "SirShree", name: "SirShree", language: "en" },
+    { id: "Morgan Freeman", name: "Morgan Freeman", language: "en" },
+    { id: "Julie Andrews", name: "Julie Andrews", language: "en" },
+    { id: "Don LaFontaine", name: "Don LaFontaine", language: "en" },
+  ],
+  elevenlabs: [
+    { id: "21m00Tcm4TlvDq8ikWAM", name: "Rachel" },
+    { id: "EXAVITQu4vr4xnSDxMaL", name: "Sarah" },
+    { id: "onwK4e9ZLuTAKqWW03F9", name: "Daniel" },
+  ],
+  cartesia: [
+    { id: "a0e99841-438c-4a64-b679-ae501e7d6091", name: "Barbershop Man" },
+    { id: "248be419-c632-4f23-adf1-5324ed7dbf1d", name: "British Lady" },
+  ],
+  async: [{ id: "e0f39dc4-f691-4e78-bba5-5c636692cc04", name: "Default" }],
+  // STT side — model ids, same shape.
+  "gpu-ai-stt": [
+    { id: "whisper-large-v3", name: "Whisper Large v3 (best quality)" },
+    { id: "whisper-large-v3-turbo", name: "Whisper Large v3 Turbo (faster)" },
+    { id: "whisper-large-v3-turbo-ct2", name: "Whisper Large v3 Turbo CT2 (fastest)" },
+    { id: "faster-whisper", name: "Faster Whisper (default)" },
+    { id: "sensevoice", name: "SenseVoice (multilingual)" },
+  ],
+  "faster-whisper": [
+    { id: "whisper-large-v3-turbo-ct2", name: "Large v3 Turbo (CTranslate2)" },
+    { id: "whisper-large-v3", name: "Large v3" },
+  ],
+  deepgram: [
+    { id: "nova-3", name: "Nova-3" },
+    { id: "nova-2", name: "Nova-2" },
+  ],
+};
+
+/**
+ * Fallback list for a provider, or [] if there is nothing sensible to show.
+ * `pipeline` disambiguates gpu-ai, which serves both TTS voices and STT models.
+ */
+export function fallbackVoicesFor(
+  provider: string,
+  pipeline: "tts" | "stt" = "tts",
+): VoiceOption[] {
+  const key =
+    provider === "gpu-ai" && pipeline === "stt" ? "gpu-ai-stt" : provider.toLowerCase();
+  return FALLBACK_VOICES[key] ?? [];
+}
+
 export function isSupportedVoiceProvider(provider: string): boolean {
   return Object.prototype.hasOwnProperty.call(PROVIDERS, provider.toLowerCase());
 }

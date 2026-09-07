@@ -778,6 +778,8 @@ export const agentRouter = router({
         agentId: z.number(),
         provider: z.string(),
         apiKey: z.string().optional(),
+        /** gpu-ai serves both pipelines; says which list is wanted. */
+        pipeline: z.enum(["tts", "stt"]).optional(),
       }),
     )
     .query(async ({ ctx, input }) => {
@@ -790,18 +792,37 @@ export const agentRouter = router({
       if (!agent) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
       await assertAppMembership(ctx, agent.appId);
 
-      const { listVoicesForProvider, isSupportedVoiceProvider, voiceProviderNeedsKey } =
-        await import("./services/voiceProviders.js");
-      // Unknown providers (e.g. "custom") still fall back to the static list
-      // in shared/providerOptions.
+      const {
+        listVoicesForProvider, isSupportedVoiceProvider, voiceProviderNeedsKey,
+        fallbackVoicesFor,
+      } = await import("./services/voiceProviders.js");
+
+      // Always answer with a list and say where it came from. The client used
+      // to keep its own fallback tables and pick between them; that second
+      // copy drifted from this one and silently overrode live results, so the
+      // decision belongs here, once.
+      const pipeline = input.pipeline ?? "tts";
+      const fallback = fallbackVoicesFor(input.provider, pipeline);
+
       if (!isSupportedVoiceProvider(input.provider)) {
-        return { voices: [], hasKey: false as const, supported: false as const };
+        return { voices: fallback, hasKey: false as const, supported: false as const,
+                 source: "fallback" as const };
       }
       // Keyless in-cluster providers (gpu-ai) have no Vault entry to read and
       // must not be gated on one -- that gate is what hid the cloned voices.
       if (!voiceProviderNeedsKey(input.provider)) {
-        const voices = await listVoicesForProvider(input.provider, "");
-        return { voices, hasKey: true as const, supported: true as const };
+        try {
+          const voices = await listVoicesForProvider(input.provider, "");
+          return { voices, hasKey: true as const, supported: true as const,
+                   source: "live" as const };
+        } catch (err) {
+          // An in-cluster blip must not empty the picker mid-edit.
+          log.warn("live voice discovery failed; serving fallback", {
+            provider: input.provider, error: String(err).slice(0, 200),
+          });
+          return { voices: fallback, hasKey: true as const, supported: true as const,
+                   source: "fallback" as const };
+        }
       }
       let apiKey = input.apiKey;
       if (!apiKey) {
@@ -812,10 +833,13 @@ export const agentRouter = router({
         apiKey = vault[`agent_${agent.id}_${input.provider}_api_key`];
       }
       if (!apiKey) {
-        return { voices: [], hasKey: false as const, supported: true as const };
+        // No key yet: the form stays usable, and hasKey tells the UI to say so.
+        return { voices: fallback, hasKey: false as const, supported: true as const,
+                 source: "fallback" as const };
       }
       const voices = await listVoicesForProvider(input.provider, apiKey);
-      return { voices, hasKey: true as const, supported: true as const };
+      return { voices, hasKey: true as const, supported: true as const,
+               source: "live" as const };
     }),
 
   /**

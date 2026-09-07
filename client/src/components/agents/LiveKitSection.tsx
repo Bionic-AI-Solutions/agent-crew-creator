@@ -67,49 +67,47 @@ function ProviderKeyInput({
 /**
  * Live voice/model picker for STT and TTS providers.
  *
- * Same shape as LiveModelPicker but uses agentsCrud.listProviderVoices
- * which understands cartesia / elevenlabs / deepgram / openai TTS. For
- * gpu-ai (internal) and "custom" providers, falls back to a static list
- * passed via the `staticOptions` prop.
+ * Same shape as LiveModelPicker but uses agentsCrud.listProviderVoices, which
+ * serves both pipelines. The server always answers with a list and says
+ * whether it is live or a fallback, so this component holds no table of its
+ * own — the drift between two such tables is what made 184 of gpu-ai's 191
+ * voices unselectable.
  */
 function LiveVoicePicker({
   agentId,
   provider,
   value,
   onChange,
-  staticOptions,
+  pipeline = "tts",
 }: {
   agentId: number;
   provider: string;
   value: string;
   onChange: (v: string) => void;
-  staticOptions: Array<{ value: string; label: string }>;
+  /** gpu-ai serves both pipelines; says which list to ask for. */
+  pipeline?: "tts" | "stt";
 }) {
   const [filter, setFilter] = useState("");
   const { data, isLoading, isError, error } = trpc.agentsCrud.listProviderVoices.useQuery(
-    { agentId, provider },
+    { agentId, provider, pipeline },
     { enabled: !!provider, retry: false },
   );
 
-  // gpu-ai / custom / unsupported → static fallback list (TTS_VOICES /
-  // STT_MODELS table from shared/providerOptions). Keeps internal-only
-  // providers usable without an API key.
-  if (data?.supported === false || (!isLoading && !isError && data?.hasKey === false && !data?.voices?.length)) {
-    if (staticOptions.length > 0) {
-      return (
-        <Select value={value} onValueChange={onChange}>
-          <SelectTrigger><SelectValue placeholder="Select voice" /></SelectTrigger>
-          <SelectContent>
-            {staticOptions.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      );
-    }
+  // Seed once the list arrives and nothing is chosen — replaces the old
+  // client-side tables, which could only seed from a stale copy of the truth.
+  const voicesLoaded = data?.voices ?? [];
+  useEffect(() => {
+    if (!value && voicesLoaded.length > 0) onChange(voicesLoaded[0].id);
+  }, [value, voicesLoaded, onChange]);
+
+  // The server always answers with a list plus its provenance, so there is no
+  // second table here to choose between. Only the genuinely empty case is left.
+  if (!isLoading && !isError && !data?.voices?.length) {
     return (
       <div className="text-xs text-amber-600">
-        Add an API key for this provider to load voices.
+        {data?.hasKey === false
+          ? "Add an API key for this provider to load voices."
+          : "No voices available for this provider."}
       </div>
     );
   }
@@ -179,7 +177,7 @@ function LiveVoicePicker({
 /**
  * Live model picker — sources options from the provider's /v1/models
  * endpoint using whatever key is in Vault for this agent. Replaces the
- * old hardcoded LLM_MODELS table so the user can never type a model id
+ * old hardcoded model table so the user can never type a model id
  * that doesn't exist on the provider.
  *
  * For OpenRouter (~350 models) shows a typeahead-style filter; for
@@ -204,6 +202,18 @@ function LiveModelPicker({
     { agentId, provider, toolUseOnly },
     { enabled: !!provider && provider !== "custom", retry: false },
   );
+
+  // Seed from the live list when nothing is chosen. The old client-side table
+  // did this from a stale copy; the provider's own /v1/models is the only
+  // list that can be right.
+  const modelsLoaded = data?.models ?? [];
+  useEffect(() => {
+    if (provider === "custom") return;
+    if (!value && modelsLoaded.length > 0) {
+      const first = modelsLoaded[0];
+      onChange(typeof first === "string" ? first : first.id);
+    }
+  }, [value, modelsLoaded, onChange, provider]);
 
   if (provider === "custom") {
     return (
@@ -291,9 +301,9 @@ function LiveModelPicker({
   );
 }
 import {
-  STT_PROVIDERS, STT_MODELS,
-  LLM_PROVIDERS, LLM_MODELS,
-  TTS_PROVIDERS, TTS_VOICES, TTS_LANGUAGES,
+  STT_PROVIDERS,
+  LLM_PROVIDERS,
+  TTS_PROVIDERS, TTS_LANGUAGES,
   providerRequiresKey,
 } from "@shared/providerOptions";
 
@@ -454,56 +464,9 @@ export default function LiveKitSection(props: Props) {
   const trpcUtils = trpc.useUtils();
   const avatarFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Seed a default when the PROVIDER CHANGES, or when nothing is chosen yet.
-  //
-  // These three effects used to re-validate the current value against the
-  // static fallback tables on every render, which silently undid any choice
-  // made from the live pickers. The fallback lists are tiny next to what the
-  // providers actually serve — TTS_VOICES["gpu-ai"] holds 7 names while the
-  // gateway serves 191 — so picking a live voice like "Shardul" set the field
-  // and this reset it to the fallback's first entry in the same tick. It read
-  // as the dropdown refusing the selection.
-  //
-  // Worse on load: opening an agent already saved with a live-only value
-  // rewrote the field before the user touched anything, so a subsequent save
-  // would quietly overwrite their voice.
-  //
-  // Keying on provider change keeps the useful behaviour (switching provider
-  // leaves a valid value behind) without policing an explicit choice against
-  // a list that was never meant to be exhaustive.
-  const prevSttProvider = useRef(props.sttProvider);
-  useEffect(() => {
-    const changed = prevSttProvider.current !== props.sttProvider;
-    prevSttProvider.current = props.sttProvider;
-    if (!changed && props.sttModel) return;
-    const models = STT_MODELS[props.sttProvider] || [];
-    if (models.length > 0 && !models.some((model) => model.value === props.sttModel)) {
-      props.setSttModel(models[0].value);
-    }
-  }, [props.sttProvider, props.sttModel, props.setSttModel]);
-
-  const prevLlmProvider = useRef(props.llmProvider);
-  useEffect(() => {
-    const changed = prevLlmProvider.current !== props.llmProvider;
-    prevLlmProvider.current = props.llmProvider;
-    if (props.llmProvider === "custom") return;
-    if (!changed && props.llmModel) return;
-    const models = LLM_MODELS[props.llmProvider] || [];
-    if (models.length > 0 && !models.some((model) => model.value === props.llmModel)) {
-      props.setLlmModel(models[0].value);
-    }
-  }, [props.llmProvider, props.llmModel, props.setLlmModel]);
-
-  const prevTtsProvider = useRef(props.ttsProvider);
-  useEffect(() => {
-    const changed = prevTtsProvider.current !== props.ttsProvider;
-    prevTtsProvider.current = props.ttsProvider;
-    if (!changed && props.ttsVoice) return;
-    const voices = TTS_VOICES[props.ttsProvider] || [];
-    if (voices.length > 0 && !voices.some((voice) => voice.value === props.ttsVoice)) {
-      props.setTtsVoice(voices[0].value);
-    }
-  }, [props.ttsProvider, props.ttsVoice, props.setTtsVoice]);
+  // No client-side seeding effects. Each picker seeds itself from the list the
+  // server sent once nothing is chosen, so there is exactly one answer to
+  // "what can this provider do" and it is not kept here.
 
   useEffect(() => {
     if (props.ttsProvider !== "sarvam") return;
@@ -708,7 +671,7 @@ export default function LiveKitSection(props: Props) {
               <Label className="text-xs">Provider</Label>
               <Select value={props.sttProvider} onValueChange={(v) => {
                 props.setSttProvider(v);
-                props.setSttModel((STT_MODELS[v] || [])[0]?.value || "");
+                props.setSttModel("");   // picker reseeds from the live list
               }}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -725,9 +688,7 @@ export default function LiveKitSection(props: Props) {
                 provider={props.sttProvider}
                 value={props.sttModel}
                 onChange={props.setSttModel}
-                staticOptions={(STT_MODELS[props.sttProvider] || []).map((m) => ({
-                  value: m.value, label: m.label,
-                }))}
+                pipeline="stt"
               />
             </div>
           </div>
@@ -762,7 +723,7 @@ export default function LiveKitSection(props: Props) {
               <Label className="text-xs">Provider</Label>
               <Select value={props.llmProvider} onValueChange={(v) => {
                 props.setLlmProvider(v);
-                props.setLlmModel(v === "custom" ? "" : (LLM_MODELS[v] || [])[0]?.value || "");
+                props.setLlmModel("");   // picker reseeds from the live list
               }}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -820,7 +781,7 @@ export default function LiveKitSection(props: Props) {
               <Label className="text-xs">Provider</Label>
               <Select value={props.ttsProvider} onValueChange={(v) => {
                 props.setTtsProvider(v);
-                props.setTtsVoice((TTS_VOICES[v] || [])[0]?.value || "");
+                props.setTtsVoice("");   // picker reseeds from the live list
               }}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -837,9 +798,6 @@ export default function LiveKitSection(props: Props) {
                 provider={props.ttsProvider}
                 value={props.ttsVoice}
                 onChange={props.setTtsVoice}
-                staticOptions={(TTS_VOICES[props.ttsProvider] || []).map((v) => ({
-                  value: v.value, label: v.label,
-                }))}
               />
             </div>
           </div>
