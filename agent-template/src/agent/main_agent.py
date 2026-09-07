@@ -431,23 +431,10 @@ class MainAgent(Agent):
 
     # Patterns that indicate the LLM is narrating a tool call — these
     # should be stripped from TTS output so the user doesn't hear them.
-    _TOOL_NARRATION_PATTERNS = [
-        "delegate_to_letta",
-        "calling the",
-        "using my tool",
-        "let me delegate",
-        "i'll delegate",
-        "i will delegate",
-        "invoking",
-        "function call",
-        "tool call",
-    ]
-
     def __init__(self) -> None:
         from agent.delegation import DelegationRegistry
         self._delegations = DelegationRegistry()
         self._recent_turns: deque[str] = deque(maxlen=10)
-        self._is_delegating = False  # Set during tool execution
         self._user_email: str | None = None  # Collected during session
 
         # Vision state — see start_vision() for why the agent tracks frames
@@ -744,31 +731,74 @@ class MainAgent(Agent):
             logger.warning("Vision: proactive turn failed (non-fatal): %s", exc)
 
     def tts_node(self, text, model_settings):
-        """Override tts_node to strip tool-call narration from the TTS stream.
+        """Strip tool-call narration from what the user HEARS.
 
-        When the LLM generates text like "I'm going to call delegate_to_letta
-        to research..." before a tool call, this filter detects it and yields
-        silence instead, so the user never hears the tool-call preamble.
+        Two bugs lived here.
+
+        The per-chunk substring test never matched the thing it was written
+        for. A streaming LLM emits `delegate_to_letta` as several chunks, so
+        no single chunk contains the pattern and every one passed. The marker
+        was in the list and still went out loud; NarrationGate matches across
+        chunk boundaries instead.
+
+        Worse, `_is_delegating` dropped EVERY chunk for the whole delegation.
+        delegate_to_letta returns a bridge — "share what you already know
+        while waiting" — precisely so the user is not left in silence, the LLM
+        duly spoke it, and this muted it. The flag only clears when the
+        delegation finishes, so the silence lasted as long as the work did.
+        The gate now suppresses tool syntax specifically, which is what that
+        blanket was standing in for, so the bridge is heard.
         """
+        from agent.narration import NarrationGate
+
+        gate = NarrationGate()
 
         async def _filtered_text():
             async for chunk in text:
                 if not chunk:
                     continue
-                lower = chunk.lower()
-                # If any tool-narration pattern appears, suppress the chunk
-                if any(p in lower for p in self._TOOL_NARRATION_PATTERNS):
-                    logger.debug("[tts_filter] suppressed tool narration: %s", chunk[:80])
-                    continue
-                # If we're mid-delegation, suppress generic preamble
-                if self._is_delegating:
-                    logger.debug("[tts_filter] suppressed during delegation: %s", chunk[:80])
-                    continue
-                yield chunk
+                out = gate.feed(chunk)
+                if out:
+                    yield out
+            tail = gate.flush()
+            if tail:
+                yield tail
+            if gate.tripped:
+                logger.info("[tts_filter] suppressed tool narration from speech")
 
         # Pass filtered text to the parent — tts_node returns an async
         # generator or coroutine depending on TTS type, so don't await.
         return super().tts_node(_filtered_text(), model_settings)
+
+    def transcription_node(self, text, model_settings):
+        """Strip the same narration from what the user SEES.
+
+        tts_node only ever governed audio. The chat panel is fed from a
+        separate stream, so a delegation the user could not hear was still
+        printed verbatim — `delegate_to_letta: "..."` complete with the
+        model's hallucinated `User:` continuation. Same gate, second exit.
+        """
+        from agent.narration import NarrationGate
+
+        gate = NarrationGate()
+
+        async def _filtered_text():
+            async for chunk in text:
+                if not chunk:
+                    continue
+                out = gate.feed(chunk)
+                if out:
+                    # Preserve TimedString (a str subclass carrying word
+                    # timings) when the chunk passes through whole; only a
+                    # partially-held chunk degrades to plain str.
+                    yield chunk if out == chunk else out
+            tail = gate.flush()
+            if tail:
+                yield tail
+            if gate.tripped:
+                logger.info("[transcript_filter] suppressed tool narration from chat")
+
+        return super().transcription_node(_filtered_text(), model_settings)
 
     async def on_enter(self):
         # IMPORTANT: do NOT call generate_reply() here. _create_speech_task
@@ -859,11 +889,9 @@ class MainAgent(Agent):
         )
 
         self._delegations.launch(
-            entry, _delegation_worker(request, room, session, self),
+            entry, _delegation_worker(request, room, session),
             deadline_ms=request.deadline_ms,
         )
-
-        self._is_delegating = True
 
         # Return a prompt that tells the LLM to keep the conversation going
         # while the background research runs. The LLM will naturally continue
@@ -880,7 +908,6 @@ async def _delegation_worker(
     request: DelegationRequest,
     room,
     session=None,
-    agent_ref=None,
 ) -> None:
     """Background worker: sends a delegation task to Letta and publishes
     the result to the chat channel when complete, then nudges the primary AI
@@ -936,10 +963,6 @@ async def _delegation_worker(
                     presentation, topic="lk.chat.presentation",
                 )
                 logger.info("[chain] assistant → presentation (%d chars)", len(presentation))
-
-            # Clear delegation flag so the TTS filter stops suppressing
-            if agent_ref:
-                agent_ref._is_delegating = False
 
             # Nudge the primary AI to deliver a full lecture-style narration.
             # It acts as a professor: walking through each bullet point,
@@ -1018,10 +1041,6 @@ async def _delegation_worker(
                 )
             except Exception:
                 pass
-    finally:
-        # Always clear the delegation flag so TTS isn't permanently suppressed
-        if agent_ref:
-            agent_ref._is_delegating = False
 
 
 def _filter_letta_noise(text: str) -> str:
