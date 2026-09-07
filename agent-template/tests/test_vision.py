@@ -180,6 +180,11 @@ def test_a_long_session_never_grows_past_the_budget():
 # with the agent unaware. These pin when a change is worth interrupting for.
 
 
+def _sig(level):
+    """A 256-cell signature of one flat luma value."""
+    return bytes([level]) * 256
+
+
 def _solid(width, height, value):
     """An RGBA frame of one flat colour."""
     return bytes([value, value, value, 255]) * (width * height)
@@ -278,14 +283,80 @@ def test_a_scroll_fires_once_at_the_end_not_per_frame():
     d = ScreenChangeDetector({})
     d.observe(DARK, now=0.0)
     fires = []
-    # 10 frames of motion, alternating, then the screen holds still.
+    # 10 frames of motion, alternating, then the screen holds still somewhere
+    # NEW. Settling back onto the original screen is covered separately.
     for i in range(10):
         t = 1.0 + i * 0.033
         fires.append(d.observe(LIGHT if i % 2 else DARK, now=t))
     assert not any(fires), "must not fire mid-scroll"
     settled = 1.0 + 10 * 0.033
-    assert d.observe(DARK, now=settled + 0.05) is False   # too soon
-    assert d.observe(DARK, now=settled + 0.5) is True     # one event
+    assert d.observe(LIGHT, now=settled + 0.05) is False   # too soon
+    assert d.observe(LIGHT, now=settled + 0.5) is True     # one event
+
+
+def test_motion_that_returns_to_the_starting_screen_is_not_a_change():
+    """Scrolling down and back up leaves the user looking at what they were
+    already looking at; announcing it would be noise."""
+    d = ScreenChangeDetector({})
+    d.observe(DARK, now=0.0)
+    for i in range(10):
+        d.observe(LIGHT if i % 2 else DARK, now=1.0 + i * 0.033)
+    # Comes to rest on the ORIGINAL screen.
+    assert d.observe(DARK, now=2.0) is False
+    assert d.observe(DARK, now=3.0) is False
+
+
+def _painting_in(fraction):
+    """A screen half-drawn: `fraction` of cells repainted light, rest dark."""
+    filled = int(256 * fraction)
+    return bytes([250] * filled + [10] * (256 - filled))
+
+
+def test_a_page_painting_in_over_a_second_fires_once_at_the_end():
+    """The regression this class was rewritten for.
+
+    A page that paints in over ~1s changes ~3% of the screen per 33ms frame --
+    never the 10% the change threshold wants -- while changing 100% overall.
+    Compared against the previous frame that is invisible, which is why the
+    first implementation sat armed in production and fired zero times. Against
+    a baseline it is one unmistakable event.
+    """
+    d = ScreenChangeDetector({})
+    d.observe(_painting_in(0.0), now=0.0)
+    t, fired = 0.0, False
+    for i in range(1, 31):
+        t += 1 / 30
+        fired |= d.observe(_painting_in(i / 30), now=t)
+    assert not fired, "must not fire while the page is still painting"
+
+    fires = 0
+    for _ in range(30):                    # then it holds still
+        t += 1 / 30
+        if d.observe(_painting_in(1.0), now=t):
+            fires += 1
+    assert fires == 1, f"expected exactly one event, got {fires}"
+
+
+def test_no_single_step_of_that_paint_reaches_the_change_threshold():
+    """Pins why the previous-frame comparison failed, so it cannot creep back:
+    every adjacent pair is far below the bar the whole transition clears."""
+    steps = [_painting_in(i / 30) for i in range(31)]
+    worst = max(signature_distance(a, b) for a, b in zip(steps, steps[1:]))
+    assert worst < 0.10, f"adjacent step {worst} unexpectedly reaches threshold"
+    assert signature_distance(steps[0], steps[-1]) == 1.0
+
+
+def test_imperceptibly_slow_drift_still_eventually_fires():
+    """A change too slow to register as motion at all (each step below the
+    per-cell threshold) must still be caught once the accumulated drift from
+    the baseline crosses the bar -- otherwise a slow fade is invisible."""
+    d = ScreenChangeDetector({})
+    d.observe(_sig(0), now=0.0)
+    t, fired = 0.0, False
+    for i in range(1, 31):
+        t += 1 / 30
+        fired |= d.observe(_sig(int(255 * i / 30)), now=t)
+    assert fired
 
 
 def test_cooldown_blocks_a_second_burst():

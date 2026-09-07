@@ -510,9 +510,9 @@ class MainAgent(Agent):
             self._screen_change = ScreenChangeDetector()
             logger.info(
                 "Vision: proactive screen watching on "
-                "(threshold=%.2f settle=%.1fs cooldown=%.1fs)",
-                self._screen_change.threshold, self._screen_change.settle,
-                self._screen_change.cooldown)
+                "(threshold=%.2f motion=%.2f settle=%.1fs cooldown=%.1fs)",
+                self._screen_change.threshold, self._screen_change.motion,
+                self._screen_change.settle, self._screen_change.cooldown)
 
         # NOTE: the enum is SOURCE_SCREENSHARE, not SOURCE_SCREEN_SHARE.
         sources = {
@@ -688,7 +688,9 @@ class MainAgent(Agent):
         """The shared screen changed and settled. Runs in the frame loop, so it
         only schedules — blocking here would stall frame reading."""
         if self._proactive_task is not None and not self._proactive_task.done():
+            logger.info("Vision: screen changed again while still reacting; skipped")
             return
+        logger.info("Vision: screen change detected, scheduling a turn")
         self._proactive_task = asyncio.create_task(
             self._speak_about_screen_change(), name="vision-screen-change")
 
@@ -707,8 +709,10 @@ class MainAgent(Agent):
             # arrive here; these guards cover who is speaking right now.
             speech = getattr(session, "current_speech", None)
             if speech is not None and not getattr(speech, "done", lambda: True)():
+                logger.info("Vision: screen change dropped — agent is speaking")
                 return
             if getattr(session, "user_state", None) == "speaking":
+                logger.info("Vision: screen change dropped — user is speaking")
                 return
 
             from livekit.agents.llm import ImageContent
@@ -717,6 +721,7 @@ class MainAgent(Agent):
 
             encoded = self._encode_held_frame()
             if encoded is None:
+                logger.info("Vision: screen change dropped — no frame held")
                 return
             data_url, label, note = encoded
 

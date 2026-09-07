@@ -159,6 +159,18 @@ def change_params(env: dict | None = None) -> tuple[float, float, float]:
     )
 
 
+def motion_threshold(env: dict | None = None) -> float:
+    """Adjacent-frame delta above which the screen counts as still moving.
+
+    Separate from, and far below, the change threshold. This one answers "is
+    it still moving?", not "has it changed?" -- a blinking cursor or a ticking
+    clock moves one or two cells and must not hold the screen open forever,
+    while a scroll or a page transition moves many.
+    """
+    src = os.environ if env is None else env
+    return _float(src, "VISION_MOTION_THRESHOLD", 0.02)
+
+
 def frame_signature(data, width: int, height: int, grid: int = 16) -> bytes:
     """Luma fingerprint of an RGBA frame: one sample at each grid cell centre.
 
@@ -208,20 +220,40 @@ class ScreenChangeDetector:
     Deliberately free of clocks and rtc types: observe() takes the timestamp,
     so the whole state machine is testable without sleeping. main_agent feeds
     it signatures from the live track.
+
+    Two comparisons, and they answer different questions:
+
+      drift  = distance(baseline, current)  -- has the screen CHANGED?
+      motion = distance(previous, current)  -- is it still MOVING?
+
+    Measuring change against the immediately previous frame is the mistake
+    this class made first, and it made the detector nearly inert in
+    production: adjacent frames are ~33 ms apart, so a screen that transforms
+    completely over a second -- a scroll, a page painting in, a fade, any
+    progressive render -- never shows a 10% step between two of them and never
+    fired. Only an abrupt single-frame cut did. Comparing against a baseline
+    that is only re-taken when we actually fire lets gradual change accumulate
+    until it crosses the threshold, which is what "the screen changed" means
+    to the person watching it.
     """
 
     def __init__(self, env: dict | None = None) -> None:
         self.threshold, self.settle, self.cooldown = change_params(env)
+        self.motion = motion_threshold(env)
+        self._baseline = b""
         self._previous = b""
-        self._pending = False
-        self._last_change_at = 0.0
+        self._last_motion_at = 0.0
         self._last_trigger_at: float | None = None
 
     def reset(self) -> None:
-        """Forget the held signature — used when the screenshare track ends, so
-        resuming a share is not read as one enormous change."""
+        """Forget the held signatures — used when the screenshare track ends,
+        so resuming a share is not read as one enormous change."""
+        self._baseline = b""
         self._previous = b""
-        self._pending = False
+
+    def drift(self) -> float:
+        """How far the current frame has moved from the baseline. Diagnostic."""
+        return signature_distance(self._baseline, self._previous)
 
     def observe(self, signature: bytes, now: float) -> bool:
         """Feed one frame. True exactly when a proactive turn should fire."""
@@ -230,24 +262,32 @@ class ScreenChangeDetector:
 
         previous, self._previous = self._previous, signature
 
-        # First frame of a share establishes the baseline; it is not a change.
+        # First frame of a share is the baseline, not a change.
+        if not self._baseline:
+            self._baseline = signature
+            return False
         if not previous:
             return False
 
-        if signature_distance(previous, signature) >= self.threshold:
-            # Still moving — restart the settle window rather than firing now.
-            self._pending = True
-            self._last_change_at = now
+        # Still moving? Hold off — speaking mid-transition means describing a
+        # half-painted screen, and re-baselining now would swallow the change.
+        if signature_distance(previous, signature) >= self.motion:
+            self._last_motion_at = now
             return False
 
-        if not self._pending:
-            return False
-        if now - self._last_change_at < self.settle:
+        if now - self._last_motion_at < self.settle:
             return False
 
-        # Settled. Consume the pending change whether or not we may speak, so
-        # a change suppressed by the cooldown cannot fire later out of context.
-        self._pending = False
+        # Settled. Is it meaningfully different from what we last spoke about?
+        # The baseline deliberately survives a non-firing settle, so slow drift
+        # keeps accumulating instead of being forgiven frame by frame.
+        if signature_distance(self._baseline, signature) < self.threshold:
+            return False
+
+        # Re-baseline on both paths below: a change suppressed by the cooldown
+        # is dropped, not queued, so it cannot fire minutes later against a
+        # screen the user has long since moved past.
+        self._baseline = signature
         if self._last_trigger_at is not None and \
                 now - self._last_trigger_at < self.cooldown:
             return False
