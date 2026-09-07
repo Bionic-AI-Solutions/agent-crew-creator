@@ -454,22 +454,51 @@ export default function LiveKitSection(props: Props) {
   const trpcUtils = trpc.useUtils();
   const avatarFileInputRef = useRef<HTMLInputElement>(null);
 
+  // Seed a default when the PROVIDER CHANGES, or when nothing is chosen yet.
+  //
+  // These three effects used to re-validate the current value against the
+  // static fallback tables on every render, which silently undid any choice
+  // made from the live pickers. The fallback lists are tiny next to what the
+  // providers actually serve — TTS_VOICES["gpu-ai"] holds 7 names while the
+  // gateway serves 191 — so picking a live voice like "Shardul" set the field
+  // and this reset it to the fallback's first entry in the same tick. It read
+  // as the dropdown refusing the selection.
+  //
+  // Worse on load: opening an agent already saved with a live-only value
+  // rewrote the field before the user touched anything, so a subsequent save
+  // would quietly overwrite their voice.
+  //
+  // Keying on provider change keeps the useful behaviour (switching provider
+  // leaves a valid value behind) without policing an explicit choice against
+  // a list that was never meant to be exhaustive.
+  const prevSttProvider = useRef(props.sttProvider);
   useEffect(() => {
+    const changed = prevSttProvider.current !== props.sttProvider;
+    prevSttProvider.current = props.sttProvider;
+    if (!changed && props.sttModel) return;
     const models = STT_MODELS[props.sttProvider] || [];
     if (models.length > 0 && !models.some((model) => model.value === props.sttModel)) {
       props.setSttModel(models[0].value);
     }
   }, [props.sttProvider, props.sttModel, props.setSttModel]);
 
+  const prevLlmProvider = useRef(props.llmProvider);
   useEffect(() => {
+    const changed = prevLlmProvider.current !== props.llmProvider;
+    prevLlmProvider.current = props.llmProvider;
     if (props.llmProvider === "custom") return;
+    if (!changed && props.llmModel) return;
     const models = LLM_MODELS[props.llmProvider] || [];
     if (models.length > 0 && !models.some((model) => model.value === props.llmModel)) {
       props.setLlmModel(models[0].value);
     }
   }, [props.llmProvider, props.llmModel, props.setLlmModel]);
 
+  const prevTtsProvider = useRef(props.ttsProvider);
   useEffect(() => {
+    const changed = prevTtsProvider.current !== props.ttsProvider;
+    prevTtsProvider.current = props.ttsProvider;
+    if (!changed && props.ttsVoice) return;
     const voices = TTS_VOICES[props.ttsProvider] || [];
     if (voices.length > 0 && !voices.some((voice) => voice.value === props.ttsVoice)) {
       props.setTtsVoice(voices[0].value);
