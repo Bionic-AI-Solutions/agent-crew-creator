@@ -30,27 +30,6 @@ export const STT_PROVIDERS: ProviderOption[] = [
   { value: "deepgram", label: "Deepgram (Cloud)", description: "Cloud API, high accuracy", requiresKey: true, keyEnvName: "DEEPGRAM_API_KEY" },
 ];
 
-export const STT_MODELS: Record<string, ModelOption[]> = {
-  // gpu-ai STT aliases the mcp-api-server /v1/audio/transcriptions endpoint
-  // actually accepts. (faster-whisper-large-v3 is NOT valid — it 400s.)
-  "gpu-ai": [
-    { value: "whisper-large-v3", label: "Whisper Large v3 (best quality)" },
-    { value: "whisper-large-v3-turbo", label: "Whisper Large v3 Turbo (faster)" },
-    { value: "whisper-large-v3-turbo-ct2", label: "Whisper Large v3 Turbo CT2 (fastest)" },
-    { value: "faster-whisper", label: "Faster Whisper (default)" },
-    { value: "sensevoice", label: "SenseVoice (multilingual)" },
-  ],
-  "faster-whisper": [
-    { value: "whisper-large-v3-turbo-ct2", label: "Large v3 Turbo (CTranslate2)" },
-    { value: "whisper-large-v3", label: "Large v3" },
-  ],
-  "deepgram": [
-    { value: "nova-2", label: "Nova-2" },
-    { value: "nova-2-general", label: "Nova-2 General" },
-    { value: "nova-2-meeting", label: "Nova-2 Meeting" },
-    { value: "nova-2-phonecall", label: "Nova-2 Phone Call" },
-  ],
-};
 
 // ── LLM Providers ───────────────────────────────────────────────
 
@@ -63,39 +42,6 @@ export const LLM_PROVIDERS: ProviderOption[] = [
   { value: "gemini", label: "Gemini", description: "Google Gemini 2.5 Flash — fast, smart, economical", requiresKey: true, keyEnvName: "GEMINI_API_KEY" },
 ];
 
-export const LLM_MODELS: Record<string, ModelOption[]> = {
-  "letta": [
-    { value: "letta-agent", label: "Letta Agent (auto-routed)" },
-  ],
-  "openai": [
-    { value: "gpt-4o", label: "GPT-4o" },
-    { value: "gpt-4o-mini", label: "GPT-4o Mini" },
-    { value: "gpt-4.1", label: "GPT-4.1" },
-    { value: "gpt-4.1-mini", label: "GPT-4.1 Mini" },
-    { value: "gpt-4.1-nano", label: "GPT-4.1 Nano" },
-  ],
-  "openrouter": [
-    { value: "anthropic/claude-sonnet-4-20250514", label: "Claude Sonnet 4" },
-    { value: "openai/gpt-4o", label: "GPT-4o" },
-    { value: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-    { value: "meta-llama/llama-4-maverick", label: "Llama 4 Maverick" },
-  ],
-  // gpu-ai cluster models — use the BARE model id exactly as /v1/models lists
-  // it. The "openai-proxy/" prefix routes through a dead upstream
-  // (ai-llm-inference:8001 → 404 → gateway 500), so the agent never gets a
-  // reply. qwen3.6-35b-a3b-fp8 is the house default; the -think suffix toggles
-  // CoT for multi-step reasoning.
-  "gpu-ai": [
-    { value: "qwen3.6-35b-a3b-fp8", label: "Qwen 3.6 35B (Fast, no-think)" },
-    { value: "qwen3.6-35b-a3b-fp8-think", label: "Qwen 3.6 35B (Thinking)" },
-    { value: "gemma-4-e4b-it", label: "Gemma 4 E4B (fast, low-latency)" },
-    { value: "qwen3.5-27b-fp8", label: "Qwen 3.5 27B" },
-  ],
-  "custom": [],
-  "gemini": [
-    { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  ],
-};
 
 // ── TTS Providers ───────────────────────────────────────────────
 
@@ -107,59 +53,27 @@ export const TTS_PROVIDERS: ProviderOption[] = [
   { value: "sarvam", label: "Sarvam AI", description: "Indic-focused voices, 7 presets", requiresKey: true, keyEnvName: "SARVAM_API_KEY" },
 ];
 
-export const TTS_VOICES: Record<string, ModelOption[]> = {
-  // Offline fallback only. This claimed the builder fetched the live list
-  // dynamically, but gpu-ai was absent from voiceProviders.ts, so
-  // listProviderVoices answered `supported: false` and these seven names
-  // were the ONLY thing the picker ever showed -- while the endpoint served
-  // 190 voices across five engines, 42 of them cloned. gpu-ai is now a real
-  // provider entry, so this list is finally what it says it is: what the UI
-  // shows when the in-cluster endpoint cannot be reached.
-  "gpu-ai": [
-    { value: "Sudhir", label: "Sudhir (en)" },
-    { value: "Severus", label: "Severus (en)" },
-    { value: "SirShree", label: "SirShree (en)" },
-    { value: "aditya", label: "Aditya (hi)" },
-    { value: "Morgan Freeman", label: "Morgan Freeman (en)" },
-    { value: "Julie Andrews", label: "Julie Andrews (en)" },
-    { value: "Don LaFontaine", label: "Don LaFontaine (en)" },
-  ],
-  "elevenlabs": [
-    { value: "21m00Tcm4TlvDq8ikWAM", label: "Rachel" },
-    { value: "EXAVITQu4vr4xnSDxMaL", label: "Sarah" },
-    { value: "onwK4e9ZLuTAKqWW03F9", label: "Daniel" },
-  ],
-  "cartesia": [
-    { value: "a0e99841-438c-4a64-b679-ae501e7d6091", label: "Barbershop Man" },
-    { value: "248be419-c632-4f23-adf1-5324ed7dbf1d", label: "British Lady" },
-  ],
-  "async": [
-    { value: "e0f39dc4-f691-4e78-bba5-5c636692cc04", label: "Default" },
-  ],
-  // Bulbul v2 speaker catalog. The mcp-api-server reference
-  // implementation's SARVAM_VOICES lists 9 (also including diya/
-  // maitreyi), but livekit-plugins-sarvam 1.6.5's own client-side
-  // MODEL_SPEAKER_COMPATIBILITY table for bulbul:v2 — the model
-  // agent-template pins for compatibility with this exact voice set,
-  // see plugins.py — only accepts these 7; diya/maitreyi 400 against
-  // this package version. Confirmed live 2026-07-15 by inspecting the
-  // installed package directly. Do not add them back without
-  // re-verifying against the then-installed livekit-plugins-sarvam
-  // version's compatibility table.
-  "sarvam": [
-    { value: "anushka", label: "Anushka (female)" },
-    { value: "abhilash", label: "Abhilash (male)" },
-    { value: "manisha", label: "Manisha (female)" },
-    { value: "vidya", label: "Vidya (female)" },
-    { value: "arya", label: "Arya (female)" },
-    { value: "karun", label: "Karun (male)" },
-    { value: "hitesh", label: "Hitesh (male)" },
-  ],
-};
 
 // Sarvam's supported target_language_code values for TTS synthesis. Only
 // consumed by the sarvam provider — its API requires an explicit code (no
 // auto-detect). en-IN is first/default to preserve existing agent behavior.
+// ── Voice / model catalogues live on the SERVER ─────────────────
+//
+// STT_MODELS, LLM_MODELS and TTS_VOICES used to live here. They were a second,
+// hand-maintained answer to a question the server already answers, and the two
+// drifted: this file's gpu-ai list held 7 voices while the gateway served 191,
+// and a guard in LiveKitSection reset any choice outside those 7 — so 184
+// voices, every cloned one included, could be offered and never kept. The same
+// list still named Indic-Parler voices the endpoint had already dropped.
+//
+// The server now returns the list AND its provenance from
+// agentsCrud.listProviderVoices / listProviderModels: live where the provider
+// exposes discovery, a fallback (server/services/voiceProviders.ts) where it
+// does not. The client renders what it is told and validates nothing — the
+// save path already validates against the live list.
+//
+// The provider lists here stay: they are UI copy, not a catalogue.
+
 export const TTS_LANGUAGES: ModelOption[] = [
   { value: "en-IN", label: "English (India)" },
   { value: "bn-IN", label: "Bengali" },
