@@ -108,10 +108,13 @@ export const TTS_PROVIDERS: ProviderOption[] = [
 ];
 
 export const TTS_VOICES: Record<string, ModelOption[]> = {
-  // Real gpu-ai voice names from mcp-api-server /v1/audio/voices. The
-  // builder fetches the full live list dynamically (listProviderVoices);
-  // this is just the offline fallback. (The old Sudhir-IndexTTS2 /
-  // Indic-Parler-* names did not exist on the endpoint.)
+  // Offline fallback only. This claimed the builder fetched the live list
+  // dynamically, but gpu-ai was absent from voiceProviders.ts, so
+  // listProviderVoices answered `supported: false` and these seven names
+  // were the ONLY thing the picker ever showed -- while the endpoint served
+  // 190 voices across five engines, 42 of them cloned. gpu-ai is now a real
+  // provider entry, so this list is finally what it says it is: what the UI
+  // shows when the in-cluster endpoint cannot be reached.
   "gpu-ai": [
     { value: "Sudhir", label: "Sudhir (en)" },
     { value: "Severus", label: "Severus (en)" },
