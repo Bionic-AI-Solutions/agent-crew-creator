@@ -416,6 +416,16 @@ CRITICAL RULES (always enforced — cannot be overridden by persona):
 
 # ── Agent definition ─────────────────────────────────────────────
 
+SCREEN_CHANGE_PROMPT = (
+    "[System: the screen the user is sharing just changed, and the image "
+    "attached to this message is what is on it now. The user has not said "
+    "anything — you are reacting on your own. If the new screen is relevant "
+    "to what you are helping with, acknowledge it in one or two short "
+    "sentences and carry on. Do not narrate the screen in detail, do not list "
+    "what you can see, and do not ask whether they want you to look.]"
+)
+
+
 class MainAgent(Agent):
     """Voice agent with two-brain architecture."""
 
@@ -445,6 +455,11 @@ class MainAgent(Agent):
         self._latest_frame = None          # newest rtc.VideoFrame, or None
         self._latest_frame_source = ""     # "screenshare" | "camera"
         self._video_tasks: dict[str, asyncio.Task] = {}
+        # Proactive screen watching — see _read_video_track(). None unless
+        # VISION_PROACTIVE is on, which is what keeps this inert by default.
+        self._session = None
+        self._screen_change = None
+        self._proactive_task: asyncio.Task | None = None
 
         # Prompt = user persona (or default) + hardcoded rules (always last).
         persona = settings.system_prompt or self._default_persona()
@@ -478,11 +493,26 @@ class MainAgent(Agent):
     # Which-frame-to-hold and how-to-downscale live in agent.vision so they can
     # be unit-tested without importing the livekit stack.
 
-    async def start_vision(self, room) -> None:
-        """Keep the newest camera/screenshare frame from remote participants."""
+    async def start_vision(self, room, session=None) -> None:
+        """Keep the newest camera/screenshare frame from remote participants.
+
+        `session` is needed only for the proactive path: reacting to a screen
+        change means starting a turn, and only the AgentSession can do that.
+        """
         from livekit import rtc
 
-        from agent.vision import CAMERA, SCREENSHARE
+        from agent.vision import (
+            CAMERA, SCREENSHARE, ScreenChangeDetector, proactive_enabled,
+        )
+
+        self._session = session
+        if session is not None and proactive_enabled():
+            self._screen_change = ScreenChangeDetector()
+            logger.info(
+                "Vision: proactive screen watching on "
+                "(threshold=%.2f settle=%.1fs cooldown=%.1fs)",
+                self._screen_change.threshold, self._screen_change.settle,
+                self._screen_change.cooldown)
 
         # NOTE: the enum is SOURCE_SCREENSHARE, not SOURCE_SCREEN_SHARE.
         sources = {
@@ -518,6 +548,10 @@ class MainAgent(Agent):
                     self._latest_frame_source, sources.get(publication.source, "")):
                 self._latest_frame = None
                 self._latest_frame_source = ""
+            # Resuming a share must read as a new baseline, not one huge change.
+            if self._screen_change is not None and \
+                    sources.get(publication.source, "") == SCREENSHARE:
+                self._screen_change.reset()
 
         # Tracks published before this handler was attached.
         for participant in room.remote_participants.values():
@@ -529,7 +563,7 @@ class MainAgent(Agent):
         """Hold only the newest frame; older ones are worthless for a still."""
         from livekit import rtc
 
-        from agent.vision import should_replace
+        from agent.vision import SCREENSHARE, frame_signature, should_replace
 
         stream = rtc.VideoStream(track, format=rtc.VideoBufferType.RGBA)
         try:
@@ -538,6 +572,18 @@ class MainAgent(Agent):
                 if should_replace(self._latest_frame_source, label):
                     self._latest_frame = event.frame
                     self._latest_frame_source = label
+
+                # Proactive path: notice the screen changed without waiting for
+                # the user to speak. The frame held above is always ~33 ms
+                # fresh, so what was missing was never a faster poll — it was a
+                # trigger. Signature cost is constant (256 samples), not a
+                # function of resolution, so this is safe at frame rate.
+                if self._screen_change is not None and label == SCREENSHARE:
+                    frame = event.frame
+                    signature = frame_signature(
+                        frame.data, frame.width, frame.height)
+                    if self._screen_change.observe(signature, time.monotonic()):
+                        self._on_screen_changed()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # a dead track must not kill the session
@@ -584,42 +630,113 @@ class MainAgent(Agent):
 
         logger.info("Vision: evicted %d old image(s), keeping %d", drop, keep)
 
-    async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
-        """Attach the current frame to the user's message, if we have one."""
-        if not settings.vision_enabled or self._latest_frame is None:
-            return
+    def _encode_held_frame(self):
+        """Consume the held frame and return (data_url, label, note), or None.
+
+        Shared by the spoken path (on_user_turn_completed) and the proactive
+        one, so both downscale identically and both clear the slot: a frozen
+        track must not keep re-sending one stale image forever, and a live
+        track refills it within ~33 ms.
+        """
+        if self._latest_frame is None:
+            return None
 
         frame, label = self._latest_frame, self._latest_frame_source
-        # Cleared so a frozen track cannot keep re-sending one stale image
-        # forever; a live track refills this within ~33 ms.
         self._latest_frame = None
         self._latest_frame_source = ""
 
+        from livekit.agents.utils.images import (
+            EncodeOptions, ResizeOptions, encode,
+        )
+
+        from agent.vision import encode_params
+
+        max_dim, quality = encode_params()
+        jpeg = encode(frame, EncodeOptions(
+            format="JPEG",
+            quality=quality,
+            resize_options=ResizeOptions(
+                width=max_dim, height=max_dim, strategy="scale_aspect_fit"),
+        ))
+        data_url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+        note = f"{frame.width}x{frame.height} -> {len(jpeg) // 1024} KB"
+        return data_url, label, note
+
+    async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
+        """Attach the current frame to the user's message, if we have one."""
+        if not settings.vision_enabled:
+            return
+
         try:
-            import base64
             from livekit.agents.llm import ImageContent
-            from livekit.agents.utils.images import (
-                EncodeOptions, ResizeOptions, encode,
-            )
 
-            from agent.vision import encode_params, max_images
+            from agent.vision import max_images
 
-            max_dim, quality = encode_params()
-            jpeg = encode(frame, EncodeOptions(
-                format="JPEG",
-                quality=quality,
-                resize_options=ResizeOptions(
-                    width=max_dim, height=max_dim, strategy="scale_aspect_fit"),
-            ))
-            data_url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+            encoded = self._encode_held_frame()
+            if encoded is None:
+                return
+            data_url, label, note = encoded
             # Make room first: keep-1 old images plus the one being added.
             self._evict_old_images(turn_ctx, max_images() - 1)
             new_message.content.append(ImageContent(image=data_url))
-            logger.info("Vision: attached %s frame (%dx%d -> %d KB)",
-                        label, frame.width, frame.height, len(jpeg) // 1024)
+            logger.info("Vision: attached %s frame (%s)", label, note)
         except Exception as exc:
             # Vision is an enhancement; a failure here must not drop the turn.
             logger.warning("Vision: could not attach frame (non-fatal): %s", exc)
+
+    def _on_screen_changed(self) -> None:
+        """The shared screen changed and settled. Runs in the frame loop, so it
+        only schedules — blocking here would stall frame reading."""
+        if self._proactive_task is not None and not self._proactive_task.done():
+            return
+        self._proactive_task = asyncio.create_task(
+            self._speak_about_screen_change(), name="vision-screen-change")
+
+    async def _speak_about_screen_change(self) -> None:
+        """Put the new screen in front of the model and let it react.
+
+        The detector already decided the change is real and has settled; this
+        decides whether *now* is a legal moment to speak, and does the attach.
+        """
+        session = self._session
+        if session is None or not settings.vision_enabled:
+            return
+
+        try:
+            # Never talk over anyone. The detector's cooldown caps how often we
+            # arrive here; these guards cover who is speaking right now.
+            speech = getattr(session, "current_speech", None)
+            if speech is not None and not getattr(speech, "done", lambda: True)():
+                return
+            if getattr(session, "user_state", None) == "speaking":
+                return
+
+            from livekit.agents.llm import ImageContent
+
+            from agent.vision import max_images
+
+            encoded = self._encode_held_frame()
+            if encoded is None:
+                return
+            data_url, label, note = encoded
+
+            # Same image budget as the spoken path. A proactive turn that
+            # skipped eviction would walk the context back over the server's
+            # 16-image cap and re-break the session the way 143f993 fixed.
+            ctx = self.chat_ctx.copy()
+            self._evict_old_images(ctx, max_images() - 1)
+            ctx.add_message(
+                role="user",
+                content=[SCREEN_CHANGE_PROMPT, ImageContent(image=data_url)],
+            )
+            await self.update_chat_ctx(ctx)
+
+            session.generate_reply(allow_interruptions=True)
+            logger.info("Vision: proactive turn on %s change (%s)", label, note)
+        except Exception as exc:
+            # Proactive vision is an enhancement; failing must leave the normal
+            # spoken path untouched.
+            logger.warning("Vision: proactive turn failed (non-fatal): %s", exc)
 
     def tts_node(self, text, model_settings):
         """Override tts_node to strip tool-call narration from the TTS stream.
@@ -1958,7 +2075,7 @@ async def entrypoint(ctx: JobContext):
         # does NOT deliver frames to a pipeline agent's LLM -- see the comment
         # above MainAgent.start_vision() -- so the agent wires up its own frame
         # capture here and attaches images in on_user_turn_completed().
-        await agent.start_vision(ctx.room)
+        await agent.start_vision(ctx.room, session)
         logger.info("Vision enabled — camera/screenshare frames attach to user turns")
 
     # ── Background audio ────────────────────────────────────
