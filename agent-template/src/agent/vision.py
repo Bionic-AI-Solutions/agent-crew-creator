@@ -100,3 +100,157 @@ def images_over_budget(total: int, keep: int) -> int:
     if keep < 0:
         keep = 0
     return max(0, total - keep)
+
+
+# ── Screen-change detection ──────────────────────────────────
+#
+# WHY (2026-09-07). Frames arrive push-based at ~30 fps and _read_video_track
+# always holds one no more than ~33 ms old, so the image the LLM sees is never
+# stale. What was missing is a *trigger*: the held frame reaches the model only
+# in on_user_turn_completed, i.e. when the user speaks. Between turns the agent
+# is blind — production logs for one jarvis session show a 66 s gap between
+# consecutive attaches, during which the shared screen could change completely
+# with the agent unaware.
+#
+# Polling faster fixes nothing (there is no poll). The fix is to notice that
+# the pixels changed and start a turn. These helpers are the decision half;
+# main_agent owns the rtc plumbing and the speech guards.
+
+
+def _float(src: dict, name: str, default: float) -> float:
+    """Positive float from env, falling back rather than crashing the stream."""
+    try:
+        value = float(src.get(name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def proactive_enabled(env: dict | None = None) -> bool:
+    """Whether a screen change may start a turn on its own.
+
+    Opt-in, not default-on: an agent that speaks every time the screen changes
+    is intrusive, and this ships to tenants who never asked for it. Enable per
+    tenant with VISION_PROACTIVE=true.
+    """
+    src = os.environ if env is None else env
+    return str(src.get("VISION_PROACTIVE", "")).strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def change_params(env: dict | None = None) -> tuple[float, float, float]:
+    """(change_threshold, settle_seconds, cooldown_seconds).
+
+    threshold — fraction of sampled cells that must move before the frame
+      counts as a change. Too low and a blinking cursor or a video playing in
+      a corner fires; 0.10 needs a tenth of the screen to differ.
+    settle    — how long the screen must hold still afterwards. Without it a
+      scroll or a page transition fires on every intermediate frame, and the
+      model is handed a half-painted screen.
+    cooldown  — floor between two proactive turns, so a busy screen cannot
+      make the agent monologue.
+    """
+    src = os.environ if env is None else env
+    return (
+        _float(src, "VISION_CHANGE_THRESHOLD", 0.10),
+        _float(src, "VISION_CHANGE_SETTLE_SECONDS", 0.4),
+        _float(src, "VISION_CHANGE_COOLDOWN_SECONDS", 15.0),
+    )
+
+
+def frame_signature(data, width: int, height: int, grid: int = 16) -> bytes:
+    """Luma fingerprint of an RGBA frame: one sample at each grid cell centre.
+
+    Sampling (grid*grid points) rather than averaging every pixel is what makes
+    this affordable in the frame loop: 256 samples per frame is constant work
+    regardless of resolution, where averaging a 1920x1080 frame would be ~2M
+    reads 30 times a second in Python.
+
+    Returns b"" for a frame that cannot be sampled, which signature_distance
+    treats as "no comparison" rather than as a change.
+    """
+    if width <= 0 or height <= 0 or grid <= 0:
+        return b""
+    if data is None or len(data) < width * height * 4:
+        return b""
+
+    out = bytearray(grid * grid)
+    i = 0
+    for row in range(grid):
+        y = (row * 2 + 1) * height // (grid * 2)
+        row_base = y * width
+        for col in range(grid):
+            x = (col * 2 + 1) * width // (grid * 2)
+            p = (row_base + x) * 4
+            # Rec. 601 luma, integer-only.
+            out[i] = (data[p] * 299 + data[p + 1] * 587 + data[p + 2] * 114) // 1000
+            i += 1
+    return bytes(out)
+
+
+def signature_distance(a: bytes, b: bytes, cell_threshold: int = 16) -> float:
+    """Fraction of cells whose luma moved by more than cell_threshold.
+
+    Counting *cells changed* rather than averaging the difference keeps a small
+    bright element (a notification, a spinner) from registering as a whole-page
+    change, while a genuine navigation moves most of the grid at once.
+    """
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    changed = sum(1 for x, y in zip(a, b) if abs(x - y) > cell_threshold)
+    return changed / len(a)
+
+
+class ScreenChangeDetector:
+    """Decides when a run of frames amounts to "the screen changed, and settled".
+
+    Deliberately free of clocks and rtc types: observe() takes the timestamp,
+    so the whole state machine is testable without sleeping. main_agent feeds
+    it signatures from the live track.
+    """
+
+    def __init__(self, env: dict | None = None) -> None:
+        self.threshold, self.settle, self.cooldown = change_params(env)
+        self._previous = b""
+        self._pending = False
+        self._last_change_at = 0.0
+        self._last_trigger_at: float | None = None
+
+    def reset(self) -> None:
+        """Forget the held signature — used when the screenshare track ends, so
+        resuming a share is not read as one enormous change."""
+        self._previous = b""
+        self._pending = False
+
+    def observe(self, signature: bytes, now: float) -> bool:
+        """Feed one frame. True exactly when a proactive turn should fire."""
+        if not signature:
+            return False
+
+        previous, self._previous = self._previous, signature
+
+        # First frame of a share establishes the baseline; it is not a change.
+        if not previous:
+            return False
+
+        if signature_distance(previous, signature) >= self.threshold:
+            # Still moving — restart the settle window rather than firing now.
+            self._pending = True
+            self._last_change_at = now
+            return False
+
+        if not self._pending:
+            return False
+        if now - self._last_change_at < self.settle:
+            return False
+
+        # Settled. Consume the pending change whether or not we may speak, so
+        # a change suppressed by the cooldown cannot fire later out of context.
+        self._pending = False
+        if self._last_trigger_at is not None and \
+                now - self._last_trigger_at < self.cooldown:
+            return False
+
+        self._last_trigger_at = now
+        return True

@@ -40,7 +40,13 @@ interface Bundle {
  * useTranscriptions() to display them — the VideoConference prefab on
  * its own renders chat messages but NOT transcription events.
  */
-function TranscriptionPanel() {
+function TranscriptionPanel({
+  localIdentity,
+  agentName,
+}: {
+  localIdentity: string;
+  agentName: string;
+}) {
   // Two independent streams need to be rendered side-by-side:
   //  1. Voice transcriptions (lk.transcription topic) — streaming STT text
   //     from both the user and the primary voice agent.
@@ -48,11 +54,50 @@ function TranscriptionPanel() {
   //     secondary Letta agent's structured output that the voice agent
   //     publishes via send_text(..., topic='lk.chat') from inside its
   //     delegate_to_letta tool.
+  //
+  // (1) was subscribed but never rendered, so the panel showed only (2) —
+  // which stays empty unless a delegation happens, leaving the chat blank
+  // for an entire ordinary voice conversation.
   const transcriptions = useTranscriptions();
   const { chatMessages } = useChat();
 
+  // useTranscriptions accumulates one entry per utterance and mutates it in
+  // place as the STT text streams in, so ordering by stream timestamp keeps
+  // a turn from jumping around while it is still being transcribed.
+  const turns = useMemo(
+    () => [...transcriptions].sort((a, b) => a.streamInfo.timestamp - b.streamInfo.timestamp),
+    [transcriptions],
+  );
+
   return (
     <aside className="w-80 border-l bg-card overflow-y-auto p-3 text-sm flex flex-col gap-4">
+      <section>
+        <div className="font-semibold text-xs uppercase text-muted-foreground tracking-wide mb-2">
+          Conversation
+        </div>
+        {turns.length === 0 ? (
+          <p className="text-muted-foreground text-xs italic">
+            The spoken transcript will appear here once you start talking.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {turns.map((t) => {
+              const isUser = t.participantInfo.identity === localIdentity;
+              return (
+                <div key={t.streamInfo.id}>
+                  <div className="text-[10px] uppercase text-muted-foreground tracking-wide">
+                    {isUser ? "You" : agentName}
+                  </div>
+                  <div className={isUser ? "text-foreground" : "text-foreground/90"}>
+                    {t.text}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
       <section>
         <div className="font-semibold text-xs uppercase text-muted-foreground tracking-wide mb-2">
           Secondary Agent Output
@@ -315,7 +360,10 @@ export default function Playground() {
               <div className="flex-1 min-w-0">
                 <VideoConference />
               </div>
-              <TranscriptionPanel />
+              <TranscriptionPanel
+                localIdentity={bundle.identity}
+                agentName={bundle.agent.name}
+              />
             </div>
           </LiveKitRoom>
         </div>
