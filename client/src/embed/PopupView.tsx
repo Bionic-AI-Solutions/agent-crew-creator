@@ -34,9 +34,11 @@ interface PopupViewProps {
   sessionStarted: boolean;
   onError: (err: EmbedErrorDetails) => void;
   onDisconnect: () => void;
+  /** Forwarded to the action bar; absent means the control does not render. */
+  pip?: { active: boolean; onToggle: () => void };
 }
 
-export function PopupView({ config, platformOrigin, sessionStarted, onError, onDisconnect }: PopupViewProps) {
+export function PopupView({ config, platformOrigin, sessionStarted, onError, onDisconnect, pip }: PopupViewProps) {
   const room = useRoomContext();
   const {
     state: agentState,
@@ -113,6 +115,7 @@ export function PopupView({ config, platformOrigin, sessionStarted, onError, onD
           chatOpen={chatOpen}
           onChatToggle={() => setChatOpen(!chatOpen)}
           onDisconnect={onDisconnect}
+          pip={pip}
         />
       </div>
     </div>
