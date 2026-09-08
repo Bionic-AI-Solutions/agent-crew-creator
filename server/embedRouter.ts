@@ -10,7 +10,7 @@ import { z } from "zod";
 import { eq, and } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { randomBytes } from "crypto";
-import { router, protectedProcedure, assertAppMembership } from "./_core/trpc.js";
+import { router, protectedProcedure, appScopedProcedure, assertAppMembership } from "./_core/trpc.js";
 import { createLogger } from "./_core/logger.js";
 import { embedTokens, agentConfigs } from "../drizzle/platformSchema.js";
 
@@ -41,6 +41,42 @@ export const embedRouter = router({
         .from(embedTokens)
         .where(eq(embedTokens.agentConfigId, input.agentId))
         .orderBy(embedTokens.createdAt);
+    }),
+
+  /** List every active embed token in an app, with the agent it points at.
+   *
+   *  Backs the Client Preview page, which needs one call to know what is
+   *  publishable for the whole app — listByAgent would be one round trip per
+   *  agent. Revoked tokens are excluded: they cannot connect, so there is
+   *  nothing to preview. */
+  listByApp: appScopedProcedure
+    .input(z.object({ appId: z.number() }))
+    .query(async ({ ctx, input }) => {
+      if (!ctx.db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+
+      return ctx.db
+        .select({
+          id: embedTokens.id,
+          token: embedTokens.token,
+          label: embedTokens.label,
+          mode: embedTokens.mode,
+          theme: embedTokens.theme,
+          allowVoice: embedTokens.allowVoice,
+          allowChat: embedTokens.allowChat,
+          allowVideo: embedTokens.allowVideo,
+          allowScreenShare: embedTokens.allowScreenShare,
+          allowAvatar: embedTokens.allowAvatar,
+          showTranscription: embedTokens.showTranscription,
+          allowedOrigins: embedTokens.allowedOrigins,
+          agentId: agentConfigs.id,
+          agentName: agentConfigs.name,
+          agentDeployed: agentConfigs.deployed,
+          agentAvatarEnabled: agentConfigs.avatarEnabled,
+        })
+        .from(embedTokens)
+        .innerJoin(agentConfigs, eq(embedTokens.agentConfigId, agentConfigs.id))
+        .where(and(eq(embedTokens.appId, input.appId), eq(embedTokens.isActive, true)))
+        .orderBy(agentConfigs.name, embedTokens.createdAt);
     }),
 
   /** Create a new embed token for an agent. */
