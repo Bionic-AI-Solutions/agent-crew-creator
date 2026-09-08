@@ -652,3 +652,51 @@
   color: var(--bionic-fg3);
   line-height: 1.4;
 }
+
+/* ── Popped out into a Document Picture-in-Picture window ─────
+ * That window is a separate document with no shadow root, so the `:host`
+ * reset above never applies to it. The typography and sizing it provides
+ * have to be restated here or the popped-out widget renders as bare HTML.
+ * The theme custom properties do resolve, because the root div carries a
+ * .bionic-theme-* class.
+ */
+.bionic-pip-body {
+  height: 100vh;
+  overflow: hidden;
+}
+
+.bionic-pip-root {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  color: var(--bionic-fg);
+  background: var(--bionic-bg);
+}
+
+/* ── Host page while the widget is popped out ───────────────── */
+.bionic-popup-poppedout {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+}
+
+.bionic-poppedout-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--bionic-fg);
+}
+
+.bionic-poppedout-desc {
+  font-size: 13px;
+  color: var(--bionic-fg2);
+  max-width: 26ch;
+  line-height: 1.45;
+}

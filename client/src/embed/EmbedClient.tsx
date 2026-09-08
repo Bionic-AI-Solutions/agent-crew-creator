@@ -1,8 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ReactDOM from "react-dom/client";
 import { Room, RoomEvent } from "livekit-client";
 import { RoomAudioRenderer, RoomContext, StartAudio } from "@livekit/components-react";
 import useEmbedConnection from "./useEmbedConnection";
 import { PopupView } from "./PopupView";
+import { useDocumentPip } from "./useDocumentPip";
+// The same stylesheet the bundle injects into the shadow root. The PiP window
+// is a separate document and inherits none of it, so it needs its own copy.
+// @ts-ignore — CSS imported as string
+import embedStyles from "./embed-styles.css?inline";
 import type { EmbedErrorDetails } from "./types";
 
 interface EmbedClientProps {
@@ -74,9 +80,23 @@ export function EmbedClient({ platformOrigin, embedToken }: EmbedClientProps) {
     connect();
   }, [popupOpen, connectionDetails, room, existingOrRefreshConnectionDetails]);
 
-  const handleDisconnect = () => {
+  const handleDisconnect = useCallback(() => {
     room.disconnect();
-  };
+  }, [room]);
+
+  // ── Pop out into an always-on-top window ──────────────────────
+  const { supported: pipSupported, pipWindow, open: openPip, close: closePip } =
+    useDocumentPip(embedStyles);
+  const pipActive = pipWindow !== null;
+  const pipRootRef = useRef<ReactDOM.Root | null>(null);
+
+  const pipControl = useMemo(
+    () =>
+      pipSupported
+        ? { active: pipActive, onToggle: () => (pipActive ? closePip() : openPip()) }
+        : undefined,
+    [pipSupported, pipActive, openPip, closePip],
+  );
 
   // CSS transition callbacks
   const handleTransitionStart = () => { isAnimating.current = true; };
@@ -88,6 +108,48 @@ export function EmbedClient({ platformOrigin, embedToken }: EmbedClientProps) {
   };
 
   const theme = connectionDetails?.config.theme || "light";
+
+  /**
+   * The popped-out widget is a SECOND React root rendered into the PiP
+   * document, not the existing DOM moved across.
+   *
+   * React attaches its event listeners to the root container, so a subtree
+   * relocated into another document keeps rendering but stops receiving
+   * clicks — mute and end-call would go dead exactly where they are needed.
+   * Two roots each attach listeners in their own document, and they stay in
+   * step for free because every LiveKit hook reads from the one shared Room
+   * object rather than from React state.
+   */
+  useEffect(() => {
+    if (!pipWindow) return;
+    const host = pipWindow.document.createElement("div");
+    host.className = `bionic-pip-root bionic-theme-${theme}`;
+    pipWindow.document.body.appendChild(host);
+    const root = ReactDOM.createRoot(host);
+    pipRootRef.current = root;
+    return () => {
+      pipRootRef.current = null;
+      // Unmounting a root synchronously from another root's cleanup makes
+      // React warn; defer it past the current commit.
+      queueMicrotask(() => root.unmount());
+    };
+  }, [pipWindow, theme]);
+
+  useEffect(() => {
+    if (!pipWindow || !pipRootRef.current || !connectionDetails) return;
+    pipRootRef.current.render(
+      <RoomContext.Provider value={room}>
+        <PopupView
+          config={connectionDetails.config}
+          platformOrigin={platformOrigin}
+          sessionStarted
+          onError={setError}
+          onDisconnect={handleDisconnect}
+          pip={{ active: true, onToggle: closePip }}
+        />
+      </RoomContext.Provider>,
+    );
+  }, [pipWindow, connectionDetails, room, platformOrigin, handleDisconnect, closePip]);
 
   return (
     <RoomContext.Provider value={room}>
@@ -120,6 +182,18 @@ export function EmbedClient({ platformOrigin, embedToken }: EmbedClientProps) {
               <div className="bionic-error-desc">{error.description}</div>
               <button className="bionic-error-retry" onClick={handleToggle}>Close</button>
             </div>
+          ) : pipActive ? (
+            // Only one copy renders at a time: two live PopupViews would attach
+            // the same avatar track to two <video> elements.
+            <div className="bionic-popup-poppedout">
+              <div className="bionic-poppedout-title">Playing in a floating window</div>
+              <div className="bionic-poppedout-desc">
+                The agent stays on top while you use other tabs.
+              </div>
+              <button className="bionic-error-retry" onClick={closePip}>
+                Bring it back
+              </button>
+            </div>
           ) : connectionDetails ? (
             <PopupView
               config={connectionDetails.config}
@@ -127,6 +201,7 @@ export function EmbedClient({ platformOrigin, embedToken }: EmbedClientProps) {
               sessionStarted={popupOpen}
               onError={setError}
               onDisconnect={handleDisconnect}
+              pip={pipControl}
             />
           ) : (
             <div className="bionic-popup-loading">
