@@ -40,6 +40,11 @@ interface ProviderConfig {
   modelsUrl: string;
   /** Filter for the model list — keep only chat-capable IDs. */
   filter?: (id: string) => boolean;
+  /**
+   * Rewrite a provider's raw model id before it is filtered and stored.
+   * Only Gemini needs this — see its entry.
+   */
+  normalizeId?: (id: string) => string;
 }
 
 const PROVIDERS: Record<string, ProviderConfig> = {
@@ -75,6 +80,15 @@ const PROVIDERS: Record<string, ProviderConfig> = {
     label: "Gemini",
     // Google's OpenAI-compatible endpoint — same shape as openai/openrouter.
     modelsUrl: "https://generativelanguage.googleapis.com/v1beta/openai/models",
+    // ...except in one respect: it returns ids as "models/gemini-2.5-flash",
+    // not "gemini-2.5-flash". Verified live 2026-09-09: 55 models returned,
+    // every id prefixed, so a /^gemini-/ test against the raw id matched
+    // nothing and the picker offered an empty list however valid the key was.
+    // Strip the prefix so the filter sees what it expects and the stored
+    // value is the bare id the chat endpoint takes — the same form as
+    // plugins.py's "gemini-2.5-flash" default.
+    normalizeId: (id) => id.replace(/^models\//, ""),
+    // Deliberately excludes the gemma-* models the same endpoint lists.
     filter: (id) => /^gemini-/i.test(id),
   },
 };
@@ -172,7 +186,12 @@ export async function listModelsForProvider(
   const seen = new Set<string>();
   for (const m of raw) {
     if (!m || typeof m !== "object") continue;
-    const id = typeof m.id === "string" ? m.id : null;
+    const rawId = typeof m.id === "string" ? m.id : null;
+    if (!rawId) continue;
+    // Normalize before filtering AND before storing: the filter is written
+    // against the provider's canonical id, and the id kept here is what gets
+    // sent back as the model name at inference time.
+    const id = cfg.normalizeId ? cfg.normalizeId(rawId) : rawId;
     if (!id) continue;
     if (cfg.filter && !cfg.filter(id)) continue;
     if (seen.has(id)) continue;
@@ -215,3 +234,6 @@ export async function listModelsForProvider(
 export function listSupportedProviders(): ProviderConfig[] {
   return Object.values(PROVIDERS);
 }
+
+/** Exposed for tests — the provider table is otherwise module-private. */
+export const PROVIDERS_FOR_TEST = PROVIDERS;
