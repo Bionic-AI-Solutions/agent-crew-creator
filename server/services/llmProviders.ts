@@ -47,6 +47,34 @@ interface ProviderConfig {
   normalizeId?: (id: string) => string;
 }
 
+/**
+ * Models that exist, list themselves as chat models, and still cannot serve an
+ * ordinary conversational turn. Applied to EVERY provider, on top of whatever
+ * filter that provider defines.
+ *
+ * The case that prompted it: a jarvis session went silent right after the
+ * greeting. The greeting is a static session.say() with no LLM call, so the
+ * first real turn was the first request, and Gemini answered
+ *
+ *   400 INVALID_ARGUMENT — "This model requires the use of the Computer Use
+ *   tool."
+ *
+ * with retryable=false, which LiveKit treats as unrecoverable and tears the
+ * session down. gemini-2.5-computer-use-preview-10-2025 is a browser/GUI
+ * automation model: it mandates a tool schema a voice agent has no reason to
+ * send, so it rejects every request and there is no configuration of this
+ * product in which it works.
+ *
+ * It passed the gemini filter (/^gemini-/) and it exists on the provider, so
+ * the save-time model check accepted it too. Both holes close here: the picker
+ * builds from this list, and the save check validates against this list.
+ *
+ * Keep this narrow. It is for models that CANNOT converse, not models someone
+ * considers a poor choice — a filter that hides working models is its own bug.
+ */
+const NON_CONVERSATIONAL =
+  /computer-use|embedding|whisper|(^|[-_])tts([-_]|$)|dall-e|moderation|imagen|veo-|image-generation|-guard/i;
+
 const PROVIDERS: Record<string, ProviderConfig> = {
   openai: {
     key: "openai",
@@ -89,6 +117,8 @@ const PROVIDERS: Record<string, ProviderConfig> = {
     // plugins.py's "gemini-2.5-flash" default.
     normalizeId: (id) => id.replace(/^models\//, ""),
     // Deliberately excludes the gemma-* models the same endpoint lists.
+    // Note this passes gemini-2.5-computer-use-*, which cannot converse;
+    // NON_CONVERSATIONAL above is what removes it.
     filter: (id) => /^gemini-/i.test(id),
   },
 };
@@ -194,6 +224,9 @@ export async function listModelsForProvider(
     const id = cfg.normalizeId ? cfg.normalizeId(rawId) : rawId;
     if (!id) continue;
     if (cfg.filter && !cfg.filter(id)) continue;
+    // Applies regardless of the provider's own filter: OpenRouter defines none
+    // at all, and OpenAI lists a computer-use-preview of its own.
+    if (NON_CONVERSATIONAL.test(id)) continue;
     if (seen.has(id)) continue;
     seen.add(id);
     // Determine tool support:
