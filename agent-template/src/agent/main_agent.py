@@ -2211,7 +2211,36 @@ def _resolve_agent_name() -> str:
     return name
 
 
+def _prewarm(_proc) -> None:
+    """Warm anything a job must not wait on, before any room is joined.
+
+    The gpu-ai voice registry is fetched here because the alternative is
+    fetching it from _GpuAiStreamingTTS.__init__, which runs inside the job's
+    event loop -- a blocking HTTP call there freezes every coroutine in the
+    process until it returns. See plugins.prewarm_voice_registry.
+    """
+    from agent.plugins import prewarm_voice_registry
+
+    base_url = (settings.gpu_ai_llm_url or "").rstrip("/")
+    if base_url:
+        prewarm_voice_registry(base_url + "/v1")
+
+
+def build_worker_options(agent_name: str) -> WorkerOptions:
+    """Assemble the worker's options.
+
+    Split out of __main__ so the wiring is reachable from a test. Dropping
+    prewarm_fnc here is invisible at runtime -- sessions keep working, just on
+    guessed sample rates -- so it needs something watching it.
+    """
+    return WorkerOptions(
+        entrypoint_fnc=entrypoint,
+        prewarm_fnc=_prewarm,
+        agent_name=agent_name,
+    )
+
+
 if __name__ == "__main__":
     agent_name = _resolve_agent_name()
     logger.info("Registering LiveKit worker (explicit-dispatch only): agent_name=%r", agent_name)
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, agent_name=agent_name))
+    cli.run_app(build_worker_options(agent_name))
