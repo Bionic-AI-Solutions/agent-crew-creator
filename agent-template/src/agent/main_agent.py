@@ -754,17 +754,25 @@ class MainAgent(Agent):
         gate = NarrationGate()
 
         async def _filtered_text():
-            async for chunk in text:
-                if not chunk:
-                    continue
-                out = gate.feed(chunk)
-                if out:
-                    yield out
-            tail = gate.flush()
-            if tail:
-                yield tail
-            if gate.tripped:
-                logger.info("[tts_filter] suppressed tool narration from speech")
+            # The finally only guarantees the log line. It cannot rescue held
+            # text: on GeneratorExit control jumps straight here, the flush
+            # below never runs, and an async generator may not yield during
+            # GeneratorExit anyway. What makes interruption safe is the gate
+            # holding back only characters that could still become a marker --
+            # for ordinary speech that is none.
+            try:
+                async for chunk in text:
+                    if not chunk:
+                        continue
+                    out = gate.feed(chunk)
+                    if out:
+                        yield out
+                tail = gate.flush()
+                if tail:
+                    yield tail
+            finally:
+                if gate.tripped:
+                    logger.info("[tts_filter] suppressed tool narration from speech")
 
         # Pass filtered text to the parent — tts_node returns an async
         # generator or coroutine depending on TTS type, so don't await.
@@ -783,20 +791,26 @@ class MainAgent(Agent):
         gate = NarrationGate()
 
         async def _filtered_text():
-            async for chunk in text:
-                if not chunk:
-                    continue
-                out = gate.feed(chunk)
-                if out:
-                    # Preserve TimedString (a str subclass carrying word
-                    # timings) when the chunk passes through whole; only a
-                    # partially-held chunk degrades to plain str.
-                    yield chunk if out == chunk else out
-            tail = gate.flush()
-            if tail:
-                yield tail
-            if gate.tripped:
-                logger.info("[transcript_filter] suppressed tool narration from chat")
+            # The gate holds characters back, so `out` is a shifted slice of the
+            # buffer and almost never the incoming chunk object. Re-wrapping as
+            # TimedString would attach that chunk's timings to different text,
+            # which is worse than having none: the synchronizer falls back to
+            # rate estimation when timings are absent, but trusts them when
+            # present. So plain str is deliberate here, and the cost is
+            # rate-estimated rather than exact word sync on filtered turns.
+            try:
+                async for chunk in text:
+                    if not chunk:
+                        continue
+                    out = gate.feed(chunk)
+                    if out:
+                        yield chunk if out == chunk else out
+                tail = gate.flush()
+                if tail:
+                    yield tail
+            finally:
+                if gate.tripped:
+                    logger.info("[transcript_filter] suppressed tool narration from chat")
 
         return super().transcription_node(_filtered_text(), model_settings)
 
