@@ -27,6 +27,7 @@
  */
 import { useEffect, useState } from "react";
 import { useRoomContext } from "@livekit/components-react";
+import { RoomEvent } from "livekit-client";
 import type { Room } from "livekit-client";
 
 export interface TopicTextStreamData {
@@ -41,6 +42,16 @@ export interface TopicTextStreamData {
 
 /** Set by the agent so interim and final text for one utterance coalesce. */
 const SEGMENT_ID_ATTRIBUTE = "lk.segment_id";
+
+/**
+ * Most recent utterances kept per topic.
+ *
+ * Nothing else evicts: a widget left open through a long conversation would
+ * otherwise grow this array forever, and every arriving chunk clones it and
+ * re-sorts it in the panel's useMemo. The same cap exists for vision frames
+ * (143f993) for the same reason. Well past what a transcript panel shows.
+ */
+const MAX_STREAMS_PER_TOPIC = 500;
 
 type Listener = (streams: TopicTextStreamData[]) => void;
 
@@ -76,11 +87,21 @@ function upsert(
   const index = registry.streams.findIndex(
     (existing) =>
       existing.streamInfo.id === entry.streamInfo.id ||
+      // Segment ids are only unique per speaker, so a match on segment alone
+      // could let one participant's utterance overwrite another's text and
+      // identity. Cheap to compare; misattributed speech is not cheap.
       (!!segmentId &&
+        existing.participantInfo.identity === entry.participantInfo.identity &&
         existing.streamInfo.attributes?.[SEGMENT_ID_ATTRIBUTE] === segmentId),
   );
-  if (index === -1) registry.streams.push(entry);
-  else registry.streams[index] = entry;
+  if (index === -1) {
+    registry.streams.push(entry);
+    if (registry.streams.length > MAX_STREAMS_PER_TOPIC) {
+      registry.streams.splice(0, registry.streams.length - MAX_STREAMS_PER_TOPIC);
+    }
+  } else {
+    registry.streams[index] = entry;
+  }
   emit(registry);
 }
 
@@ -90,8 +111,14 @@ function upsert(
  * Deliberately not reference-counted down to zero. Unregistering when the last
  * subscriber leaves is exactly the pattern that fails in the library version,
  * and a handler that outlives its subscribers costs one closure, while one
- * that is missing costs the user the agent's words. The room drops it on
- * disconnect regardless.
+ * that is missing costs the user the agent's words.
+ *
+ * The handler genuinely does outlive a disconnect: livekit-client's
+ * `Room.handleDisconnect` calls `IncomingDataStreamManager.clearControllers()`,
+ * which clears in-flight controllers but NOT `textStreamHandlers`, and the
+ * manager is built once in the Room constructor. So there is no re-registration
+ * to do on reconnect -- but the accumulated text does have to be thrown away,
+ * which is what the Disconnected listener below is for.
  */
 function ensureRegistered(room: Room, topic: string): TopicRegistry {
   let byTopic = roomRegistries.get(room);
@@ -104,6 +131,18 @@ function ensureRegistered(room: Room, topic: string): TopicRegistry {
 
   const registry: TopicRegistry = { streams: [], listeners: new Set() };
   byTopic.set(topic, registry);
+
+  // A reconnect is a NEW conversation, on a new server-side room, but the
+  // embed widget reuses one Room object for the life of the page
+  // (EmbedClient creates it once and calls connect/disconnect on it, while
+  // /api/embed/connection-details mints a fresh room name each time). Since
+  // this registry is keyed by the Room object, without this reset the
+  // previous visitor session's transcript would still be sitting in the
+  // panel, interleaved with the new one and indistinguishable from it.
+  room.on(RoomEvent.Disconnected, () => {
+    registry.streams = [];
+    emit(registry);
+  });
 
   const handler = async (
     reader: {
