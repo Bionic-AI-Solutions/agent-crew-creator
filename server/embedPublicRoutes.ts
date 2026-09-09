@@ -270,6 +270,11 @@ export function registerEmbedRoutes(app: Express): void {
           // raw dispatch identity (agent-AJ_tAdF86dDz7PN). Carry the
           // configured name instead.
           agentName: agentDisplayName(agent.name),
+          // Both layers must agree: the agent has to be capable of it and the
+          // token has to permit it. The widget treats these as the final word.
+          allowDomRead: tokenRow.allowDomRead && agent.domReadEnabled,
+          allowDomControl:
+            tokenRow.allowDomControl && agent.domControlEnabled && agent.domReadEnabled,
           allowAvatar: tokenRow.allowAvatar,
           showTranscription: tokenRow.showTranscription,
           theme: tokenRow.theme,

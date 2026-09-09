@@ -111,6 +111,17 @@ export const agentConfigs = pgTable(
     // Whether a screen change may start a turn on its own, rather than the
     // agent only looking when the user speaks.
     visionProactive: boolean("vision_proactive").default(false).notNull(),
+    // Browser awareness. Vision answers "what does this look like"; the DOM
+    // answers "what controls exist and what are they called". They are
+    // separate capabilities because each is the only useful one somewhere:
+    // vision alone for a canvas app or a PDF, DOM alone for a text-heavy page
+    // where frames are just vision tokens. The builder couples them by
+    // default so the ordinary case stays a single choice.
+    domReadEnabled: boolean("dom_read_enabled").default(false).notNull(),
+    // Whether the agent may ACT on the page, not merely read it. Gated
+    // separately: reading is passive, acting is not, and the irreversible
+    // action gate lives in the widget rather than the prompt.
+    domControlEnabled: boolean("dom_control_enabled").default(false).notNull(),
     avatarEnabled: boolean("avatar_enabled").default(false).notNull(),
     // flashhead (default) | bithuman (legacy) — engine selector
     avatarProvider: varchar("avatar_provider", { length: 30 }).default("flashhead"),
@@ -361,6 +372,12 @@ export const embedTokens = pgTable(
     allowScreenShare: boolean("allow_screen_share").default(false).notNull(),
     allowAvatar: boolean("allow_avatar").default(false).notNull(),
     showTranscription: boolean("show_transcription").default(true).notNull(),
+    // Per-deployment gates for the agent's browser capabilities. An agent may
+    // be capable of reading or driving a page; these decide whether this
+    // particular embed is allowed to let it. Only meaningful in popup mode --
+    // an iframe embed is a different document and can reach nothing.
+    allowDomRead: boolean("allow_dom_read").default(false).notNull(),
+    allowDomControl: boolean("allow_dom_control").default(false).notNull(),
     // Appearance
     theme: varchar("theme", { length: 20 }).default("light").notNull(),
     mode: varchar("mode", { length: 20 }).default("popup").notNull(), // popup | iframe

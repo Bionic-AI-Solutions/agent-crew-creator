@@ -314,6 +314,8 @@ export const agentRouter = router({
         ttsLanguage: z.string().nullable().optional(),
         systemPrompt: z.string().nullable().optional(),
         visionEnabled: z.boolean().optional(),
+        domReadEnabled: z.boolean().optional(),
+        domControlEnabled: z.boolean().optional(),
         avatarEnabled: z.boolean().optional(),
         avatarProvider: z.string().nullable().optional(),
         avatarReferenceImage: z.string().nullable().optional(),

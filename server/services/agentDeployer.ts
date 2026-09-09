@@ -264,6 +264,17 @@ export async function deployAgent(
     // erased the next time the agent is edited.
     VISION_MAX_IMAGES: String(agent.visionMaxImages ?? 1),
     VISION_PROACTIVE: String(agent.visionProactive ?? false),
+    // Browser awareness. The worker uses these to decide whether to hold a
+    // page listing and whether to register the action tools at all -- a tool
+    // that is never registered cannot be talked into running, which is the
+    // whole reason the gate does not live in the prompt.
+    DOM_READ_ENABLED: String(agent.domReadEnabled ?? false),
+    // Control implies read: every action names a ref from the current page
+    // listing, so acting without reading has nothing to address. Enforced
+    // here as well as in the UI, because the UI is not the only writer.
+    DOM_CONTROL_ENABLED: String(
+      Boolean(agent.domControlEnabled) && Boolean(agent.domReadEnabled),
+    ),
     AVATAR_ENABLED: String(agent.avatarEnabled),
     // FlashHead is the default avatar engine; bithuman kept as legacy.
     // Per-agent avatar config comes from agent.avatarProvider /

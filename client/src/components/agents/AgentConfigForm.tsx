@@ -35,6 +35,8 @@ export default function AgentConfigForm({ agentId }: Props) {
   const [avatarReferenceImage, setAvatarReferenceImage] = useState("");
   const [avatarName, setAvatarName] = useState("");
   const [visionEnabled, setVisionEnabled] = useState(false);
+  const [domReadEnabled, setDomReadEnabled] = useState(false);
+  const [domControlEnabled, setDomControlEnabled] = useState(false);
   const [backgroundAudioEnabled, setBackgroundAudioEnabled] = useState(false);
   const [busyAudioEnabled, setBusyAudioEnabled] = useState(false);
   const [lettaAgentName, setLettaAgentName] = useState("");
@@ -61,6 +63,8 @@ export default function AgentConfigForm({ agentId }: Props) {
       setAvatarReferenceImage((agent as any).avatarReferenceImage || "");
       setAvatarName((agent as any).avatarName || "");
       setVisionEnabled(agent.visionEnabled);
+      setDomReadEnabled(Boolean((agent as any).domReadEnabled));
+      setDomControlEnabled(Boolean((agent as any).domControlEnabled));
       setBackgroundAudioEnabled(agent.backgroundAudioEnabled);
       setBusyAudioEnabled((agent as any).busyAudioEnabled ?? false);
       setLettaAgentName(agent.lettaAgentName || "");
@@ -114,6 +118,9 @@ export default function AgentConfigForm({ agentId }: Props) {
         avatarReferenceImage: avatarReferenceImage || null,
         avatarName: avatarName || null,
         visionEnabled,
+        domReadEnabled,
+        // Never persist a combination the server would reject anyway.
+        domControlEnabled: domControlEnabled && domReadEnabled,
         backgroundAudioEnabled,
         busyAudioEnabled,
         lettaAgentName: lettaAgentName || null,
@@ -183,6 +190,10 @@ export default function AgentConfigForm({ agentId }: Props) {
             avatarImageUrl={(agent as any)?.avatarImageUrl || ""}
             visionEnabled={visionEnabled}
             setVisionEnabled={setVisionEnabled}
+            domReadEnabled={domReadEnabled}
+            setDomReadEnabled={setDomReadEnabled}
+            domControlEnabled={domControlEnabled}
+            setDomControlEnabled={setDomControlEnabled}
             backgroundAudioEnabled={backgroundAudioEnabled}
             setBackgroundAudioEnabled={setBackgroundAudioEnabled}
             busyAudioEnabled={busyAudioEnabled}
