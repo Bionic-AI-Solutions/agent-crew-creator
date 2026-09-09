@@ -60,6 +60,19 @@ type Listener = (streams: TopicTextStreamData[]) => void;
 interface TopicRegistry {
   streams: TopicTextStreamData[];
   listeners: Set<Listener>;
+  /**
+   * Bumped on every reset. A reader that was mid-utterance when the room
+   * disconnected captures the generation it started in, so a late chunk
+   * cannot write into the next session's transcript.
+   *
+   * Today livekit-client's clearControllers() neither errors nor closes an
+   * open reader, so such a reader simply hangs and never delivers again --
+   * but that is an unenforced upstream detail, and the cost of not depending
+   * on it is one integer compare.
+   */
+  generation: number;
+  /** Stream ids still being read; never evicted mid-arrival. */
+  active: Set<string>;
 }
 
 /** Per-room, per-topic. WeakMap so a finished room is collectable. */
@@ -98,13 +111,30 @@ function upsert(
   );
   if (index === -1) {
     registry.streams.push(entry);
-    if (registry.streams.length > MAX_STREAMS_PER_TOPIC) {
-      registry.streams.splice(0, registry.streams.length - MAX_STREAMS_PER_TOPIC);
-    }
+    evictOldest(registry);
   } else {
     registry.streams[index] = entry;
   }
   emit(registry);
+}
+
+/**
+ * Drop the oldest entries past the cap, skipping any stream still arriving.
+ *
+ * Evicting a stream that is still being read would make its next chunk miss
+ * the id match and re-append at the end, so a half-spoken sentence would jump
+ * to the bottom of the panel instead of filling in where it sits.
+ */
+function evictOldest(registry: TopicRegistry) {
+  const excess = registry.streams.length - MAX_STREAMS_PER_TOPIC;
+  if (excess <= 0) return;
+  let dropped = 0;
+  registry.streams = registry.streams.filter((stream) => {
+    if (dropped >= excess) return true;
+    if (registry.active.has(stream.streamInfo.id)) return true;
+    dropped++;
+    return false;
+  });
 }
 
 /**
@@ -131,7 +161,12 @@ function ensureRegistered(room: Room, topic: string): TopicRegistry {
   const existing = byTopic.get(topic);
   if (existing) return existing;
 
-  const registry: TopicRegistry = { streams: [], listeners: new Set() };
+  const registry: TopicRegistry = {
+    streams: [],
+    listeners: new Set(),
+    generation: 0,
+    active: new Set(),
+  };
   byTopic.set(topic, registry);
 
   // A reconnect is a NEW conversation, on a new server-side room, but the
@@ -142,7 +177,9 @@ function ensureRegistered(room: Room, topic: string): TopicRegistry {
   // previous visitor session's transcript would still be sitting in the
   // panel, interleaved with the new one and indistinguishable from it.
   room.on(RoomEvent.Disconnected, () => {
+    registry.generation += 1;
     registry.streams = [];
+    registry.active.clear();
     emit(registry);
   });
 
@@ -155,9 +192,14 @@ function ensureRegistered(room: Room, topic: string): TopicRegistry {
   ) => {
     const attributes = reader.info.attributes ?? {};
     const segmentId = attributes[SEGMENT_ID_ATTRIBUTE];
+    const generation = registry.generation;
+    registry.active.add(reader.info.id);
     let text = "";
     try {
       for await (const chunk of reader) {
+        // The session this stream belongs to has ended; anything still
+        // arriving belongs to a transcript the user is no longer looking at.
+        if (registry.generation !== generation) return;
         text += chunk;
         // Emit as it arrives rather than at close, so a long spoken answer
         // fills in while it is being said instead of appearing all at once.
@@ -179,6 +221,9 @@ function ensureRegistered(room: Room, topic: string): TopicRegistry {
       // A reader that errors mid-stream leaves whatever arrived already
       // rendered, which beats discarding a half-received answer.
       console.warn(`[${topic}] stream ${reader.info.id} ended early:`, error);
+    } finally {
+      registry.active.delete(reader.info.id);
+      evictOldest(registry);
     }
   };
 
