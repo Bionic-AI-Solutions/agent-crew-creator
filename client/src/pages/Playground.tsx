@@ -9,7 +9,11 @@
  * 3. Render <LiveKitRoom> + <VideoConference> for full audio/video/chat parity.
  */
 import { useMemo, useState } from "react";
-import { LiveKitRoom, VideoConference, useTranscriptions, useChat, useTextStream, RoomAudioRenderer } from "@livekit/components-react";
+import { LiveKitRoom, VideoConference, useChat, RoomAudioRenderer } from "@livekit/components-react";
+import {
+  useTopicTextStream,
+  useTranscriptionStream,
+} from "@/lib/useTopicTextStream";
 import "@livekit/components-styles";
 import { trpc } from "@/lib/trpc";
 import { toBrowserS3ProxyUrl } from "@/lib/s3ProxyUrl";
@@ -60,7 +64,11 @@ function TranscriptionPanel({
   // (1) was subscribed but never rendered, so the panel showed only (2) —
   // which stays empty unless a delegation happens, leaving the chat blank
   // for an entire ordinary voice conversation.
-  const transcriptions = useTranscriptions();
+  // Not useTranscriptions(): that hook never registers its handler in this
+  // app, so the spoken transcript never arrived. Same fix as the embed panel,
+  // applied here at the same time -- this is the surface that kept getting
+  // left behind. See lib/useTopicTextStream.
+  const transcriptions = useTranscriptionStream();
   const { chatMessages } = useChat();
   // Subscribe to the topics the delegation worker actually publishes on.
   // This panel had a comment correctly stating that useChat() never sees them
@@ -68,8 +76,8 @@ function TranscriptionPanel({
   // empty-state placeholder no matter what the secondary produced -- and a
   // tester using the Playground to verify a delegation would conclude it was
   // broken. Third time the embed path was fixed and this one was not.
-  const { textStreams: summaries } = useTextStream("lk.chat.summary");
-  const { textStreams: visuals } = useTextStream("lk.chat.presentation");
+  const summaries = useTopicTextStream("lk.chat.summary");
+  const visuals = useTopicTextStream("lk.chat.presentation");
 
   // useTranscriptions accumulates one entry per utterance and mutates it in
   // place as the STT text streams in, so ordering by stream timestamp keeps

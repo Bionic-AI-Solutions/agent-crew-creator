@@ -10,10 +10,10 @@ import {
   useVoiceAssistant,
   useLocalParticipant,
   useRemoteParticipants,
-  useTextStream,
   BarVisualizer,
   VideoTrack,
 } from "@livekit/components-react";
+import { useTopicTextStream } from "@/lib/useTopicTextStream";
 import "@livekit/components-styles";
 import { ConnectionState, Track } from "livekit-client";
 import { marked } from "marked";
@@ -395,8 +395,8 @@ function ActiveSession({
   const [uploadedDocs, setUploadedDocs] = useState<UploadedDoc[]>([]);
 
   // Subscribe to separate LiveKit text stream topics
-  const { textStreams: summaryStreams } = useTextStream("lk.chat.summary");
-  const { textStreams: presentationStreams } = useTextStream("lk.chat.presentation");
+  const summaryStreams = useTopicTextStream("lk.chat.summary");
+  const presentationStreams = useTopicTextStream("lk.chat.presentation");
 
   const toggleMic = async () => { await localParticipant.setMicrophoneEnabled(!micEnabled); setMicEnabled(!micEnabled); };
   const toggleCam = async () => { await localParticipant.setCameraEnabled(!camEnabled); setCamEnabled(!camEnabled); };

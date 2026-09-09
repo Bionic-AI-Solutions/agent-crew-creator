@@ -1,10 +1,9 @@
 import { useEffect, useRef, useMemo } from "react";
+import { useChat, useRoomContext } from "@livekit/components-react";
 import {
-  useChat,
-  useRoomContext,
-  useTextStream,
-  useTranscriptions,
-} from "@livekit/components-react";
+  useTopicTextStream,
+  useTranscriptionStream,
+} from "@/lib/useTopicTextStream";
 import { ChatMessage } from "./ChatMessage";
 import type { EmbedConfig } from "./types";
 
@@ -18,19 +17,22 @@ interface TranscriptPanelProps {
 export function TranscriptPanel({ config, platformOrigin, onSendMessage }: TranscriptPanelProps) {
   const room = useRoomContext();
   const { chatMessages, send } = useChat();
-  const transcriptions = useTranscriptions();
+  // Not useTranscriptions(): that hook never registers its handler in this
+  // app, so the agent's speech was published and dropped. See
+  // lib/useTopicTextStream.
+  const transcriptions = useTranscriptionStream();
   // The delegation worker publishes its findings to lk.chat.summary. Nothing
   // in this app subscribed to that topic, so results the secondary agent
   // produced were sent and then dropped on the floor -- the user only ever
   // saw them if the primary happened to read them aloud afterwards.
-  const { textStreams: summaries } = useTextStream("lk.chat.summary");
+  const summaries = useTopicTextStream("lk.chat.summary");
   // ...and the illustrations that go with them. The agent is prompted to say
   // "as you can see in the diagram on screen", and for an embed user there was
   // no screen: this topic had no subscriber anywhere in client/, so generated
   // images and artifacts were published and discarded. ChatMessage already
   // parses the artifact JSON and renders image previews, so they only needed
   // routing here.
-  const { textStreams: visuals } = useTextStream("lk.chat.presentation");
+  const visuals = useTopicTextStream("lk.chat.presentation");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Two streams, one panel, ordered together.
