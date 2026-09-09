@@ -103,6 +103,14 @@ export const agentConfigs = pgTable(
     ttsLanguage: varchar("tts_language", { length: 10 }).default("en-IN"),
     systemPrompt: text("system_prompt"),
     visionEnabled: boolean("vision_enabled").default(false).notNull(),
+    // How many frames may stay in the chat context. Below the server's
+    // 16-image cap by a wide margin: an old frame is rarely what the user is
+    // asking about and each one costs vision tokens on EVERY later turn --
+    // measured at ~8.3k uncached prompt tokens per turn with 4 frames held.
+    visionMaxImages: integer("vision_max_images").default(1).notNull(),
+    // Whether a screen change may start a turn on its own, rather than the
+    // agent only looking when the user speaks.
+    visionProactive: boolean("vision_proactive").default(false).notNull(),
     avatarEnabled: boolean("avatar_enabled").default(false).notNull(),
     // flashhead (default) | bithuman (legacy) — engine selector
     avatarProvider: varchar("avatar_provider", { length: 30 }).default("flashhead"),

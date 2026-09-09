@@ -259,6 +259,11 @@ export async function deployAgent(
 
     // ── Agent features ──────────────────────────────────────────
     VISION_ENABLED: String(agent.visionEnabled),
+    // Emitted from the row, not hand-patched onto the ConfigMap: this file
+    // rebuilds the ConfigMap on every save, so anything set only in k8s is
+    // erased the next time the agent is edited.
+    VISION_MAX_IMAGES: String(agent.visionMaxImages ?? 1),
+    VISION_PROACTIVE: String(agent.visionProactive ?? false),
     AVATAR_ENABLED: String(agent.avatarEnabled),
     // FlashHead is the default avatar engine; bithuman kept as legacy.
     // Per-agent avatar config comes from agent.avatarProvider /
