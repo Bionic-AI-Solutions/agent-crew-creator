@@ -9,11 +9,12 @@
  * 3. Render <LiveKitRoom> + <VideoConference> for full audio/video/chat parity.
  */
 import { useMemo, useState } from "react";
-import { LiveKitRoom, VideoConference, useTranscriptions, useChat, RoomAudioRenderer } from "@livekit/components-react";
+import { LiveKitRoom, VideoConference, useTranscriptions, useChat, useTextStream, RoomAudioRenderer } from "@livekit/components-react";
 import "@livekit/components-styles";
 import { trpc } from "@/lib/trpc";
 import { toBrowserS3ProxyUrl } from "@/lib/s3ProxyUrl";
 import { sanitizeRichText } from "@/lib/sanitizeHtml";
+import { parseStructuredPart } from "@/lib/structuredMessage";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -50,20 +51,49 @@ function TranscriptionPanel({
   // Two independent streams need to be rendered side-by-side:
   //  1. Voice transcriptions (lk.transcription topic) — streaming STT text
   //     from both the user and the primary voice agent.
-  //  2. Chat messages (lk.chat topic) — discrete messages, including the
-  //     secondary Letta agent's structured output that the voice agent
-  //     publishes via send_text(..., topic='lk.chat') from inside its
-  //     delegate_to_letta tool.
+  //  2. Chat messages (lk.chat topic) — the user's own typed input. Note the
+  //     agent does NOT reach this topic: the delegation worker publishes to
+  //     lk.chat.summary and lk.chat.presentation, and useChat() subscribes
+  //     only to the default "lk.chat", so this section stays empty of agent
+  //     output however much the secondary produces.
   //
   // (1) was subscribed but never rendered, so the panel showed only (2) —
   // which stays empty unless a delegation happens, leaving the chat blank
   // for an entire ordinary voice conversation.
   const transcriptions = useTranscriptions();
   const { chatMessages } = useChat();
+  // Subscribe to the topics the delegation worker actually publishes on.
+  // This panel had a comment correctly stating that useChat() never sees them
+  // and then went on not subscribing, so "Secondary Agent Output" showed its
+  // empty-state placeholder no matter what the secondary produced -- and a
+  // tester using the Playground to verify a delegation would conclude it was
+  // broken. Third time the embed path was fixed and this one was not.
+  const { textStreams: summaries } = useTextStream("lk.chat.summary");
+  const { textStreams: visuals } = useTextStream("lk.chat.presentation");
 
   // useTranscriptions accumulates one entry per utterance and mutates it in
   // place as the STT text streams in, so ordering by stream timestamp keeps
   // a turn from jumping around while it is still being transcribed.
+  // Findings and illustrations, oldest first, keyed by stream so the two
+  // topics cannot collide.
+  const secondaryOutput = useMemo(() => {
+    const rows = [
+      ...summaries.map((t) => ({
+        id: `summary:${t.streamInfo.id}`, ts: t.streamInfo.timestamp,
+        text: t.text, label: "Findings",
+      })),
+      ...visuals.map((t) => ({
+        id: `presentation:${t.streamInfo.id}`, ts: t.streamInfo.timestamp,
+        text: t.text, label: "Illustration",
+      })),
+      ...chatMessages.map((m, i) => ({
+        id: `chat:${m.id ?? i}`, ts: m.timestamp,
+        text: m.message, label: m.from?.identity ?? "you",
+      })),
+    ];
+    return rows.sort((a, b) => a.ts - b.ts);
+  }, [summaries, visuals, chatMessages]);
+
   const turns = useMemo(
     () => [...transcriptions].sort((a, b) => a.streamInfo.timestamp - b.streamInfo.timestamp),
     [transcriptions],
@@ -102,18 +132,18 @@ function TranscriptionPanel({
         <div className="font-semibold text-xs uppercase text-muted-foreground tracking-wide mb-2">
           Secondary Agent Output
         </div>
-        {chatMessages.length === 0 ? (
+        {secondaryOutput.length === 0 ? (
           <p className="text-muted-foreground text-xs italic">
             Letta-delegated results will appear here.
           </p>
         ) : (
           <div className="space-y-3">
-            {chatMessages.map((m, i) => (
-              <div key={i} className="border-b pb-3 last:border-b-0">
+            {secondaryOutput.map((m) => (
+              <div key={m.id} className="border-b pb-3 last:border-b-0">
                 <div className="text-[10px] uppercase text-muted-foreground tracking-wide mb-1">
-                  {m.from?.identity ?? "agent"}
+                  {m.label}
                 </div>
-                <SecondaryAgentMessage message={m.message} />
+                <SecondaryAgentMessage message={m.text} />
               </div>
             ))}
           </div>
@@ -148,21 +178,21 @@ function SecondaryAgentMessage({ message }: { message: string }) {
 
   // Split message into segments — plain text and artifact JSON objects.
   // Artifacts are separated by blank lines in _parse_letta_response output.
+  //
+  // parseStructuredPart is shared with the embed widget's ChatMessage. This
+  // function used to carry its own copy, which is how a truncation fix landed
+  // on one renderer and not the other: lk.chat.presentation re-emits its
+  // accumulating prefix on every chunk, so a half-arrived artifact was shown
+  // here as raw JSON for almost the whole stream.
   const segments: Array<{ kind: "text"; value: string } | { kind: "artifact"; value: Artifact }> = [];
-  const blocks = message.split(/\n\n+/);
-  for (const block of blocks) {
+  for (const block of message.split(/\n\n+/)) {
     const trimmed = block.trim();
     if (!trimmed) continue;
-    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-      try {
-        const parsed = JSON.parse(trimmed) as Artifact;
-        if (parsed && parsed.type === "artifact") {
-          segments.push({ kind: "artifact", value: parsed });
-          continue;
-        }
-      } catch {
-        // fall through — treat as text
-      }
+    const parsed = parseStructuredPart(trimmed);
+    if (parsed === "incomplete") continue;      // still arriving
+    if (parsed && parsed.type === "artifact") {
+      segments.push({ kind: "artifact", value: parsed as Artifact });
+      continue;
     }
     segments.push({ kind: "text", value: trimmed });
   }

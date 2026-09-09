@@ -88,24 +88,108 @@ def test_empty_and_missing_chunks_are_harmless():
     assert _run(gate, ["", "Hello", "", " there", ""]) == "Hello there"
 
 
-def test_flush_releases_the_held_tail():
-    """The gate holds back a tail to span chunk boundaries; without flush the
-    end of every clean turn would be silently truncated."""
+def test_flush_releases_a_held_partial_marker():
+    """flush() still matters, but only for text that looked like it might
+    become a marker. Ordinary speech is emitted as it arrives (see
+    test_ordinary_speech_holds_nothing_back), which is what makes an
+    interrupted turn safe."""
     gate = NarrationGate()
-    streamed = "".join(gate.feed(c) for c in ["Short"])
-    assert streamed != "Short"          # some of it is still held
-    assert streamed + gate.flush() == "Short"
+    streamed = "".join(gate.feed(c) for c in ["Ready. delegate_to_le"])
+    assert streamed == "Ready. "        # the partial marker is held
+    assert streamed + gate.flush() == "Ready. delegate_to_le"
 
 
 def test_matching_is_case_insensitive():
     gate = NarrationGate()
-    assert _run(gate, ["I will Delegate the work"]) == ""
+    assert _run(gate, ['Here you go. Delegate_To_Letta: "x"']) == "Here you go. "
 
 
-def test_other_markers_also_trip():
-    for marker in ("invoking", "function call", "tool call", "using my tool"):
+def test_cut_happens_at_the_earliest_marker_not_the_first_pattern():
+    """A chat-template leak wraps the function name in tags:
+
+        <tool_call>{"name": "delegate_to_letta", ...}</tool_call>
+
+    Scanning patterns in list order and cutting at the first one that matched
+    cut at delegate_to_letta's offset, so the opening tag and half the JSON
+    were emitted as speech before the gate tripped."""
+    gate = NarrationGate()
+    buf = 'Sure, one moment. <tool_call>{"name": "delegate_to_letta"}</tool_call>'
+    out = gate.feed(buf)
+    assert out == "Sure, one moment. "
+    assert "<tool_call>" not in out and "delegate" not in out
+
+
+def test_earliest_marker_wins_mid_stream():
+    """The list-order bug needs BOTH markers in one buffer with the tag first.
+
+    An earlier version of this test split the payload so that "<tool_call>"
+    completed on its own chunk -- only one pattern ever matched, list order
+    never came into play, and the test passed with the bug reintroduced. The
+    conflict only exists when a single chunk carries the tag AND the function
+    name, so that is what this delivers, after a prior chunk to keep it a
+    streaming case rather than a single-buffer one.
+    """
+    gate = NarrationGate()
+    seq = ["Sure, one sec. ", '<tool_call>{"name": "delegate_to_letta"}', "</tool_call>"]
+    out = "".join(gate.feed(c) for c in seq) + gate.flush()
+    assert out == "Sure, one sec. "
+    assert "<tool_call>" not in out and "delegate" not in out
+    assert gate.tripped is True
+
+
+def test_ordinary_speech_holds_nothing_back():
+    """The gate used to hold a fixed 16 characters, so a turn's last word sat
+    in the buffer and was lost whenever an interruption cancelled the stream
+    before flush(). Only a suffix that could still become a marker is held."""
+    gate = NarrationGate()
+    text = "The prototype chain resolves at run time."
+    emitted = "".join(gate.feed(c) for c in [text[i:i + 7] for i in range(0, len(text), 7)])
+    assert emitted == text, "nothing should be held back for ordinary speech"
+
+
+def test_a_partial_marker_is_still_held():
+    """The holdback must still exist when the text really could be a marker."""
+    gate = NarrationGate()
+    assert gate.feed("Ready. delegate_to_le") == "Ready. "
+    assert gate.feed("tta: go") == ""
+    assert gate.tripped is True
+
+
+def test_chat_template_call_markers_trip():
+    """The other way syntax leaks: the model emits its template's own call
+    markers when it runs past the turn boundary."""
+    for marker in ("<tool_call>", "</tool_call>", "<|tool_call|>"):
         gate = NarrationGate()
-        assert _run(gate, [f"Now {marker} to help"]) == "Now ", marker
+        assert _run(gate, [f"Sure. {marker} whatever"]) == "Sure. ", marker
+
+
+# --- ordinary speech that must NOT be silenced --------------------------
+#
+# Every one of these tripped the old pattern list, and under the gate a trip
+# discards the whole rest of the turn. This agent teaches, so programming and
+# business vocabulary is exactly what it is expected to say.
+
+def test_programming_explanation_is_not_treated_as_a_tool_call():
+    gate = NarrationGate()
+    text = ("When you're calling the constructor, the runtime invokes the "
+            "prototype chain via a function call, and that tool call resolves "
+            "at run time.")
+    assert _run(gate, [text[i:i + 9] for i in range(0, len(text), 9)]) == text
+    assert gate.tripped is False
+
+
+def test_delegating_work_in_plain_english_is_not_silenced():
+    gate = NarrationGate()
+    text = "I will delegate that to the team and let me delegate the rest later."
+    assert _run(gate, [text]) == text
+    assert gate.tripped is False
+
+
+def test_using_my_tools_in_plain_english_is_not_silenced():
+    gate = NarrationGate()
+    text = "Using my tool belt analogy: invoking a method is like calling the plumber."
+    assert _run(gate, [text]) == text
+    assert gate.tripped is False
 
 
 def test_a_gate_is_per_turn_not_shared():

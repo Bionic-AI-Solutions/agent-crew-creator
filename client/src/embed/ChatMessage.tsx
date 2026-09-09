@@ -1,49 +1,15 @@
 import { useMemo, useState } from "react";
 import { toBrowserS3ProxyUrl } from "@/lib/s3ProxyUrl";
 import { sanitizeRichText } from "@/lib/sanitizeHtml";
+import {
+  type StructuredArtifact,
+  type StructuredStatus,
+  type StructuredSummary,
+  splitStructuredMessage,
+} from "@/lib/structuredMessage";
 
 // ── Structured message types ────────────────────────────────────
 
-interface StructuredArtifact {
-  type: "artifact";
-  subtype?: "image" | "file" | string;
-  title: string;
-  image_url?: string;
-  download_url?: string;
-  url?: string;
-  content_type?: string;
-  summary?: string;
-}
-
-interface StructuredStatus {
-  type: "status";
-  message: string;
-  step?: number;
-  total?: number;
-}
-
-interface StructuredSummary {
-  type: "summary";
-  content: string;
-  citations?: string[];
-}
-
-type StructuredMessage = StructuredArtifact | StructuredStatus | StructuredSummary;
-
-/** Try to parse a message as a structured JSON payload. Returns null for plain text. */
-function tryParseStructured(message: string): StructuredMessage | null {
-  const trimmed = message.trim();
-  if (!trimmed.startsWith("{")) return null;
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (parsed && typeof parsed.type === "string" && ["artifact", "status", "summary"].includes(parsed.type)) {
-      return parsed as StructuredMessage;
-    }
-  } catch {
-    // Not JSON — treat as regular text
-  }
-  return null;
-}
 
 /** Allow only http(s) artifact URLs; route our S3 hosts through /api/s3-proxy (absolute on third-party embeds). */
 function safeUrl(url: string | undefined, platformOrigin?: string): string | undefined {
@@ -150,21 +116,10 @@ export function ChatMessage({ message, isLocal, name, platformOrigin }: ChatMess
   const [expandedImg, setExpandedImg] = useState<string | null>(null);
 
   // Check if the message (or any line in it) is a structured JSON payload
-  const { structured, plainParts } = useMemo(() => {
-    const lines = message.split("\n\n");
-    const structured: StructuredMessage[] = [];
-    const plainParts: string[] = [];
-
-    for (const line of lines) {
-      const parsed = tryParseStructured(line);
-      if (parsed) {
-        structured.push(parsed);
-      } else if (line.trim()) {
-        plainParts.push(line);
-      }
-    }
-    return { structured, plainParts };
-  }, [message]);
+  const { structured, plainParts } = useMemo(
+    () => splitStructuredMessage(message),
+    [message],
+  );
 
   const renderedHtml = useMemo(() => {
     if (!plainParts.length) return "";

@@ -754,17 +754,25 @@ class MainAgent(Agent):
         gate = NarrationGate()
 
         async def _filtered_text():
-            async for chunk in text:
-                if not chunk:
-                    continue
-                out = gate.feed(chunk)
-                if out:
-                    yield out
-            tail = gate.flush()
-            if tail:
-                yield tail
-            if gate.tripped:
-                logger.info("[tts_filter] suppressed tool narration from speech")
+            # The finally only guarantees the log line. It cannot rescue held
+            # text: on GeneratorExit control jumps straight here, the flush
+            # below never runs, and an async generator may not yield during
+            # GeneratorExit anyway. What makes interruption safe is the gate
+            # holding back only characters that could still become a marker --
+            # for ordinary speech that is none.
+            try:
+                async for chunk in text:
+                    if not chunk:
+                        continue
+                    out = gate.feed(chunk)
+                    if out:
+                        yield out
+                tail = gate.flush()
+                if tail:
+                    yield tail
+            finally:
+                if gate.tripped:
+                    logger.info("[tts_filter] suppressed tool narration from speech")
 
         # Pass filtered text to the parent — tts_node returns an async
         # generator or coroutine depending on TTS type, so don't await.
@@ -783,20 +791,26 @@ class MainAgent(Agent):
         gate = NarrationGate()
 
         async def _filtered_text():
-            async for chunk in text:
-                if not chunk:
-                    continue
-                out = gate.feed(chunk)
-                if out:
-                    # Preserve TimedString (a str subclass carrying word
-                    # timings) when the chunk passes through whole; only a
-                    # partially-held chunk degrades to plain str.
-                    yield chunk if out == chunk else out
-            tail = gate.flush()
-            if tail:
-                yield tail
-            if gate.tripped:
-                logger.info("[transcript_filter] suppressed tool narration from chat")
+            # The gate holds characters back, so `out` is a shifted slice of the
+            # buffer and almost never the incoming chunk object. Re-wrapping as
+            # TimedString would attach that chunk's timings to different text,
+            # which is worse than having none: the synchronizer falls back to
+            # rate estimation when timings are absent, but trusts them when
+            # present. So plain str is deliberate here, and the cost is
+            # rate-estimated rather than exact word sync on filtered turns.
+            try:
+                async for chunk in text:
+                    if not chunk:
+                        continue
+                    out = gate.feed(chunk)
+                    if out:
+                        yield chunk if out == chunk else out
+                tail = gate.flush()
+                if tail:
+                    yield tail
+            finally:
+                if gate.tripped:
+                    logger.info("[transcript_filter] suppressed tool narration from chat")
 
         return super().transcription_node(_filtered_text(), model_settings)
 
@@ -2197,7 +2211,36 @@ def _resolve_agent_name() -> str:
     return name
 
 
+def _prewarm(_proc) -> None:
+    """Warm anything a job must not wait on, before any room is joined.
+
+    The gpu-ai voice registry is fetched here because the alternative is
+    fetching it from _GpuAiStreamingTTS.__init__, which runs inside the job's
+    event loop -- a blocking HTTP call there freezes every coroutine in the
+    process until it returns. See plugins.prewarm_voice_registry.
+    """
+    from agent.plugins import prewarm_voice_registry
+
+    base_url = (settings.gpu_ai_llm_url or "").rstrip("/")
+    if base_url:
+        prewarm_voice_registry(base_url + "/v1")
+
+
+def build_worker_options(agent_name: str) -> WorkerOptions:
+    """Assemble the worker's options.
+
+    Split out of __main__ so the wiring is reachable from a test. Dropping
+    prewarm_fnc here is invisible at runtime -- sessions keep working, just on
+    guessed sample rates -- so it needs something watching it.
+    """
+    return WorkerOptions(
+        entrypoint_fnc=entrypoint,
+        prewarm_fnc=_prewarm,
+        agent_name=agent_name,
+    )
+
+
 if __name__ == "__main__":
     agent_name = _resolve_agent_name()
     logger.info("Registering LiveKit worker (explicit-dispatch only): agent_name=%r", agent_name)
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, agent_name=agent_name))
+    cli.run_app(build_worker_options(agent_name))

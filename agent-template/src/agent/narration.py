@@ -17,18 +17,26 @@ NarrationGate is for.
 """
 from __future__ import annotations
 
-# Substrings that mark a turn as tool-call narration rather than speech.
-# Lowercase; matched case-insensitively.
+# Markers that a turn is tool-call SYNTAX rather than speech.
+#
+# Every entry must be impossible in ordinary spoken English, because tripping
+# on one discards the rest of the turn. The list used to also hold "calling
+# the", "invoking", "function call", "tool call" and "using my tool", and
+# those are ordinary words -- this agent teaches, and "when you're calling the
+# constructor, the runtime invokes the prototype chain via a function call" is
+# a sentence it should be able to say. Under the old per-chunk filter such a
+# match cost a single chunk; under the gate it costs everything after it, so
+# the same list became a mute button on legitimate answers about programming.
+#
+# What actually leaked in production was raw syntax: a turn reading
+# delegate_to_letta: "..." followed by a hallucinated "User:" line, emitted
+# because the model ran past its turn boundary. A function name and the
+# chat-template's own call markers catch that and cannot be said by accident.
 TOOL_NARRATION_PATTERNS: tuple[str, ...] = (
     "delegate_to_letta",
-    "calling the",
-    "using my tool",
-    "let me delegate",
-    "i'll delegate",
-    "i will delegate",
-    "invoking",
-    "function call",
-    "tool call",
+    "<tool_call>",
+    "</tool_call>",
+    "<|tool_call|>",
 )
 
 
@@ -53,9 +61,27 @@ class NarrationGate:
 
     def __init__(self, patterns: tuple[str, ...] | None = None) -> None:
         self._patterns = patterns or TOOL_NARRATION_PATTERNS
-        self._hold = max((len(p) for p in self._patterns), default=1) - 1
         self._buf = ""
         self._tripped = False
+
+    def _holdback(self, lowered: str) -> int:
+        """How many trailing characters could still become a marker.
+
+        Only a suffix that is already a proper prefix of some pattern is worth
+        keeping. Holding a fixed 16 characters instead -- as this did first --
+        meant ordinary speech always had its last word in the buffer, and an
+        interruption cancels the generator before the flush, so that word was
+        simply lost from both the audio and the transcript. Under this rule a
+        sentence that looks nothing like a marker holds nothing, so there is
+        nothing to lose.
+        """
+        keep = 0
+        for pattern in self._patterns:
+            for k in range(min(len(lowered), len(pattern) - 1), 0, -1):
+                if pattern.startswith(lowered[-k:]):
+                    keep = max(keep, k)
+                    break
+        return keep
 
     @property
     def tripped(self) -> bool:
@@ -71,21 +97,27 @@ class NarrationGate:
 
         self._buf += chunk
         lowered = self._buf.lower()
-        for pattern in self._patterns:
-            idx = lowered.find(pattern)
-            if idx != -1:
-                # Anything before the marker was real speech and has been
-                # earned; the marker and everything after it is dropped.
-                self._tripped = True
-                out, self._buf = self._buf[:idx], ""
-                return out
 
-        # Keep back enough tail that a marker straddling the next chunk
-        # boundary still matches. Without this the gate has the same blind
-        # spot as the per-chunk test it replaces.
-        if len(self._buf) <= self._hold:
-            return ""
-        out, self._buf = self._buf[: -self._hold], self._buf[-self._hold :]
+        # Cut at the EARLIEST marker in the buffer, not at whichever pattern
+        # happens to be first in the list. A chat-template leak looks like
+        #     <tool_call>{"name": "delegate_to_letta", ...}</tool_call>
+        # and checking delegate_to_letta first cut at ITS offset, emitting the
+        # opening tag and half the JSON as though it were speech.
+        hits = [i for i in (lowered.find(p) for p in self._patterns) if i != -1]
+        if hits:
+            idx = min(hits)
+            # Anything before the marker was real speech and has been earned;
+            # the marker and everything after it is dropped.
+            self._tripped = True
+            out, self._buf = self._buf[:idx], ""
+            return out
+
+        # Hold back only what could still grow into a marker.
+        keep = self._holdback(lowered)
+        if keep == 0:
+            out, self._buf = self._buf, ""
+            return out
+        out, self._buf = self._buf[:-keep], self._buf[-keep:]
         return out
 
     def flush(self) -> str:
