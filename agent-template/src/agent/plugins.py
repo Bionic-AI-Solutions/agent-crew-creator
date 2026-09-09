@@ -95,10 +95,29 @@ def _create_primary_llm():
         api_key = os.environ.get("GEMINI_API_KEY", "")
         if not api_key:
             raise ValueError("Gemini API key not configured (expected GEMINI_API_KEY env)")
+        # Thinking OFF by default. Gemini 2.5 runs an internal reasoning pass
+        # before emitting a token, and the user waits through all of it in
+        # silence -- time-to-first-token, not throughput, is what a voice turn
+        # is judged on. Measured on a live jarvis session: TTFT reached 11.7s
+        # with reported throughput collapsing to 3.9 tok/s, because the tokens
+        # being spent were thinking tokens that never reach the caller. A
+        # trivial prompt still burned 75 of them; a 3k-token prompt carrying a
+        # screenshare frame burns far more.
+        #
+        # GEMINI_REASONING_EFFORT re-enables it for an agent that would rather
+        # think than answer quickly ("minimal" | "low" | "medium" | "high").
+        # Anything the OpenAI schema does not accept is ignored with a warning
+        # rather than crashing the worker at startup.
+        effort = os.environ.get("GEMINI_REASONING_EFFORT", "none").strip().lower()
+        if effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
+            logger.warning(
+                "GEMINI_REASONING_EFFORT=%r is not a valid effort; using 'none'", effort)
+            effort = "none"
         return openai_plugin.LLM(
             model=settings.llm_model or "gemini-2.5-flash",
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
             api_key=api_key,
+            reasoning_effort=effort,
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
         )
 
