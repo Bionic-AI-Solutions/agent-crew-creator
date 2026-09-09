@@ -10,6 +10,12 @@ import { Image, Mic, Upload, Volume2, Brain, Save, X, User } from "lucide-react"
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 
+/**
+ * A key is optional here. An agent with no override of its own runs on the
+ * org-wide key in Vault — the deployer has always fallen back to it — so this
+ * says which key is in force rather than presenting an empty box that reads
+ * as an unmet requirement.
+ */
 function ProviderKeyInput({
   agentId,
   provider,
@@ -21,12 +27,22 @@ function ProviderKeyInput({
 }) {
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
+  const trpcUtils = trpc.useUtils();
+
+  const { data: status } = trpc.agentsCrud.getProviderKeyStatus.useQuery({ agentId, provider });
+  const source = status?.source ?? "none";
+
+  const refresh = () => {
+    trpcUtils.agentsCrud.getProviderKeyStatus.invalidate({ agentId, provider });
+    onSaved?.();
+  };
+
   const mutation = trpc.agentsCrud.setProviderKey.useMutation({
     onSuccess: (data: any) => {
       toast.success(`Key validated • ${data?.modelCount ?? 0} models available`);
       setApiKey("");
       setSaving(false);
-      onSaved?.();
+      refresh();
     },
     onError: (err: any) => {
       toast.error(err.message);
@@ -34,15 +50,30 @@ function ProviderKeyInput({
     },
   });
 
+  const clearMutation = trpc.agentsCrud.clearProviderKey.useMutation({
+    onSuccess: (data: any) => {
+      toast.success(
+        data?.source === "shared"
+          ? "Override removed — now using the shared key"
+          : "Override removed — no shared key is configured for this provider",
+      );
+      refresh();
+    },
+    onError: (err: any) => toast.error(err.message),
+  });
+
   return (
     <div>
-      <Label className="text-xs">API Key</Label>
+      <div className="flex items-center gap-2">
+        <Label className="text-xs">API Key</Label>
+        <span className="text-[10px] text-muted-foreground">optional</span>
+      </div>
       <div className="flex gap-2">
         <Input
           type="password"
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
-          placeholder="sk-..."
+          placeholder={source === "agent" ? "Replace this agent's key" : "Leave empty to use the shared key"}
           className="flex-1"
         />
         <Button
@@ -57,9 +88,28 @@ function ProviderKeyInput({
           <Save className="h-3 w-3 mr-1" /> Test & Save
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground mt-1">
-        The key is validated against the provider before saving to Vault.
-      </p>
+
+      {source === "agent" ? (
+        <p className="text-xs text-muted-foreground mt-1 flex items-center gap-2">
+          <span className="text-foreground">This agent has its own key.</span>
+          <button
+            type="button"
+            className="underline hover:text-foreground"
+            onClick={() => clearMutation.mutate({ agentId, provider })}
+            disabled={clearMutation.isPending}
+          >
+            Use the shared key instead
+          </button>
+        </p>
+      ) : source === "shared" ? (
+        <p className="text-xs text-muted-foreground mt-1">
+          Using the shared organisation key from Vault. Add one above only to override it for this agent.
+        </p>
+      ) : (
+        <p className="text-xs text-amber-600 mt-1">
+          No key for this provider — neither on this agent nor shared. Add one, or the agent will deploy without it.
+        </p>
+      )}
     </div>
   );
 }
@@ -106,7 +156,7 @@ function LiveVoicePicker({
     return (
       <div className="text-xs text-amber-600">
         {data?.hasKey === false
-          ? "Add an API key for this provider to load voices."
+          ? "No key for this provider — neither on this agent nor shared in Vault. Add one below to load voices."
           : "No voices available for this provider."}
       </div>
     );
@@ -238,7 +288,7 @@ function LiveModelPicker({
   if (!data?.hasKey) {
     return (
       <div className="text-xs text-amber-600">
-        No API key set for this provider yet. Add one below to load the model list.
+        No key for this provider — neither on this agent nor shared in Vault. Add one below to load the model list.
       </div>
     );
   }

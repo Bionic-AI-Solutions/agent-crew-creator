@@ -655,6 +655,81 @@ export const agentRouter = router({
       return { success: true, modelCount: count, models: modelsOrVoices };
     }),
 
+  /**
+   * Which key an agent would actually use for a provider, without revealing
+   * it. Lets the builder say "running on the shared key" instead of showing a
+   * blank box that reads as a missing requirement.
+   */
+  getProviderKeyStatus: protectedProcedure
+    .input(z.object({ agentId: z.number(), provider: z.string() }))
+    .query(async ({ ctx, input }) => {
+      if (!ctx.db) return { source: "none" as const };
+      const [agent] = await ctx.db
+        .select()
+        .from(agentConfigs)
+        .where(eq(agentConfigs.id, input.agentId))
+        .limit(1);
+      if (!agent) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      await assertAppMembership(ctx, agent.appId);
+
+      const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
+      if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "App not found" });
+
+      const { resolveProviderApiKey } = await import("./_core/providerKeys.js");
+      const { source } = await resolveProviderApiKey({
+        appSlug: app.slug,
+        agentId: agent.id,
+        provider: input.provider,
+      });
+      // The key itself never leaves Vault — only which of the two it came from.
+      return { source };
+    }),
+
+  /**
+   * Drop an agent's per-provider override so it falls back to the shared,
+   * org-wide key. Without this there is no way back: once an override is
+   * written, every later resolution prefers it.
+   */
+  clearProviderKey: protectedProcedure
+    .input(z.object({ agentId: z.number(), provider: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      if (!ctx.db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB unavailable" });
+      const [agent] = await ctx.db
+        .select()
+        .from(agentConfigs)
+        .where(eq(agentConfigs.id, input.agentId))
+        .limit(1);
+      if (!agent) throw new TRPCError({ code: "NOT_FOUND", message: "Agent not found" });
+      await assertAppMembership(ctx, agent.appId);
+
+      const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
+      if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "App not found" });
+
+      const { writeAppSecret, readAppSecret } = await import("./vaultClient.js");
+      const { perAgentKeyField, resolveProviderApiKey } = await import("./_core/providerKeys.js");
+
+      const existing = (await readAppSecret(app.slug)) || {};
+      const field = perAgentKeyField(agent.id, input.provider);
+      if (existing[field] === undefined) {
+        // Already on the shared key; report where it now resolves.
+        const { source } = await resolveProviderApiKey({
+          appSlug: app.slug, agentId: agent.id, provider: input.provider,
+        });
+        return { success: true as const, source };
+      }
+      delete existing[field];
+      await writeAppSecret(app.slug, existing);
+
+      log.info("Cleared per-agent provider key; falling back to shared", {
+        slug: app.slug, agentId: agent.id, provider: input.provider,
+      });
+
+      const { source } = await resolveProviderApiKey({
+        appSlug: app.slug, agentId: agent.id, provider: input.provider,
+      });
+      return { success: true as const, source };
+    }),
+
   // ── Upload avatar image to MinIO ──────────────────────────────
   uploadAvatarImage: protectedProcedure
     .input(
@@ -783,7 +858,7 @@ export const agentRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      if (!ctx.db) return { voices: [], hasKey: false as const };
+      if (!ctx.db) return { voices: [], hasKey: false as const, keySource: "none" as const };
       const [agent] = await ctx.db
         .select()
         .from(agentConfigs)
@@ -806,7 +881,7 @@ export const agentRouter = router({
 
       if (!isSupportedVoiceProvider(input.provider)) {
         return { voices: fallback, hasKey: false as const, supported: false as const,
-                 source: "fallback" as const };
+                 source: "fallback" as const, keySource: "none" as const };
       }
       // Keyless in-cluster providers (gpu-ai) have no Vault entry to read and
       // must not be gated on one -- that gate is what hid the cloned voices.
@@ -814,32 +889,33 @@ export const agentRouter = router({
         try {
           const voices = await listVoicesForProvider(input.provider, "");
           return { voices, hasKey: true as const, supported: true as const,
-                   source: "live" as const };
+                   source: "live" as const, keySource: "none" as const };
         } catch (err) {
           // An in-cluster blip must not empty the picker mid-edit.
           log.warn("live voice discovery failed; serving fallback", {
             provider: input.provider, error: String(err).slice(0, 200),
           });
           return { voices: fallback, hasKey: true as const, supported: true as const,
-                   source: "fallback" as const };
+                   source: "fallback" as const, keySource: "none" as const };
         }
       }
-      let apiKey = input.apiKey;
+      const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
+      if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "App not found" });
+      const { resolveProviderApiKey } = await import("./_core/providerKeys.js");
+      const { apiKey, source: keySource } = await resolveProviderApiKey({
+        appSlug: app.slug,
+        agentId: agent.id,
+        provider: input.provider,
+        requestKey: input.apiKey,
+      });
       if (!apiKey) {
-        const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
-        if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "App not found" });
-        const { readAppSecret } = await import("./vaultClient.js");
-        const vault = (await readAppSecret(app.slug)) || {};
-        apiKey = vault[`agent_${agent.id}_${input.provider}_api_key`];
-      }
-      if (!apiKey) {
-        // No key yet: the form stays usable, and hasKey tells the UI to say so.
+        // Genuinely no key anywhere — the form stays usable and says so.
         return { voices: fallback, hasKey: false as const, supported: true as const,
-                 source: "fallback" as const };
+                 source: "fallback" as const, keySource };
       }
       const voices = await listVoicesForProvider(input.provider, apiKey);
       return { voices, hasKey: true as const, supported: true as const,
-               source: "live" as const };
+               source: "live" as const, keySource };
     }),
 
   /**
@@ -861,7 +937,7 @@ export const agentRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      if (!ctx.db) return { models: [] };
+      if (!ctx.db) return { models: [], hasKey: false as const, keySource: "none" as const };
       const [agent] = await ctx.db
         .select()
         .from(agentConfigs)
@@ -874,24 +950,25 @@ export const agentRouter = router({
         "./services/llmProviders.js"
       );
 
-      let apiKey = input.apiKey;
-      if (!apiKey) {
-        const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
-        if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "App not found" });
-        const { readAppSecret } = await import("./vaultClient.js");
-        const vault = (await readAppSecret(app.slug)) || {};
-        apiKey = vault[`agent_${agent.id}_${input.provider}_api_key`];
-      }
+      const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
+      if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "App not found" });
+      const { resolveProviderApiKey } = await import("./_core/providerKeys.js");
+      const { apiKey, source: keySource } = await resolveProviderApiKey({
+        appSlug: app.slug,
+        agentId: agent.id,
+        provider: input.provider,
+        requestKey: input.apiKey,
+      });
       // gpu-ai is internal cluster — no key needed.
       if (!apiKey && providerNeedsApiKey(input.provider)) {
-        return { models: [], hasKey: false as const };
+        return { models: [], hasKey: false as const, keySource };
       }
       let models = await listModelsForProvider(input.provider, apiKey || "");
       // Filter to tool-capable models when requested
       if (input.toolUseOnly) {
         models = models.filter((m) => m.supportsTools !== false);
       }
-      return { models, hasKey: true as const };
+      return { models, hasKey: true as const, keySource };
     }),
 
   // ── Tools ─────────────────────────────────────────────────────
