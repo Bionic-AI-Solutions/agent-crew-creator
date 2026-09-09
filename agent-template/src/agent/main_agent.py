@@ -1070,139 +1070,6 @@ def _filter_letta_noise(text: str) -> str:
     result = "\n".join(filtered).strip()
     return result
 
-
-async def forward_to_assistant_async(
-    role: str,
-    text: str,
-    room,
-    session=None,
-) -> None:
-    """Forward a primary AI turn to the secondary (Letta) agent so it can
-    proactively prepare supporting visual material — summaries, illustrations,
-    crew results — and publish them to the LiveKit chat data channel (`lk.chat`).
-
-    Only PROFESSOR (assistant-role) turns are forwarded here — user STT is
-    filtered in the conversation_item_added handler before this function is
-    called. This enforces the chain of command: user → primary AI → Letta → chat.
-
-    Notes for callers:
-    - Fire-and-forget — never block the primary voice loop on Letta latency.
-    - Only "assistant_message" content from Letta is treated as a slide;
-      reasoning / tool-call internals are filtered by `_parse_letta_response`.
-    - Empty / trivial Letta replies are dropped (no chat noise).
-    - The user-side appears under participant identity = the agent worker;
-      the chat panel groups them under "Secondary Agent Output".
-    """
-    if not LETTA_AGENT_ID or not text or not text.strip():
-        return
-    if not room:
-        return
-    try:
-        # Frame the turn for Letta. For user messages with visual intent,
-        # send as a direct instruction (no transcript prefix) so the model
-        # treats it as a command and calls generate_image. For primary AI
-        # turns, keep the transcript framing for passive context.
-        lowered = text.strip().lower()
-        has_visual_intent = role == "user" and any(
-            kw in lowered for kw in (
-                "show", "image", "picture", "diagram", "illustration",
-                "draw", "sketch", "visualize", "display", "see",
-            )
-        )
-        if has_visual_intent:
-            framed = text.strip()
-        else:
-            speaker = "Primary AI" if role == "assistant" else "User"
-            framed = f"[Live transcript — {speaker}]: {text.strip()}"
-
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
-            follow_redirects=True,
-        ) as client:
-            response = await client.post(
-                f"{LETTA_BASE}/v1/agents/{LETTA_AGENT_ID}/messages",
-                json={"messages": [{"role": "user", "content": framed}]},
-                headers=LETTA_HEADERS,
-            )
-            response.raise_for_status()
-            result = _parse_letta_response(response.json())
-
-        summary = result.get("summary", "")
-        presentation = result.get("presentation", "")
-        combined = result.get("combined", "")
-
-        if not combined or len(combined.strip()) < 10:
-            # No substantive output — assistant chose not to react.
-            logger.info("[chain] assistant chose silence (in=%d, out=%d)",
-                        len(text), len(combined))
-            return
-
-        # Filter out Letta internal noise from summary before sending
-        if summary:
-            summary = _filter_letta_noise(summary)
-        if presentation:
-            presentation = _filter_letta_noise(presentation)
-
-        # Send to separate channels
-        if summary:
-            await room.local_participant.send_text(summary, topic="lk.chat.summary")
-        if presentation:
-            await room.local_participant.send_text(presentation, topic="lk.chat.presentation")
-        logger.info(
-            "[chain] assistant → panels (proactive, in=%d, summary=%d, pres=%d)",
-            len(text), len(summary), len(presentation),
-        )
-
-        # When substantial content appears on screen, nudge the primary AI
-        # to deliver a lecture-style walk-through of the material.
-        # Cooldown prevents infinite loop: AI speaks → Letta → nudge → AI speaks → ...
-        global _last_nudge_time
-        now = time.monotonic()
-        cooldown_ok = (now - _last_nudge_time) > _NUDGE_COOLDOWN_SECONDS
-        if session and cooldown_ok and len(summary) > 100:
-            try:
-                summary_full = summary[:4000].strip()
-                pres_full = presentation[:2000].strip()
-
-                nudge_parts = []
-                if summary_full:
-                    nudge_parts.append(
-                        f"SUMMARY BULLETS (now visible in the chat panel):\n{summary_full}"
-                    )
-                if pres_full:
-                    nudge_parts.append(
-                        f"ILLUSTRATIONS (now on the presentation screen):\n{pres_full}"
-                    )
-
-                _last_nudge_time = now
-                session.generate_reply(
-                    user_input=(
-                        "[System: your research assistant has posted new findings "
-                        "to the screen. Summary bullets are in the chat panel, "
-                        "and any illustrations are on the presentation screen.\n\n"
-                        "You are the professor. Walk through EVERY key point in "
-                        "the summary — explain each one, add context, give examples. "
-                        "If there are illustrations, reference them as visual aids "
-                        "(e.g. 'as you can see on screen...'). Do NOT just say "
-                        "'I've put some information on screen' — actually teach "
-                        "the material. After covering each major section, pause "
-                        "and ask the student if they have questions or want to "
-                        "go deeper on that topic before moving on. Keep the "
-                        "student engaged.]\n\n"
-                        + "\n\n".join(nudge_parts)
-                    ),
-                    allow_interruptions=True,
-                )
-                logger.info("[chain] primary AI nudged for lecture (proactive path)")
-            except Exception as e:
-                logger.warning("Failed to nudge primary AI (proactive): %s", e)
-    except httpx.TimeoutException:
-        logger.warning("Proactive Letta forward timed out (role=%s)", role)
-    except Exception as e:
-        # Never break the voice loop on a Letta error.
-        logger.warning("Proactive Letta forward failed: %s", e)
-
-
 def _parse_letta_response(data: dict | list) -> dict:
     """Parse Letta API response into a structured dict with separate channels.
 
@@ -1666,7 +1533,6 @@ async def entrypoint(ctx: JobContext):
 
     # ── Create agent early so handlers can reference it ───────
     agent = MainAgent()
-    _primary_turn_count = 0  # Track turns to skip greeting forward
 
     # ── Strict chain-of-command: Primary AI → Assistant ───────
     #
@@ -1688,62 +1554,46 @@ async def entrypoint(ctx: JobContext):
     # Letta so it can call generate_image. The primary AI's paraphrase often
     # softens or omits the explicit "show me" request, so we forward the raw
     # user turn as an additional signal when these phrases appear.
-    VISUAL_INTENT_KEYWORDS = (
-        "show me", "show us", "show ", "see ", "look at", "diagram", "picture",
-        "image", "illustration", "drawing", "visualize", "visualise", "draw",
-        "sketch", "display", "on screen", "can i see", "what does", "look like",
-        "graph", "chart", "plot", "figure",
-    )
 
     @session.on("conversation_item_added")
     def _on_conversation_item(ev: ConversationItemAddedEvent):
+        """Keep recent turns for delegation context. Nothing is forwarded.
+
+        The secondary agent used to be sent every primary turn, plus any user
+        turn containing a "visual intent" keyword. Both are gone.
+
+        That second path is what produced two agents contradicting each other
+        in front of the user. "Are you able to see my screen?" contains the
+        keyword "see ", so it was routed straight to the secondary as a
+        command. The secondary is fed text transcripts and never receives a
+        frame, so it answered, correctly for itself and uselessly for the user,
+        "No, I do not see your screen directly" -- while the primary, which had
+        the frame attached and could see it perfectly well, was answering "Yes,
+        I can see your screen" in the same session.
+
+        The first path was noisier than it looked too: every primary turn
+        provoked a full secondary reply, so the chat panel filled with
+        commentary nobody asked for, generated from a transcript that is
+        strictly less than what the primary already knows.
+
+        The secondary now runs only on work the primary explicitly hands it
+        via delegate_to_letta, and its results come back through
+        _delegation_worker -- published to the chat and presentation panels,
+        and handed to the primary to speak. One voice to the user, one agent
+        deciding what the user is told.
+        """
         try:
             msg = ev.item
             role = getattr(msg, "role", None)
             text = getattr(msg, "text_content", None)
             if not text or not text.strip():
                 return
-
-            # Track all turns (primary AI + user) for conversation context
+            # Still tracked: delegate_to_letta sends the last few turns along
+            # as spoken context, so a delegated task knows what led to it.
             label = "Primary AI" if role == "assistant" else "User"
             agent._recent_turns.append(f"[{label}]: {text.strip()[:300]}")
-
-            if role != "assistant":
-                # USER turn: normally not forwarded (the chain of command flows
-                # user → primary AI → Letta). But when the user explicitly asks
-                # for a visual, we forward a marker turn so Letta has the raw
-                # intent word-for-word and can call generate_image deterministically.
-                lowered = text.strip().lower()
-                if any(kw in lowered for kw in VISUAL_INTENT_KEYWORDS):
-                    logger.info(
-                        "[chain] user visual-intent detected → forwarding to assistant (chars=%d)",
-                        len(text),
-                    )
-                    asyncio.create_task(
-                        forward_to_assistant_async("user", text, ctx.room, session),
-                        name="letta-forward-user-visual",
-                    )
-                return
-
-            nonlocal _primary_turn_count
-            _primary_turn_count += 1
-
-            # Skip forwarding the first primary AI turn (greeting) to Letta.
-            if _primary_turn_count <= 1:
-                logger.info("[chain] primary AI greeting (turn %d) — not forwarding to assistant",
-                            _primary_turn_count)
-                return
-
-            logger.info(
-                "[chain] primary AI spoke → forwarding to assistant (chars=%d)",
-                len(text),
-            )
-            asyncio.create_task(
-                forward_to_assistant_async("assistant", text, ctx.room, session),
-                name="letta-forward-primary",
-            )
         except Exception as e:
-            logger.warning("Failed to schedule proactive forward: %s", e)
+            logger.warning("Failed to record turn: %s", e)
 
     # ── Auto-subscribe mode ──────────────────────────────────
     need_video = (
