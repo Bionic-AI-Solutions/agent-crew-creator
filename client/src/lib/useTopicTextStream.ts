@@ -122,10 +122,13 @@ function upsert(
  * Evicting a stream that is still being read would make its next chunk miss
  * the id match and re-append at the end, so a half-spoken sentence would jump
  * to the bottom of the panel instead of filling in where it sits.
+ *
+ * Returns whether anything was dropped, because callers other than upsert have
+ * to emit the result themselves.
  */
-function evictOldest(registry: TopicRegistry) {
+function evictOldest(registry: TopicRegistry): boolean {
   const excess = registry.streams.length - MAX_STREAMS_PER_TOPIC;
-  if (excess <= 0) return;
+  if (excess <= 0) return false;
   let dropped = 0;
   registry.streams = registry.streams.filter((stream) => {
     if (dropped >= excess) return true;
@@ -133,6 +136,7 @@ function evictOldest(registry: TopicRegistry) {
     dropped++;
     return false;
   });
+  return dropped > 0;
 }
 
 /**
@@ -220,8 +224,12 @@ function ensureRegistered(room: Room, topic: string): TopicRegistry {
       // rendered, which beats discarding a half-received answer.
       console.warn(`[${topic}] stream ${reader.info.id} ended early:`, error);
     } finally {
+      // Entries held back from eviction while this stream was open may now be
+      // droppable. Emit if any went: this path mutates registry.streams, and a
+      // subscriber that is already mounted only ever learns of a change when
+      // it is told -- unlike a fresh mount, which reads the registry directly.
       registry.active.delete(reader.info.id);
-      evictOldest(registry);
+      if (evictOldest(registry)) emit(registry);
     }
   };
 
