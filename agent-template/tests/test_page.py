@@ -635,5 +635,62 @@ def test_the_dropped_total_is_clamped_not_just_the_wire_half():
     assert parse_listing(payload).truncated <= MAX_REPORTED_DROPPED
 
 
+# ── round 6 ────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("cp", range(0x13430, 0x13440))
+def test_format_characters_newer_than_this_python_are_still_stripped(cp):
+    """The browser and the agent run different Unicode versions.
+
+    The image ships Python 3.11 (Unicode 14); the browser's regex uses the
+    runtime's ICU, which is several versions ahead. The Egyptian hieroglyph
+    format controls became Cf in Unicode 15, so \p{Cf} strips them there while
+    unicodedata here still calls them unassigned -- and the two cleaners are
+    supposed to agree exactly.
+    """
+    hidden = chr(cp)
+    payload = json.dumps({"url": "u", "title": "t", "capturedAt": 0, "elements": [
+        {"ref": "ref_1", "role": "button", "name": f"Del{hidden}ete", "visible": True},
+    ]})
+    assert parse_listing(payload).elements[0].name == "Delete"
+
+
+def test_the_unicode_gap_is_recorded_against_this_python():
+    """A reminder to shrink the bridge when the base image moves.
+
+    If this fails because unicodedata has caught up, _CF_AFTER_UNICODE_14 has
+    become redundant and should be deleted rather than carried.
+    """
+    import unicodedata as ud
+    from agent.page import _CF_AFTER_UNICODE_14
+
+    still_needed = [c for c in _CF_AFTER_UNICODE_14 if ud.category(c) != "Cf"]
+    assert still_needed, (
+        "unicodedata now classifies these as Cf; drop _CF_AFTER_UNICODE_14"
+    )
+
+
+def test_only_the_newest_listing_survives_in_history():
+    """Old blocks are not merely expensive, they are wrong: refs renumber on
+    every capture, so a retained block describes a page that no longer exists
+    using refs that now mean something else."""
+    from agent.main_agent import MainAgent
+
+    class Msg:
+        def __init__(self, content):
+            self.content = content
+
+    class Ctx:
+        items = [
+            Msg(["what is this?", '[PAGE] Old\nhttps://e\nref_1 button "Gone"']),
+            Msg(['[PAGE] Older\nhttps://e\nref_1 button "Also gone"']),
+            Msg(["just talking"]),
+        ]
+
+    ctx = Ctx()
+    MainAgent._evict_old_pages(object.__new__(MainAgent), ctx)
+    remaining = [part for m in ctx.items for part in m.content]
+    assert remaining == ["what is this?", "just talking"]
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

@@ -320,7 +320,11 @@ export const agentRouter = router({
         // a list should not be told off for a trailing comma. Empty entries
         // would match every element, so they are dropped.
         domActionDenylist: z
-          .array(z.string())
+          // Each term bounded, not only how many there are. A term is
+          // interpolated verbatim into the agent's system prompt and resent
+          // on every call for the life of the agent, so one pasted blob with
+          // no commas in it is a single valid entry that costs forever.
+          .array(z.string().max(60))
           .max(100)
           .optional()
           .transform((v) =>

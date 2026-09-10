@@ -713,6 +713,30 @@ class MainAgent(Agent):
             await stream.aclose()
             self._video_tasks.pop(key, None)
 
+    def _evict_old_pages(self, turn_ctx) -> None:
+        """Remove page listings from earlier turns.
+
+        Unlike images, none are kept. A listing is only meaningful for the
+        turn it was captured on, and an 8000-character block per turn would
+        otherwise accumulate for the length of the session -- the per-turn cap
+        is real, a per-session one was not.
+        """
+        try:
+            for msg in getattr(turn_ctx, "items", []) or []:
+                content = getattr(msg, "content", None)
+                if not isinstance(content, list):
+                    continue
+                kept = [
+                    part
+                    for part in content
+                    if not (isinstance(part, str) and _is_page_block(part))
+                ]
+                if len(kept) != len(content):
+                    msg.content = kept
+        except Exception as exc:
+            # Housekeeping. Never worth losing a turn over.
+            logger.warning("Page: could not evict old listings (non-fatal): %s", exc)
+
     def _evict_old_images(self, turn_ctx, keep: int) -> None:
         """Strip the oldest images so the next prompt stays under the cap.
 
@@ -792,6 +816,13 @@ class MainAgent(Agent):
             try:
                 block = self._page.block_for_turn()
                 if block:
+                    # Drop every earlier listing first. Only the newest is
+                    # true: refs are renumbered by each capture, so a retained
+                    # older block does not merely cost context, it describes a
+                    # page that no longer exists using refs that now mean
+                    # something else. Images are evicted for cost; these are
+                    # evicted because they are wrong.
+                    self._evict_old_pages(turn_ctx)
                     new_message.content.append(block)
                     logger.info("Page: attached %d chars of page listing", len(block))
             except Exception as exc:

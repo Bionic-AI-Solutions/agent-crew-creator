@@ -736,6 +736,9 @@ export default function LiveKitSection(props: Props) {
                 id="dom-denylist"
                 value={props.domActionDenylist}
                 onChange={(e) => props.setDomActionDenylist(e.target.value)}
+                // 100 terms of 60 characters, matching the server. Refused
+                // there either way; stopping here explains itself sooner.
+                maxLength={6100}
                 placeholder="send, delete, pay, submit, transfer"
                 className="h-8 text-xs"
               />

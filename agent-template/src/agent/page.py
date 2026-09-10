@@ -83,6 +83,19 @@ _EXTRA_INVISIBLE = frozenset(
     "\u034f\u115f\u1160\u17b4\u17b5\u2800\u3164\uffa0"
 )
 
+# Format characters this Python does not yet know are format characters.
+#
+# The two cleaners run on different Unicode versions -- the agent image ships
+# Python 3.11 (Unicode 14) while the browser's regex uses the runtime's ICU
+# (Unicode 17 on current Node) -- so asking each runtime for the category is
+# not the same question on both sides. The Egyptian hieroglyph format controls
+# became Cf in Unicode 15; here they still read as unassigned.
+#
+# Whenever the two disagree the newer answer wins, because the disagreement
+# always means the older table has not caught up. This set is the bridge, and
+# it should shrink to nothing the next time this image's Python moves.
+_CF_AFTER_UNICODE_14 = frozenset(chr(cp) for cp in range(0x13430, 0x13440))
+
 
 def _is_invisible(ch: str) -> bool:
     """Characters that occupy no space, and so cannot be read.
@@ -96,7 +109,11 @@ def _is_invisible(ch: str) -> bool:
     Must agree exactly with the browser's regex: two cleaners that disagree
     about a character mean one of them is wrong.
     """
-    return unicodedata.category(ch) == "Cf" or ch in _EXTRA_INVISIBLE
+    return (
+        unicodedata.category(ch) == "Cf"
+        or ch in _EXTRA_INVISIBLE
+        or ch in _CF_AFTER_UNICODE_14
+    )
 
 
 def _clean(raw: str, limit: int) -> str:
