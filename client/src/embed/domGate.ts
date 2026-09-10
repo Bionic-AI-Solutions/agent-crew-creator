@@ -74,6 +74,24 @@ export function isPasswordField(el: Element): boolean {
 }
 
 /**
+ * Names that back out of a dialog rather than agreeing to it.
+ *
+ * Deliberately short and literal. This is the one place the gate opens rather
+ * than closes, so it earns its entries: each is a word whose only meaning is
+ * "do not do the thing".
+ */
+const DISMISSAL_NAMES = [
+  "cancel", "close", "dismiss", "no", "not now",
+  "back", "go back", "never mind", "nevermind",
+];
+
+/** True if a control's own name reads only as backing out. */
+export function isDismissal(name: string): boolean {
+  const trimmed = (name || "").trim().toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+  return DISMISSAL_NAMES.includes(trimmed);
+}
+
+/**
  * The dialog an element sits in, if any, so a confirmation dialog's wording
  * can gate a button that is innocuously named "OK" or "Yes".
  */
@@ -164,7 +182,17 @@ export function evaluateAction(
         detail: `"${name}" submits a form. Ask the user before doing it.`,
       };
     }
-    const dialogTerm = matchesDenylist(enclosingDialogText(el), ctx.denylist);
+    // The dialog rule exists to catch an innocuous name confirming a
+    // dangerous thing -- an "OK" that deletes an account. A control that
+    // BACKS OUT of that dialog confirms nothing, and refusing it means the
+    // agent cannot even close a dialog it should never have reached without
+    // stopping to ask. Gating the way out of danger is not a safety measure.
+    //
+    // Only the control's own name exempts it, and only from this rule: a
+    // button named "Delete" was already refused above, whatever else it does.
+    const dialogTerm = isDismissal(name)
+      ? null
+      : matchesDenylist(enclosingDialogText(el), ctx.denylist);
     if (dialogTerm) {
       return {
         allowed: false,

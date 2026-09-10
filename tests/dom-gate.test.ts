@@ -14,6 +14,7 @@ import {
   matchesDenylist,
   submitsForm,
   isPasswordField,
+  isDismissal,
   enclosingDialogText,
   evaluateAction,
   evaluateTyping,
@@ -184,6 +185,37 @@ describe("evaluateAction", () => {
     assert.equal((v as any).reason, "awaiting_user_confirmation");
   });
 
+  test("does not gate the way OUT of a dangerous dialog", () => {
+    // Found by running the reader and gate against a demo support desk: every
+    // control in a delete dialog was refused, Cancel included. Gating the exit
+    // from danger is not a safety measure -- it just means the agent cannot
+    // close a dialog it should never have opened without stopping to ask.
+    document.body.innerHTML =
+      '<div role="dialog">Delete this account permanently?' +
+      '<button id="c">Cancel</button><button id="o">OK</button></div>';
+    const cancel = evaluateAction(document.getElementById("c")!, "Cancel", "ref_1", ctx());
+    assert.deepEqual(cancel, { allowed: true });
+    // The affirmative control in the same dialog is still refused.
+    const ok = evaluateAction(document.getElementById("o")!, "OK", "ref_2", ctx());
+    assert.equal((ok as any).reason, "awaiting_user_confirmation");
+  });
+
+  test("a dismissal name does not excuse a denylisted control", () => {
+    // The exemption is only from the dialog rule. A control whose own name is
+    // denylisted was already refused before the dialog is even consulted.
+    document.body.innerHTML =
+      '<div role="dialog">Are you sure?<button>Delete</button></div>';
+    const v = evaluateAction(document.querySelector("button")!, "Delete", "ref_1", ctx());
+    assert.equal((v as any).reason, "awaiting_user_confirmation");
+  });
+
+  test("a dismissal name does not excuse a form submission", () => {
+    document.body.innerHTML =
+      '<div role="dialog">Delete this?<form><button type="submit">Cancel</button></form></div>';
+    const v = evaluateAction(document.querySelector("button")!, "Cancel", "ref_1", ctx());
+    assert.equal((v as any).reason, "awaiting_user_confirmation");
+  });
+
   test("proceeds once the user has confirmed that exact ref", () => {
     const v = evaluateAction(el("<button>Send</button>"), "Send", "ref_1", ctx({
       confirmedRefs: new Set(["ref_1"]),
@@ -238,6 +270,27 @@ describe("evaluateAction", () => {
       document.querySelector("button")!, "Send", "ref_1", ctx({ denylist: [] }),
     );
     assert.equal((v as any).reason, "awaiting_user_confirmation");
+  });
+});
+
+describe("isDismissal", () => {
+  test("recognises the words that only mean backing out", () => {
+    for (const n of ["Cancel", "cancel", "Close", "No", "Not now", "Go back", "Never mind"]) {
+      assert.equal(isDismissal(n), true, n);
+    }
+  });
+
+  test("is not fooled by a longer name that merely contains one", () => {
+    // "Cancel subscription" cancels a subscription; it does not dismiss a
+    // dialog, and treating it as a dismissal would open exactly the wrong door.
+    for (const n of ["Cancel subscription", "Close account", "No, delete it", "Backup now"]) {
+      assert.equal(isDismissal(n), false, n);
+    }
+  });
+
+  test("ignores surrounding punctuation", () => {
+    assert.equal(isDismissal("Cancel!"), true);
+    assert.equal(isDismissal(" (cancel) "), true);
   });
 });
 
