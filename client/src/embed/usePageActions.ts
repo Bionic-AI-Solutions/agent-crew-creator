@@ -249,17 +249,44 @@ export function usePageActions(options: PageActionsOptions) {
     observeBar();
 
     /**
+     * How long to allow for the observer to confirm a re-assertion worked.
+     *
+     * Longer than its own `delay: 150`, and far shorter than the 1s poll, so
+     * by the next tick the answer is always in.
+     */
+    const REASSERT_GRACE_MS = 400;
+
+    /**
      * Is the bar covered by something that survived being re-asserted over?
      *
-     * Three conditions, and each earns its place. The observer must say
-     * covered; we must have re-asserted at least once, or this is the first
-     * report and re-asserting is the answer to it rather than revoking; and
-     * the reading must post-date that re-assertion, because the observer is
-     * asynchronous and a reading from before it describes a world that no
-     * longer exists.
+     * Two ways to know, because the observer reports transitions rather than
+     * state:
+     *
+     *  - It has told us "covered" AGAIN since we re-asserted. That is a page
+     *    re-covering us at a rate the observer can still see.
+     *
+     *  - It has told us NOTHING since we re-asserted, and long enough has
+     *    passed that it would have. Silence is not reassurance here: coming
+     *    back into view IS a transition, so a working re-assertion produces a
+     *    callback. No callback means it did not work -- a page re-covering us
+     *    faster than the observer samples. Measured: a plain setInterval at
+     *    50ms held the Stop button unclickable for eight seconds with zero
+     *    revocations while the agent's click RPC kept succeeding, because the
+     *    first test alone waits for a report that never comes.
+     *
+     * Either way we must have re-asserted at least once first -- a first
+     * report is answered by re-asserting, not by stopping.
+     *
+     * (There is deliberately no "did it report visible since" term. In the
+     * branch that would consult it, nothing has been reported since the
+     * re-assertion at all, so such a report is necessarily older than it. It
+     * was written that way first and carried no weight.)
      */
-    const isOccludedNow = () =>
-      occluded === true && reassertedAt > 0 && occludedAt > reassertedAt;
+    const isOccludedNow = () => {
+      if (occluded !== true || reassertedAt === 0) return false;
+      if (occludedAt > reassertedAt) return true;
+      return Date.now() - reassertedAt > REASSERT_GRACE_MS;
+    };
 
     const ctx = (): GateContext => ({
       denylist: latest.current.denylist,

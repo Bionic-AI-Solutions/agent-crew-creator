@@ -324,7 +324,7 @@ describe("usePageActions — the user can always see and stop it", () => {
   function installObserver(
     version: 1 | 2,
     isVisible = true,
-    opts: { keepReporting?: boolean } = {},
+    opts: { keepReporting?: boolean; recoverAfterMs?: number } = {},
   ) {
     const previousObserver = (globalThis as any).IntersectionObserver;
     const previousEntry = (globalThis as any).IntersectionObserverEntry;
@@ -337,6 +337,13 @@ describe("usePageActions — the user can always see and stop it", () => {
       constructor(private cb: (entries: unknown[]) => void, _opts?: unknown) {}
       observe() {
         this.emit();
+        // Simulates a re-assertion that WORKED: the browser notices the bar
+        // is on top again and says so.
+        if (opts.recoverAfterMs !== undefined) {
+          setTimeout(() => {
+            this.cb([{ isIntersecting: true, isVisible: true }]);
+          }, opts.recoverAfterMs);
+        }
         // Keeps answering, so a report can post-date a re-assertion the way a
         // real overlay's would.
         if (opts.keepReporting) this.timer = setInterval(() => this.emit(), 5);
@@ -465,6 +472,93 @@ describe("usePageActions — the user can always see and stop it", () => {
       assert.equal(second.reason, "control_ui_obscured");
       assert.equal(clicks, 1, "only the first, pre-confirmation click landed");
       assert.ok(revoked.length > 0);
+      void h;
+    } finally {
+      restore();
+    }
+  });
+
+  test("a re-assertion is given time to be confirmed", async () => {
+    // The silence rule must not fire while the answer is still in flight.
+    // The grace period is what separates "the re-assertion did not work" from
+    // "the browser has not got round to saying so yet".
+    dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
+    const bar = makeVisibleBar();
+    const restore = installObserver(2, false);
+    try {
+      const { room, handlers } = makeFakeRoom();
+      let clicks = 0;
+      dom.window.document.getElementById("go")!.addEventListener("click", () => {
+        clicks += 1;
+      });
+      const h = mount(room, {
+        enabled: true,
+        denylist: [],
+        allowedOrigins: [ORIGIN],
+        getControlBar: () => bar,
+        reassertControlBar: () => "top-layer",
+      });
+      await flushMicrotasks();
+      const ref = refNamed(await readListing(handlers), "Continue");
+
+      // Re-asserts, goes through.
+      assert.equal(
+        (await callRpc(handlers, RPC_CLICK, { ref, expect: "Continue" })).ok,
+        true,
+      );
+      // The next one lands inside the grace window (a click's own settle is
+      // 350ms, the grace is 400ms), so silence must not be read as failure.
+      assert.equal(
+        (await callRpc(handlers, RPC_CLICK, { ref, expect: "Continue" })).ok,
+        true,
+        "still inside the grace window",
+      );
+      assert.equal(clicks, 2);
+      void h;
+    } finally {
+      restore();
+    }
+  });
+
+  test("a cover that goes silent still revokes", async () => {
+    // The observer reports TRANSITIONS. A page that re-covers the bar faster
+    // than the observer samples (~150ms) produces no further callbacks at
+    // all, so waiting for a fresh "covered" report waits forever -- measured
+    // at a plain setInterval(50): the Stop button stayed unreachable for
+    // eight seconds with zero revocations while the agent kept clicking.
+    // What settles it is the absence of a VISIBLE report after re-asserting.
+    dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
+    const bar = makeVisibleBar();
+    // Reports covered exactly once, then goes quiet -- the attack's signature.
+    const restore = installObserver(2, false);
+    try {
+      const { room, handlers } = makeFakeRoom();
+      let clicks = 0;
+      dom.window.document.getElementById("go")!.addEventListener("click", () => {
+        clicks += 1;
+      });
+      const h = mount(room, {
+        enabled: true,
+        denylist: [],
+        allowedOrigins: [ORIGIN],
+        getControlBar: () => bar,
+        reassertControlBar: () => "top-layer",
+      });
+      await flushMicrotasks();
+      const ref = refNamed(await readListing(handlers), "Continue");
+
+      // First attempt re-asserts and goes through.
+      const first = await callRpc(handlers, RPC_CLICK, { ref, expect: "Continue" });
+      assert.equal(first.ok, true, JSON.stringify(first));
+
+      // Nothing more is heard from the observer. Once the grace period has
+      // passed with no confirmation that the re-assertion worked, that
+      // silence is itself the answer.
+      await delay(500);
+      const second = await callRpc(handlers, RPC_CLICK, { ref, expect: "Continue" });
+      assert.equal(second.ok, false, JSON.stringify(second));
+      assert.equal(second.reason, "control_ui_obscured");
+      assert.equal(clicks, 1);
       void h;
     } finally {
       restore();
