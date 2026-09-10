@@ -20,6 +20,7 @@ import {
   MAX_ELEMENTS,
   MAX_NAME_CHARS,
   cleanName,
+  clipsEverything,
   __resetRefNumberingForTest,
 } from "../client/src/embed/domReader.ts";
 import { signatureForTest } from "../client/src/embed/usePagePublisher.ts";
@@ -244,6 +245,24 @@ describe("capturePage", () => {
     const page = capturePage(document, window);
     assert.equal(page.elements.length, MAX_ELEMENTS);
     assert.equal(page.truncated, 25);
+  });
+
+  test("finds visible controls declared after thousands of hidden ones", () => {
+    // The walk is bounded, and an unconditional cap bounds it by DOCUMENT
+    // ORDER -- which is not the same as by usefulness. A mail or admin app
+    // with thousands of hidden menu items declared before its visible
+    // controls produced an EMPTY listing, and an empty listing is goals 2
+    // and 3 gone. Confirmed in Chromium before this was fixed.
+    withLayout();
+    const hidden = Array.from(
+      { length: 2500 },
+      (_, i) => `<button style="display:none">Hidden ${i}</button>`,
+    ).join("");
+    document.body.innerHTML =
+      hidden + "<button>Compose</button><button>Reply</button>";
+    const names = capturePage(document, window).elements.map((e) => e.name);
+    assert.ok(names.includes("Compose"), "the visible controls must still be found");
+    assert.ok(names.includes("Reply"));
   });
 
   test("keeps controls in the viewport ahead of those below the fold", () => {
@@ -492,7 +511,7 @@ describe("isRendered — ancestor effects the element's own style does not show"
     assert.ok(!names.includes("Hidden away"), "must not list a control nobody can see");
   });
 
-  test("a control under a clipped ancestor is not listed", () => {
+  test("a control under a fully clipped ancestor is not listed", () => {
     withLayout();
     document.body.innerHTML =
       '<div style="clip-path:inset(100%)"><button>Clipped</button></div>' +
@@ -500,6 +519,36 @@ describe("isRendered — ancestor effects the element's own style does not show"
     const names = capturePage(document, window).elements.map((e) => e.name);
     assert.ok(!names.includes("Clipped"));
     assert.ok(names.includes("Visible"));
+  });
+
+  test("decorative clipping and masking do NOT drop a control", () => {
+    // Confirmed in Chromium: a button inside `clip-path: inset(0 round 12px)`
+    // -- how a rounded-corner card is drawn -- and one inside a
+    // `linear-gradient(black 80%, transparent)` mask -- how a scroll
+    // container fades its edge -- are both plainly legible and hit-testable
+    // at their own centres. Treating any non-none clip or mask as hiding
+    // dropped every control inside either, which is the feature not working
+    // on ordinary sites.
+    withLayout();
+    document.body.innerHTML =
+      '<div style="clip-path:inset(0 round 12px)"><button>Buy now</button></div>' +
+      '<div style="mask-image:linear-gradient(black 80%, transparent)">' +
+      "<button>Learn more</button></div>";
+    const names = capturePage(document, window).elements.map((e) => e.name);
+    assert.ok(names.includes("Buy now"), "a rounded card must not hide its controls");
+    assert.ok(names.includes("Learn more"), "a fade edge must not hide its controls");
+  });
+
+  test("clipsEverything recognises only the shapes that leave nothing", () => {
+    for (const hiding of ["inset(100%)", "inset(50%)", "inset( 100% )", "circle(0)", "circle(0px at 50% 50%)"]) {
+      assert.equal(clipsEverything(hiding), true, hiding);
+    }
+    for (const harmless of [
+      undefined, "", "none", "inset(0 round 12px)", "inset(10%)",
+      "circle(50%)", "polygon(0 0, 100% 0, 100% 100%)", "url(#mask)",
+    ]) {
+      assert.equal(clipsEverything(harmless), false, String(harmless));
+    }
   });
 
   test("an ordinary nested control is still listed", () => {
@@ -522,17 +571,33 @@ describe("capturePage — a page cannot break the reader by naming things", () =
     withLayout();
     document.body.innerHTML =
       '<form id="f" role="search"><input name="hasAttribute"><input name="getAttribute">' +
-      '<input name="closest"><button>Search</button></form>';
+      '<input name="closest"><input name="tagName"><input name="textContent">' +
+      '<input name="id"><input name="getBoundingClientRect">' +
+      "<button>Search</button></form>";
 
     // A browser exposes a form's named controls as properties of the form,
     // which is what shadows these methods. jsdom does not implement that, so
     // the shadowing is applied directly here -- the effect on our code is
     // identical, and it is the effect that matters.
     const form = document.getElementById("f")! as any;
-    for (const name of ["hasAttribute", "getAttribute", "closest"]) {
-      form[name] = document.querySelector(`[name="${name}"]`);
+    // Chromium shadows ALL of these from markup alone -- verified: tagName,
+    // textContent, id and getBoundingClientRect as well as the methods,
+    // because HTMLFormElement's named properties are [LegacyOverrideBuiltIns].
+    for (const name of [
+      "hasAttribute", "getAttribute", "closest",
+      "tagName", "textContent", "id", "getBoundingClientRect",
+    ]) {
+      // defineProperty, not assignment: several of these are getter-only on
+      // the prototype, and an own data property is exactly what a browser's
+      // named-property object installs.
+      Object.defineProperty(form, name, {
+        value: document.querySelector(`[name="${name}"]`) ?? document.createElement("input"),
+        configurable: true,
+        writable: true,
+      });
     }
     assert.notEqual(typeof form.hasAttribute, "function", "the method is shadowed");
+    assert.notEqual(typeof form.tagName, "string", "tagName is shadowed");
 
     const page = capturePage(document, window);
     assert.ok(page.elements.length > 0, "the page still reads");

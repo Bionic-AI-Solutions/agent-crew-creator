@@ -575,6 +575,24 @@ class MainAgent(Agent):
         # than merely intended.
         self._drop_disabled_page_tools()
 
+    @staticmethod
+    def _tool_name(tool) -> str | None:
+        """The name livekit-agents knows a tool by.
+
+        NOT `tool.name`. A registered @function_tool is a FunctionTool whose
+        only public attributes are `id` and `info`, and the name lives at
+        `info.name` -- so filtering on `.name` matched nothing and this whole
+        method was a no-op on the real class. It passed its test because the
+        test used a stand-in with a `.name`, which is precisely the hazard of
+        testing against a shape you invented rather than the one that ships.
+        """
+        info = getattr(tool, "info", None)
+        name = getattr(info, "name", None)
+        if isinstance(name, str):
+            return name
+        fallback = getattr(tool, "__name__", None)
+        return fallback if isinstance(fallback, str) else None
+
     def _drop_disabled_page_tools(self) -> None:
         """Remove the page tools this agent's configuration does not allow."""
         unavailable: set[str] = set()
@@ -585,7 +603,7 @@ class MainAgent(Agent):
         if not unavailable:
             return
         try:
-            kept = [t for t in self.tools if getattr(t, "name", None) not in unavailable]
+            kept = [t for t in self.tools if MainAgent._tool_name(t) not in unavailable]
             if len(kept) != len(self.tools):
                 self.update_tools(kept)
                 logger.info(

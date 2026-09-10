@@ -120,7 +120,27 @@ interface ActionResult {
   elements?: ReturnType<typeof capturePage>["elements"];
 }
 
-function listingReply(changed: boolean, page = capturePage(document, window)): ActionResult {
+/**
+ * Reading the page must never take the actions down with it.
+ *
+ * capturePage walks structure the page controls, and a page can make that
+ * throw -- `<form role="search"><input name="tagName">` did, because a form's
+ * named controls shadow its own methods. The publisher already caught that
+ * and degraded to vision-only; these handlers did not, so one piece of
+ * markup made all four RPCs answer "the page did not respond" for as long as
+ * it existed. The individual reads are hardened now; this is the net under
+ * them, because the next such property is not one anybody has thought of.
+ */
+function safeCapture(): ReturnType<typeof capturePage> {
+  try {
+    return capturePage(document, window);
+  } catch (error) {
+    console.warn("[page] could not read the page:", error);
+    return { url: window.location?.href ?? "", title: "", capturedAt: Date.now(), elements: [] };
+  }
+}
+
+function listingReply(changed: boolean, page = safeCapture()): ActionResult {
   return { ok: true, changed, url: page.url, elements: page.elements };
 }
 
@@ -140,7 +160,7 @@ function fingerprintOf(page: ReturnType<typeof capturePage>): string {
  * identical instruction this feature exists to stop.
  */
 function pageFingerprint(): string {
-  return fingerprintOf(capturePage(document, window));
+  return fingerprintOf(safeCapture());
 }
 
 /**
@@ -429,7 +449,7 @@ export function usePageActions(options: PageActionsOptions) {
       latest.current.onAction?.(`clicked "${name}"`);
       // One capture, used both to decide whether anything changed and as the
       // reply. It was two, and capturePage walks the whole document.
-      const after = capturePage(document, window);
+      const after = safeCapture();
       return JSON.stringify(listingReply(fingerprintOf(after) !== before, after));
     };
 
@@ -488,7 +508,7 @@ export function usePageActions(options: PageActionsOptions) {
       target.dispatchEvent(new Event("change", { bubbles: true }));
       await new Promise((r) => setTimeout(r, 150));
       latest.current.onAction?.(`typed into "${name || "a field"}"`);
-      const after = capturePage(document, window);
+      const after = safeCapture();
       return JSON.stringify(listingReply(fingerprintOf(after) !== before, after));
     };
 

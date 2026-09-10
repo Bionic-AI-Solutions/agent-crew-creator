@@ -71,6 +71,62 @@ export function safeGetAttribute(el: Element, name: string): string | null {
   }
 }
 
+/** A property whose getter lives on a prototype the page can shadow. */
+function realmGetter<T>(el: Element, protoName: "Element" | "Node", prop: string): T | null {
+  try {
+    const view = el.ownerDocument?.defaultView as unknown as
+      | Record<string, { prototype: object } | undefined>
+      | undefined;
+    const proto = view?.[protoName]?.prototype;
+    const desc = proto ? Object.getOwnPropertyDescriptor(proto, prop) : undefined;
+    if (desc?.get) return desc.get.call(el) as T;
+    const own = (el as unknown as Record<string, unknown>)[prop];
+    return (own === undefined ? null : (own as T));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The element's tag name, which a form's own markup can shadow.
+ *
+ * Confirmed in Chromium: `<form><input name="tagName">` replaces
+ * `form.tagName` with the input, because HTMLFormElement's named properties
+ * are declared [LegacyOverrideBuiltIns]. Then `el.tagName.toLowerCase()`
+ * throws, straight out of capturePage -- and the RPC handlers do not catch,
+ * so every action answers "the page did not respond". No script required;
+ * `<form role="search">` plus one chosen input name does it, and role="search"
+ * is what puts the form in the listing in the first place.
+ */
+export function safeTagName(el: Element): string {
+  const name = realmGetter<string>(el, "Element", "tagName");
+  return typeof name === "string" ? name : "";
+}
+
+/** Text content, shadowable the same way. */
+export function safeTextContent(el: Element | null | undefined): string {
+  if (!el) return "";
+  const text = realmGetter<string>(el, "Node", "textContent");
+  return typeof text === "string" ? text : "";
+}
+
+/** The id attribute, shadowable the same way. */
+export function safeId(el: Element): string {
+  const id = realmGetter<string>(el, "Element", "id");
+  return typeof id === "string" ? id : "";
+}
+
+/** The layout box, whose method is shadowable the same way. */
+export function safeRect(el: Element): DOMRect | null {
+  const fn = realmMethod<(this: Element) => DOMRect>(el, "getBoundingClientRect");
+  if (!fn) return null;
+  try {
+    return fn.call(el);
+  } catch {
+    return null;
+  }
+}
+
 export function safeClosest(el: Element, selector: string): Element | null {
   const fn = realmMethod<(this: Element, s: string) => Element | null>(el, "closest");
   if (!fn) return null;
@@ -122,11 +178,17 @@ const INTERACTIVE_SELECTOR = [
 export const MAX_ELEMENTS = 200;
 
 /**
- * How many interactive elements are examined at all.
+ * The hard ceiling on how many interactive elements are examined at all.
  *
- * Bounds the cost of a capture on a very large page; see capturePage.
+ * Deliberately far above MAX_ELEMENTS. A low ceiling truncates by DOCUMENT
+ * ORDER, which is not the same as truncating by usefulness: a page with 3000
+ * hidden menu items declared before its visible controls -- an ordinary shape
+ * for a mail or admin app -- produced an EMPTY listing, and an empty listing
+ * is goals 2 and 3 gone. The early exit below is what keeps the common case
+ * cheap; this is only the backstop for a page that is enormous AND mostly
+ * hidden.
  */
-export const MAX_RAW_ELEMENTS = 2000;
+export const MAX_RAW_ELEMENTS = 20000;
 
 /**
  * Longest accessible name kept.
@@ -191,7 +253,7 @@ export function cleanName(raw: string): string {
  */
 function isPasswordField(el: Element): boolean {
   return (
-    el.tagName.toLowerCase() === "input" &&
+    safeTagName(el).toLowerCase() === "input" &&
     (safeGetAttribute(el, "type") || "").toLowerCase() === "password"
   );
 }
@@ -214,7 +276,7 @@ function rawAccessibleName(el: Element, doc: Document): string {
   if (labelledBy) {
     const text = labelledBy
       .split(/\s+/)
-      .map((id) => doc.getElementById(id)?.textContent?.trim() ?? "")
+      .map((id) => safeTextContent(doc.getElementById(id)).trim())
       .filter(Boolean)
       .join(" ");
     if (text) return text;
@@ -225,20 +287,22 @@ function rawAccessibleName(el: Element, doc: Document): string {
   // Compared by attribute rather than built into a selector: an id may contain
   // quotes, brackets or a leading digit, and CSS.escape is not everywhere the
   // widget runs -- a throw here would lose the whole capture, not one name.
-  if (el.id) {
+  const ownId = safeId(el);
+  if (ownId) {
     for (const label of Array.from(doc.querySelectorAll("label[for]"))) {
-      if (safeGetAttribute(label, "for") === el.id) {
-        const text = label.textContent?.trim();
+      if (safeGetAttribute(label, "for") === ownId) {
+        const text = safeTextContent(label).trim();
         if (text) return text;
         break;
       }
     }
   }
   const wrapping = safeClosest(el, "label");
-  if (wrapping?.textContent?.trim()) return wrapping.textContent.trim();
+  const wrappingText = safeTextContent(wrapping).trim();
+  if (wrappingText) return wrappingText;
 
   if (!isPasswordField(el)) {
-    const text = el.textContent?.trim();
+    const text = safeTextContent(el).trim();
     if (text) return text;
   }
 
@@ -273,7 +337,7 @@ export function elementRole(el: Element): string {
   const explicit = safeGetAttribute(el, "role");
   if (explicit?.trim()) return explicit.trim().toLowerCase();
 
-  const tag = el.tagName.toLowerCase();
+  const tag = safeTagName(el).toLowerCase();
   if (tag === "a") return "link";
   if (tag === "select") return "combobox";
   if (tag === "textarea") return "textbox";
@@ -298,14 +362,45 @@ export function elementRole(el: Element): string {
 /** How far up to look for an ancestor that hides this control. */
 const MAX_RENDER_ANCESTORS = 60;
 
+/**
+ * Does this `clip-path` clip away everything, rather than merely shape it?
+ *
+ * Treating any non-`none` clip-path as hiding was wrong in the direction that
+ * breaks the feature: `clip-path: inset(0 round 12px)` is how a rounded-corner
+ * card is drawn, and every control inside one vanished from the listing.
+ * Confirmed in Chromium -- the button was plainly legible and hit-testable at
+ * its own centre, and the reader dropped it.
+ *
+ * Only the shapes that leave nothing count. Anything else is decoration.
+ *
+ * `mask-image` used to be checked here too and no longer is. A fade edge
+ * (`linear-gradient(black 80%, transparent)`) is an ordinary scroll-container
+ * treatment, and nothing short of sampling the mask distinguishes it from one
+ * that hides everything. Missing a fully-masked ancestor means the listing may
+ * name a control the user cannot see; dropping every control under a fade
+ * means the agent cannot guide anyone through a scrolling panel. The first is
+ * a smaller wrong than the second.
+ */
+export function clipsEverything(value: string | undefined): boolean {
+  if (!value) return false;
+  const v = value.trim().toLowerCase();
+  if (v === "" || v === "none") return false;
+  // inset(100%) and anything >= 50% from each side leaves no area.
+  const inset = /^inset\(\s*(\d+(?:\.\d+)?)%/.exec(v);
+  if (inset && parseFloat(inset[1]) >= 50) return true;
+  if (/^circle\(\s*0(px|%|\s|\))/.test(v)) return true;
+  if (/^ellipse\(\s*0(px|%)?\s/.test(v)) return true;
+  return false;
+}
+
 export function isRendered(el: Element, win: Window): boolean {
   if (safeHasAttribute(el, "hidden")) return false;
   if (safeGetAttribute(el, "aria-hidden") === "true") return false;
   const style = win.getComputedStyle(el);
   if (style.display === "none" || style.visibility === "hidden") return false;
   if (style.opacity === "0") return false;
-  const rect = el.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return false;
+  const rect = safeRect(el);
+  if (!rect || rect.width <= 0 || rect.height <= 0) return false;
 
   // Ancestors too, for the properties that do not inherit and do not change
   // the element's own box: `opacity`, `clip-path` and `mask`. A control under
@@ -325,20 +420,15 @@ export function isRendered(el: Element, win: Window): boolean {
       return false;
     }
     if (ancestorStyle.opacity === "0") return false;
-    const clip = ancestorStyle.clipPath ?? "none";
-    if (clip !== "none" && clip !== "") return false;
-    const mask =
-      ancestorStyle.maskImage ??
-      (ancestorStyle as unknown as { webkitMaskImage?: string }).webkitMaskImage ??
-      "none";
-    if (mask !== "none" && mask !== "") return false;
+    if (clipsEverything(ancestorStyle.clipPath)) return false;
     node = node.parentElement;
   }
   return true;
 }
 
 function isInViewport(el: Element, win: Window): boolean {
-  const rect = el.getBoundingClientRect();
+  const rect = safeRect(el);
+  if (!rect) return false;
   const height = win.innerHeight || 0;
   const width = win.innerWidth || 0;
   return rect.bottom > 0 && rect.right > 0 && rect.top < height && rect.left < width;
@@ -484,10 +574,26 @@ export function capturePage(doc: Document, win: Window = doc.defaultView!): Page
   // appear late in document order before it stops.
   const all = doc.querySelectorAll(INTERACTIVE_SELECTOR);
   const walkLimit = Math.min(all.length, MAX_RAW_ELEMENTS);
+  let onScreen = 0;
+  let unexamined = 0;
   for (let i = 0; i < walkLimit; i++) {
     const el = all[i];
     if (!isRendered(el, win)) continue;
-    seen.push({ el, visible: isInViewport(el, win) });
+    const visible = isInViewport(el, win);
+    if (visible) onScreen += 1;
+    seen.push({ el, visible });
+    // Enough on-screen controls to fill the listing: everything after this
+    // would be trimmed anyway, so measuring it is pure cost. This is what
+    // makes a huge page cheap -- 40,000 interactive elements went from 816ms
+    // at 4x CPU throttle to a few milliseconds -- without truncating by
+    // document order, which is what an unconditional cap did.
+    if (onScreen >= MAX_ELEMENTS) {
+      // Everything after this point is unexamined, and the agent has to be
+      // told the listing is partial -- that is what makes it re-read or ask
+      // the user to scroll rather than concluding a control does not exist.
+      unexamined = all.length - (i + 1);
+      break;
+    }
   }
 
   // Visible first, original document order preserved within each group, so
@@ -512,7 +618,9 @@ export function capturePage(doc: Document, win: Window = doc.defaultView!): Page
     capturedAt: Date.now(),
     elements,
   };
-  if (ordered.length > kept.length) listing.truncated = ordered.length - kept.length;
+  // What was dropped from the listing, plus what the walk never reached.
+  const dropped = ordered.length - kept.length + unexamined;
+  if (dropped > 0) listing.truncated = dropped;
   return listing;
 }
 

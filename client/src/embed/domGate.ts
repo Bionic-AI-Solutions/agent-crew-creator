@@ -80,6 +80,32 @@ export function matchesDenylist(name: string, denylist: string[]): string | null
  * "not a submit button" for every control in a frame -- failing open, in the
  * one place that must fail closed.
  */
+/** The form this control belongs to, read so the page cannot lie about it. */
+function formOwner(el: Element): Element | null {
+  try {
+    const view = el.ownerDocument?.defaultView as unknown as
+      | Record<string, { prototype: object } | undefined>
+      | undefined;
+    for (const iface of ["HTMLButtonElement", "HTMLInputElement"]) {
+      const proto = view?.[iface]?.prototype;
+      const desc = proto ? Object.getOwnPropertyDescriptor(proto, "form") : undefined;
+      if (desc?.get) {
+        const owned = desc.get.call(el) as Element | null;
+        if (owned) return owned;
+      }
+    }
+  } catch {
+    // Fall through to the attribute, below.
+  }
+  try {
+    const id = el.getAttribute("form");
+    if (id) return el.ownerDocument?.getElementById(id) ?? null;
+    return el.closest("form");
+  } catch {
+    return null;
+  }
+}
+
 export function submitsForm(el: Element): boolean {
   const tag = el.tagName.toLowerCase();
   if (tag !== "input" && tag !== "button") return false;
@@ -95,9 +121,12 @@ export function submitsForm(el: Element): boolean {
   // HTML and submits just as hard: the click was allowed through the gate and
   // POSTed to /account/delete. The `form` IDL property is the association the
   // browser itself uses, wherever the element sits.
-  const owner =
-    (el as HTMLButtonElement | HTMLInputElement).form ??
-    (el.getAttribute("form") ? el.ownerDocument?.getElementById(el.getAttribute("form")!) : null);
+  // Read through the realm's own prototype. `el.form` off the instance is
+  // shadowable, and a page that redefines the getter to return null turns an
+  // ordinary submit button inside <form action="/account/delete"> into
+  // something this gate waves through. That needs script -- the documented
+  // residual risk -- but the read costs nothing to get right.
+  const owner = formOwner(el);
   if (tag === "button" && !type && owner) return true;
   return false;
 }
@@ -155,6 +184,14 @@ const MAX_DIALOG_TEXT = 4000;
 
 function deepTextContent(root: Element): string {
   let out = "";
+  // A page that redefines Element.prototype.shadowRoot to return its own
+  // parent turns this walk into unbounded recursion -- a stack overflow
+  // thrown from the middle of deciding whether a click is allowed. Needs
+  // script on the host page, so it is not a new exposure, but a walk over
+  // page-controlled structure should not be able to run away regardless.
+  const seen = new Set<Node>();
+  let depth = 0;
+  const MAX_DEPTH = 200;
 
   const visitChildren = (parent: Node) => {
     for (const child of Array.from(parent.childNodes)) {
@@ -168,10 +205,25 @@ function deepTextContent(root: Element): string {
   };
 
   const visit = (node: Element) => {
-    if (out.length >= MAX_DIALOG_TEXT) return;
-    const shadow = (node as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
-    if (shadow) visitChildren(shadow);
-    visitChildren(node);
+    if (out.length >= MAX_DIALOG_TEXT || depth >= MAX_DEPTH) return;
+    if (seen.has(node)) return;
+    seen.add(node);
+    depth += 1;
+    try {
+      let shadow: ShadowRoot | null | undefined;
+      try {
+        shadow = (node as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+      } catch {
+        shadow = null;
+      }
+      if (shadow && !seen.has(shadow)) {
+        seen.add(shadow);
+        visitChildren(shadow);
+      }
+      visitChildren(node);
+    } finally {
+      depth -= 1;
+    }
   };
 
   visit(root);

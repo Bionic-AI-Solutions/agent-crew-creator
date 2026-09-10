@@ -1035,10 +1035,23 @@ def _tool_names(monkeypatch, *, read: bool, control: bool):
     # Only the tool-withholding step is exercised, on a stand-in: Agent.tools
     # is a read-only property, and constructing a real agent would pull in
     # models, plugins and a room. The method touches nothing else.
+    # Shaped like the real thing: livekit-agents' FunctionTool carries its
+    # name at `info.name`, NOT `.name`. An earlier version of this stand-in
+    # had a `.name`, so it passed while the code under test filtered on an
+    # attribute that does not exist and removed nothing at all.
+    class _Info:
+        def __init__(self, name):
+            self.name = name
+
+    class _FakeTool:
+        def __init__(self, name):
+            self.info = _Info(name)
+            self.id = "id-" + name
+
     class _Stand:
         def __init__(self):
             self.tools = [
-                type("T", (), {"name": n})()
+                _FakeTool(n)
                 for n in ["read_page", "click", "type_text", "scroll", "delegate_to_letta"]
             ]
 
@@ -1047,7 +1060,7 @@ def _tool_names(monkeypatch, *, read: bool, control: bool):
 
     stand = _Stand()
     ma.MainAgent._drop_disabled_page_tools(stand)
-    return {t.name for t in stand.tools}
+    return {t.info.name for t in stand.tools}
 
 
 def test_an_agent_with_dom_off_carries_no_page_tools(monkeypatch):
