@@ -30,8 +30,30 @@ export type GateRefusalReason =
  * Terms containing spaces are matched as phrases, so an operator can forbid
  * "delete account" without forbidding every "delete".
  */
+/**
+ * Characters that take up no space and therefore cannot be seen.
+ *
+ * Zero-width spaces and joiners, the bidi controls, the word joiner, and the
+ * BOM. A page names its own controls, so a button labelled "Del\u200Bete
+ * Account" reads as "Delete Account" to every human who looks at it and as
+ * something else entirely to a string comparison.
+ *
+ * Removed rather than replaced with a space: replacing splits "delete" into
+ * two words, which fails to match just as thoroughly.
+ */
+const INVISIBLE_CHARS = /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g;
+
+/** Strip what cannot be seen, so a comparison sees what a person sees. */
+export function visibleText(raw: string): string {
+  return (raw || "").replace(INVISIBLE_CHARS, "");
+}
+
 export function matchesDenylist(name: string, denylist: string[]): string | null {
-  const haystack = (name || "").toLowerCase();
+  // Normalised first. The gate's whole claim is that it is code a page cannot
+  // argue with -- but the page writes the name being compared, so a name it
+  // can make invisible-different from what a human reads is an argument it
+  // gets to win. isDismissal below already normalised; this did not.
+  const haystack = visibleText(name).toLowerCase();
   if (!haystack) return null;
   for (const raw of denylist) {
     const term = raw.trim().toLowerCase();
@@ -87,7 +109,7 @@ const DISMISSAL_NAMES = [
 
 /** True if a control's own name reads only as backing out. */
 export function isDismissal(name: string): boolean {
-  const trimmed = (name || "").trim().toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+  const trimmed = visibleText(name).trim().toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
   return DISMISSAL_NAMES.includes(trimmed);
 }
 
@@ -97,7 +119,7 @@ export function isDismissal(name: string): boolean {
  */
 export function enclosingDialogText(el: Element): string {
   const dialog = el.closest('[role="dialog"], [role="alertdialog"], dialog');
-  return dialog?.textContent?.trim() ?? "";
+  return visibleText(dialog?.textContent ?? "").trim();
 }
 
 export interface GateContext {

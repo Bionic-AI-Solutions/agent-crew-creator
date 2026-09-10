@@ -75,6 +75,22 @@ class PageListing:
     truncated: int = 0
 
 
+def _is_invisible(ch: str) -> bool:
+    """Characters that occupy no space, and so cannot be read.
+
+    Zero-width spaces and joiners, the bidi controls, the word joiner, the
+    BOM. Removed rather than spaced, and the same set the browser removes --
+    two cleaners that disagree about a character mean one of them is wrong,
+    and this pair disagreed about the BOM.
+    """
+    return (
+        "\u200b" <= ch <= "\u200f"
+        or "\u202a" <= ch <= "\u202e"
+        or "\u2060" <= ch <= "\u206f"
+        or ch == "\ufeff"
+    )
+
+
 def _clean(raw: str, limit: int) -> str:
     """Flatten a page-authored string so it cannot forge structure.
 
@@ -98,7 +114,11 @@ def _clean(raw: str, limit: int) -> str:
     # happens to neutralise them inside `name`; the header is not quoted, so
     # nothing was neutralising them there.
     mapped = "".join(
-        " " if ch < " " or "\x7f" <= ch <= "\x9f" or "\ud800" <= ch <= "\udfff" else ch
+        ""
+        if _is_invisible(ch)
+        else " "
+        if ch < " " or "\x7f" <= ch <= "\x9f" or "\ud800" <= ch <= "\udfff"
+        else ch
         for ch in raw
     )
     flat = " ".join(mapped.split())
@@ -139,16 +159,20 @@ def parse_listing(payload: str) -> PageListing | None:
 
     elements: list[PageElement] = []
     for item in considered:
+        # Validity is checked BEFORE the cap, so junk past the 200th control
+        # is not counted as a control. Counting it inverted the defect this
+        # counter was added to fix: instead of hiding controls that existed,
+        # it claimed controls that never did, and the agent would go looking.
+        if not isinstance(item, dict):
+            continue
+        ref = str(item.get("ref") or "")
+        if not ref:
+            continue
         if len(elements) >= MAX_ELEMENTS:
             # Counted, not silently discarded. Dropping elements without
             # saying so is what makes the model believe it saw the whole page
             # -- and then tell the user a control does not exist.
             dropped_by_cap += 1
-            continue
-        if not isinstance(item, dict):
-            continue
-        ref = str(item.get("ref") or "")
-        if not ref:
             continue
         elements.append(
             PageElement(

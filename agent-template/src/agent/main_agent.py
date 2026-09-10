@@ -17,6 +17,7 @@ import asyncio
 import base64
 import json as _json
 import logging
+import re
 import os
 import time
 from collections import deque
@@ -2348,7 +2349,14 @@ def _is_page_block(item: str) -> bool:
     from agent.page import PAGE_BLOCK_PREFIX
 
     stripped = item.lstrip()
-    return stripped.startswith(PAGE_BLOCK_PREFIX) and "\n" in stripped
+    if not stripped.startswith(PAGE_BLOCK_PREFIX):
+        return False
+    # A newline alone is too weak: a pasted multi-line message whose first
+    # line happens to be "[PAGE]" satisfies it. Every block this code produces
+    # has at least one control line, because block_for_turn returns None for
+    # an empty listing -- so requiring one identifies the block rather than
+    # guessing at it.
+    return re.search(r"^ref_\d+ ", stripped, re.MULTILINE) is not None
 
 
 def _spoken_text(msg) -> str:

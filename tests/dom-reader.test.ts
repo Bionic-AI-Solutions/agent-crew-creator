@@ -122,6 +122,22 @@ describe("cleanName", () => {
     }
   });
 
+  test("strips every lone surrogate in a run, not every other one", () => {
+    // The previous implementation chained two regexes; in a run of three lone
+    // low surrogates the middle one was consumed as the harmless prefix of
+    // the next match and survived.
+    for (const raw of ["\uDC00\uDC00\uDC00", "\uD800\uD800\uD800", "a\uDC00\uDC00\uDC00b"]) {
+      const out = cleanName(raw);
+      assert.equal(/[\uD800-\uDFFF]/.test(out), false, JSON.stringify(raw));
+      assert.doesNotThrow(() => Buffer.from(out, "utf8"));
+    }
+  });
+
+  test("removes invisible characters rather than spacing them", () => {
+    assert.equal(cleanName("Del\u200Bete Account"), "Delete Account");
+    assert.equal(cleanName("a\uFEFFb"), "ab");
+  });
+
   test("keeps a valid surrogate pair intact", () => {
     // The point is unpaired ones. A real emoji must survive.
     assert.equal(cleanName("hi \u{1F600} there"), "hi \u{1F600} there");

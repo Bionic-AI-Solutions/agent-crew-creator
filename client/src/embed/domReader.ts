@@ -74,12 +74,19 @@ export const MAX_NAME_CHARS = 120;
  */
 export function cleanName(raw: string): string {
   const flat = raw
-    // Control characters, and any unpaired surrogate. A lone surrogate
-    // survives JSON but cannot be encoded as UTF-8, so it is a crash waiting
-    // for the first consumer that touches the raw string.
+    // Control characters.
     .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
-    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, " ")
-    .replace(/(^|[^\uD800-\uDBFF])([\uDC00-\uDFFF])/g, "$1 ")
+    // Invisible characters are removed, not spaced: a zero-width space inside
+    // a word is not a word break, and turning it into one would make the name
+    // read differently from how it looks.
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, "")
+    // Unpaired surrogates. Matching a VALID pair first is what makes this
+    // right: the previous version used a lookbehind-ish chained pair of
+    // regexes, and in a run of three lone low surrogates the middle one was
+    // consumed as the harmless prefix of the next match and survived.
+    .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g, (m) =>
+      m.length === 2 ? m : " ",
+    )
     .replace(/\s+/g, " ")
     .trim();
   if (flat.length <= MAX_NAME_CHARS) return flat;

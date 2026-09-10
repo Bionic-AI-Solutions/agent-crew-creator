@@ -531,5 +531,64 @@ def test_a_real_block_is_still_filtered():
     assert _spoken_text(Msg()) == "what is on screen?"
 
 
+# ── round 4 ────────────────────────────────────────────────────
+
+def test_junk_after_the_cap_is_not_counted_as_a_missing_control():
+    """The mirror of the defect round 3 fixed. Counting every remaining item
+    once the cap is reached meant 300 nulls became "(300 more controls not
+    listed)" -- claiming controls that never existed, and sending the agent
+    looking for them."""
+    payload = json.dumps({"url": "u", "title": "t", "capturedAt": 0, "truncated": 0,
+                          "elements": [
+        {"ref": f"ref_{i}", "role": "button", "name": f"B{i}", "visible": True}
+        for i in range(200)
+    ] + [None] * 300})
+    listing = parse_listing(payload)
+    assert len(listing.elements) == 200
+    assert listing.truncated == 0
+    assert "more controls not listed" not in format_for_model(listing)
+
+
+def test_real_controls_past_the_cap_are_still_counted():
+    payload = json.dumps({"url": "u", "title": "t", "capturedAt": 0, "truncated": 0,
+                          "elements": [
+        {"ref": f"ref_{i}", "role": "button", "name": f"B{i}", "visible": True}
+        for i in range(250)
+    ]})
+    assert parse_listing(payload).truncated == 50
+
+
+def test_invisible_characters_are_removed_like_the_browser_removes_them():
+    # Two cleaners that disagree about a character mean one of them is wrong;
+    # this pair disagreed about the BOM.
+    payload = json.dumps({"url": "u", "title": "t", "capturedAt": 0, "elements": [
+        {"ref": "ref_1", "role": "button", "name": "Del\u200bete Account", "visible": True},
+        {"ref": "ref_2", "role": "button", "name": "a\ufeffb\u2060c", "visible": True},
+    ]})
+    names = [e.name for e in parse_listing(payload).elements]
+    assert names == ["Delete Account", "abc"]
+
+
+def test_a_multiline_paste_starting_with_the_marker_keeps_its_turn():
+    """A newline alone was too weak a test: a pasted multi-line message whose
+    first line is "[PAGE]" satisfied it and was silently dropped from what
+    Letta is told led to a delegation."""
+    from agent.main_agent import _spoken_text
+
+    class Msg:
+        content = ["[PAGE] here is what I copied\nsecond line\nthird line"]
+
+    assert _spoken_text(Msg()).startswith("[PAGE] here is what I copied")
+
+
+def test_a_real_block_is_still_recognised():
+    from agent.main_agent import _spoken_text
+
+    class Msg:
+        content = ["what is this?", '[PAGE] Title\nhttps://e\nref_1 button "Go"']
+
+    assert _spoken_text(Msg()) == "what is this?"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

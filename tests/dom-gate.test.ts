@@ -15,6 +15,7 @@ import {
   submitsForm,
   isPasswordField,
   isDismissal,
+  visibleText,
   enclosingDialogText,
   evaluateAction,
   evaluateTyping,
@@ -100,6 +101,22 @@ describe("matchesDenylist", () => {
     assert.equal(matchesDenylist("a.*b", [".*"]), null);
   });
 
+  test("is not defeated by an invisible character in the name", () => {
+    // A page names its own controls. "Del\u200Bete Account" is pixel-identical
+    // to "Delete Account" for every human who looks at it, and the gate's
+    // claim is that it is code a page cannot argue with -- so a name the page
+    // can make invisibly different is an argument it gets to win.
+    assert.equal(matchesDenylist("Del\u200Bete Account", DEFAULT_DENYLIST), "delete");
+    assert.equal(matchesDenylist("D\u200BE\u200BL\u200BE\u200BT\u200BE", DEFAULT_DENYLIST), "delete");
+    assert.equal(matchesDenylist("Send\uFEFF reply", DEFAULT_DENYLIST), "send");
+    assert.equal(matchesDenylist("\u202EPay now", DEFAULT_DENYLIST), "pay");
+  });
+
+  test("removing the invisible does not join two real words", () => {
+    // Removed, not spaced -- but a genuine space must still separate.
+    assert.equal(matchesDenylist("Resend link", DEFAULT_DENYLIST), null);
+  });
+
   test("returns null for an unnamed control", () => {
     assert.equal(matchesDenylist("", DEFAULT_DENYLIST), null);
   });
@@ -121,6 +138,33 @@ describe("realm independence", () => {
     const other = new JSDOM("<form><button>Go</button></form>");
     const foreign = other.window.document.querySelector("button")!;
     assert.equal(submitsForm(foreign), true);
+  });
+});
+
+describe("visibleText", () => {
+  test("removes what cannot be seen and keeps what can", () => {
+    assert.equal(visibleText("Del\u200Bete"), "Delete");
+    assert.equal(visibleText("a\uFEFFb\u2060c"), "abc");
+    assert.equal(visibleText("Save draft"), "Save draft");
+    assert.equal(visibleText("naïve 😀"), "naïve 😀");
+  });
+});
+
+describe("dialog and dismissal see the same text", () => {
+  test("an invisible character cannot hide a dangerous dialog", () => {
+    document.body.innerHTML =
+      '<div role="dialog">Permanently del\u200Bete this account<button>OK</button></div>';
+    const v = evaluateAction(document.querySelector("button")!, "OK", "ref_1", ctx());
+    assert.equal((v as any).reason, "awaiting_user_confirmation");
+  });
+
+  test("an invisible character cannot fake a dismissal", () => {
+    // "Cancel" spelled with a zero-width space is still Cancel, and must
+    // still be allowed to close a dialog.
+    document.body.innerHTML =
+      '<div role="dialog">Delete this?<button>Can\u200Bcel</button></div>';
+    const v = evaluateAction(document.querySelector("button")!, "Can\u200Bcel", "ref_1", ctx());
+    assert.deepEqual(v, { allowed: true });
   });
 });
 

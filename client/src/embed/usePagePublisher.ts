@@ -68,10 +68,13 @@ export function usePagePublisher(enabled: boolean) {
         const sig = signature(listing);
         if (sig === lastSignature.current) return;
         await room.localParticipant.sendText(JSON.stringify(listing), { topic: PAGE_TOPIC });
-        // Only after the send resolves. Recording it first meant a send that
-        // threw -- the reconnect case this function already worries about --
-        // left the agent on a stale listing permanently, because the next
-        // identical capture would be skipped as unchanged.
+        // Only after the send resolves, and only if this effect is still the
+        // live one. lastSignature is a ref shared across effect re-runs, so a
+        // publish left in flight by a reconnect could resolve after the
+        // replacement effect had already published something newer and
+        // overwrite it -- leaving the agent believing a page it had moved on
+        // from was still current.
+        if (cancelled) return;
         lastSignature.current = sig;
       } catch (error) {
         // The agent degrades to vision-only without a listing. It must not
