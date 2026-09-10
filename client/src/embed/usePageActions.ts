@@ -17,7 +17,7 @@
  */
 import { useCallback, useEffect, useRef } from "react";
 import { useRoomContext } from "@livekit/components-react";
-import { capturePage, resolveRef, listedName, safeTagName } from "./domReader";
+import { capturePage, resolveRef, listedName, safeTagName, safeInvoke } from "./domReader";
 import { evaluateAction, evaluateTyping, visibleText, type GateContext } from "./domGate";
 import { controlUiVisibility, type TopLayerState } from "./controlVisibility";
 
@@ -475,7 +475,7 @@ export function usePageActions(options: PageActionsOptions) {
       confirmedKeys.current.delete(key);
 
       const before = pageFingerprint();
-      (el as HTMLElement).click();
+      safeInvoke(el, "click");
       // Give the page a beat to react before reporting what changed.
       await new Promise((r) => setTimeout(r, 350));
       latest.current.onAction?.(`clicked "${name}"`);
@@ -502,7 +502,7 @@ export function usePageActions(options: PageActionsOptions) {
       const value = String(text ?? "").slice(0, MAX_TYPE_CHARS);
       const before = pageFingerprint();
       const target = el as HTMLElement;
-      target.focus();
+      safeInvoke(target, "focus");
 
       const tag = safeTagName(target).toLowerCase();
       if (tag === "input" || tag === "textarea") {

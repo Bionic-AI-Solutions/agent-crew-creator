@@ -1094,10 +1094,14 @@ class MainAgent(Agent):
 
     # ── Acting on the page ───────────────────────────────────
     #
-    # Registered unconditionally, and refused at the top of each one when
-    # DOM_CONTROL_ENABLED is off. The browser refuses independently and is
-    # the real gate; this is the cheaper first no, and it keeps the model
-    # from planning around a capability it does not have.
+    # Registered only when the agent's configuration allows them -- see
+    # _page_tools() -- and refused here as well, per method: reading needs
+    # DOM_READ_ENABLED, acting needs DOM_CONTROL_ENABLED. The browser refuses
+    # independently and is the real gate; this is the cheaper first no.
+    #
+    # An earlier version refused EVERYTHING when control was off, read_page
+    # included -- so a read-only agent, whose one page tool is read_page, was
+    # handed a tool guaranteed to refuse.
     #
     # Every one of these returns the FRESH listing, so a claim of success is
     # always backed by a page that shows it -- the agent never has to guess
@@ -1106,7 +1110,10 @@ class MainAgent(Agent):
 
     async def _page_rpc(self, context: RunContext, method: str, payload: dict) -> str:
         """Ask the browser to do something, and report exactly what it said."""
-        if not settings.dom_control_enabled:
+        if method == "bionic.read_page":
+            if not settings.dom_read_enabled:
+                return "Reading the page is not enabled for this agent."
+        elif not settings.dom_control_enabled:
             return "Acting on the page is not enabled for this agent."
         identity = self._page_actor_identity(context)
         if not identity:
@@ -1118,7 +1125,13 @@ class MainAgent(Agent):
             reply = await room.local_participant.perform_rpc(
                 destination_identity=identity,
                 method=method,
-                payload=json.dumps(payload),
+                # _json: this module imports json under that name, and the
+                # bare `json` here raised NameError on every page action --
+                # swallowed by the except below and reported as "the page did
+                # not respond". Every tool was dead from the first commit, and
+                # 243 tests were green, because none of them dispatched one.
+                # test_page.py now does.
+                payload=_json.dumps(payload),
                 response_timeout=10,
             )
         except Exception as exc:

@@ -1072,6 +1072,131 @@ def test_no_visitor_means_no_one_to_act_for():
     assert _actor([]) is None
 
 
+# ── the tools actually reach the wire ───────────────────────────
+#
+# The single most important test in this file, and the one that did not
+# exist for fourteen review rounds. _page_rpc called `json.dumps` in a module
+# that imports json as `_json`, so EVERY page action raised NameError, the
+# broad except swallowed it, and the agent heard "the page did not respond".
+# 243 tests were green against a dead executor, because none of them
+# dispatched a tool. These drive a real MainAgent's real tool object through
+# to a recording perform_rpc and assert the request reached it.
+
+import asyncio
+
+
+class _Participant:
+    def __init__(self, identity):
+        self.identity = identity
+
+
+class _LocalParticipant:
+    def __init__(self):
+        self.calls = []
+
+    async def perform_rpc(self, *, destination_identity, method, payload, response_timeout):
+        self.calls.append({"to": destination_identity, "method": method, "payload": payload})
+        return json.dumps({"ok": True, "changed": True, "url": "https://e/x", "elements": [
+            {"ref": "ref_1", "role": "button", "name": "Send", "visible": True},
+        ]})
+
+
+class _Room:
+    def __init__(self):
+        self.remote_participants = {"embed-vis-1": _Participant("embed-vis-1")}
+        self.local_participant = _LocalParticipant()
+
+
+class _RoomIO:
+    def __init__(self, room):
+        self.room = room
+
+
+class _Session:
+    def __init__(self, room):
+        self.room_io = _RoomIO(room)
+
+
+class _Ctx:
+    """The slice of RunContext the page tools read."""
+
+    def __init__(self, room):
+        self.session = _Session(room)
+
+
+def _real_agent(monkeypatch, *, read: bool, control: bool):
+    from config import settings
+    from agent.main_agent import MainAgent
+
+    monkeypatch.setattr(settings, "dom_read_enabled", read)
+    monkeypatch.setattr(settings, "dom_control_enabled", control)
+    return MainAgent()
+
+
+def _tool(agent, name):
+    return next(t for t in agent.tools if t.info.name == name)
+
+
+def test_click_reaches_the_rpc_transport(monkeypatch):
+    agent = _real_agent(monkeypatch, read=True, control=True)
+    room = _Room()
+    out = asyncio.run(_tool(agent, "click")(_Ctx(room), "ref_1", "Send"))
+    calls = room.local_participant.calls
+    assert len(calls) == 1, f"the request never reached the wire: {out!r}"
+    assert calls[0]["method"] == "bionic.click"
+    assert calls[0]["to"] == "embed-vis-1"
+    assert json.loads(calls[0]["payload"]) == {"ref": "ref_1", "expect": "Send"}
+    assert "did not respond" not in out
+    assert 'ref_1 button "Send"' in out
+
+
+def test_every_page_tool_reaches_the_wire(monkeypatch):
+    agent = _real_agent(monkeypatch, read=True, control=True)
+    room = _Room()
+    ctx = _Ctx(room)
+    asyncio.run(_tool(agent, "read_page")(ctx))
+    asyncio.run(_tool(agent, "type_text")(ctx, "ref_1", "hello", "Send"))
+    asyncio.run(_tool(agent, "scroll")(ctx))
+    methods = [c["method"] for c in room.local_participant.calls]
+    assert methods == ["bionic.read_page", "bionic.type_text", "bionic.scroll"], methods
+
+
+def test_a_read_only_agent_can_read(monkeypatch):
+    # After 2fb8207 a read-only agent carries read_page and nothing else --
+    # and _page_rpc refused everything when control was off, so its one page
+    # tool was guaranteed to refuse.
+    agent = _real_agent(monkeypatch, read=True, control=False)
+    room = _Room()
+    out = asyncio.run(_tool(agent, "read_page")(_Ctx(room)))
+    assert [c["method"] for c in room.local_participant.calls] == ["bionic.read_page"]
+    assert "not enabled" not in out
+
+
+def test_acting_is_still_refused_when_control_is_off(monkeypatch):
+    # The acting tools are not even registered on such an agent, so this
+    # exercises the gate directly -- it is the defence in depth.
+    agent = _real_agent(monkeypatch, read=True, control=False)
+    room = _Room()
+    out = asyncio.run(agent._page_rpc(_Ctx(room), "bionic.click", {"ref": "ref_1", "expect": "x"}))
+    assert "not enabled" in out
+    assert room.local_participant.calls == []
+
+
+def test_the_printed_dropped_count_is_clamped():
+    from agent.page import MAX_REPORTED_DROPPED
+
+    listing = PageListing(
+        url="u", title="t",
+        elements=[PageElement(ref=f"ref_{i}", role="button", name="N" * 100, visible=True) for i in range(300)],
+        truncated=MAX_REPORTED_DROPPED,
+    )
+    out = format_for_model(listing, max_chars=1500)
+    import re
+    m = re.search(r"\((\d+) more controls not listed\)", out)
+    assert m, out[-200:]
+    assert int(m.group(1)) <= MAX_REPORTED_DROPPED
+
+
 # ── goal 4: an agent with DOM off is untouched ─────────────────
 #
 # On the REAL class. Two earlier versions of this test used a stand-in with

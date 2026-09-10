@@ -1039,6 +1039,35 @@ describe("usePageActions — what the agent is told about the listing", () => {
   });
 });
 
+describe("usePageActions — a target that shadows its own click", () => {
+  test("is still clicked, through the prototype", async () => {
+    dom.window.document.body.innerHTML =
+      '<form id="f" role="button"><input name="click"><span>Continue</span></form>';
+    const form = dom.window.document.getElementById("f")!;
+    Object.defineProperty(form, "click", {
+      value: dom.window.document.querySelector('[name="click"]'), configurable: true,
+    });
+    let fired = 0;
+    form.addEventListener("click", () => {
+      fired += 1;
+    });
+    const bar = makeVisibleBar();
+    const { room, handlers } = makeFakeRoom();
+    const h = mount(room, {
+      enabled: true, denylist: [], allowedOrigins: [ORIGIN], getControlBar: () => bar,
+      reassertControlBar: () => "top-layer",
+    });
+    await flushMicrotasks();
+    const listing = await readListing(handlers);
+    const target = listing.find((e) => e.role === "button");
+    assert.ok(target, "the form is a listing entry");
+    const res = await callRpc(handlers, RPC_CLICK, { ref: target!.ref, expect: target!.name });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(fired, 1);
+    void h;
+  });
+});
+
 describe("usePageActions — typing", () => {
   test("types into a contenteditable instead of throwing", async () => {
     // domReader offers contenteditable elements as typeable, and the native

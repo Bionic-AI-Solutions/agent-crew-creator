@@ -22,6 +22,7 @@ import {
   MAX_NAME_CHARS,
   cleanName,
   clipsEverything,
+  safeInvoke,
   __resetRefNumberingForTest,
 } from "../client/src/embed/domReader.ts";
 import { signatureForTest } from "../client/src/embed/usePagePublisher.ts";
@@ -609,7 +610,7 @@ describe("capturePage — a page cannot break the reader by naming things", () =
     document.body.innerHTML =
       '<form id="f" role="search"><input name="hasAttribute"><input name="getAttribute">' +
       '<input name="closest"><input name="tagName"><input name="textContent">' +
-      '<input name="id"><input name="getBoundingClientRect">' +
+      '<input name="id"><input name="getBoundingClientRect"><input name="ownerDocument">' +
       "<button>Search</button></form>";
 
     // A browser exposes a form's named controls as properties of the form,
@@ -622,7 +623,7 @@ describe("capturePage — a page cannot break the reader by naming things", () =
     // because HTMLFormElement's named properties are [LegacyOverrideBuiltIns].
     for (const name of [
       "hasAttribute", "getAttribute", "closest",
-      "tagName", "textContent", "id", "getBoundingClientRect",
+      "tagName", "textContent", "id", "getBoundingClientRect", "ownerDocument",
     ]) {
       // defineProperty, not assignment: several of these are getter-only on
       // the prototype, and an own data property is exactly what a browser's
@@ -648,3 +649,31 @@ describe("capturePage — a page cannot break the reader by naming things", () =
     assert.ok(listedForm, 'the clobbered form must still be read as role="search"');
   });
 });
+
+describe("safeInvoke — writes the page cannot shadow", () => {
+  test("clicks a form whose input is named click", () => {
+    // A <form role="button"> is a listing entry and passes the gate; its
+    // <input name="click"> replaces form.click with the input in Chromium.
+    withLayout();
+    document.body.innerHTML =
+      '<form id="f" role="button"><input name="click"><span>Continue</span></form>';
+    const form = document.getElementById("f")!;
+    Object.defineProperty(form, "click", {
+      value: document.querySelector('[name="click"]'), configurable: true,
+    });
+    let fired = 0;
+    form.addEventListener("click", () => {
+      fired += 1;
+    });
+    assert.equal(safeInvoke(form, "click"), true);
+    assert.equal(fired, 1, "the prototype's click must still dispatch");
+  });
+
+  test("an image input is listed as a button", () => {
+    withLayout();
+    document.body.innerHTML = '<form><input type="image" alt="Go" src="go.png"></form>';
+    const page = capturePage(document, window);
+    assert.equal(page.elements.find((e) => e.name === "Go")?.role, "button");
+  });
+});
+

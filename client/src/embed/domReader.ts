@@ -34,9 +34,79 @@
  * a different realm whose prototypes are different objects -- the same reason
  * domGate.ts judges by tagName rather than instanceof.
  */
+/**
+ * The element's document, read off Node.prototype rather than the instance.
+ *
+ * `el.ownerDocument` is itself a shadowable read -- `<input
+ * name="ownerDocument">` inside a form replaces it -- and every realm-safe
+ * helper started from it, so that one name switched them all off (they fail
+ * closed: the element drops out of the listing). The widget only ever
+ * captures its own document, so the widget's own Node.prototype is the right
+ * getter; the instance read stays as the fallback for anything else.
+ */
+function ownerDoc(el: Element): Document | null {
+  try {
+    // Walk the element's OWN prototype chain for the getter, rather than
+    // reading it off a global `Node`. The chain is the element's realm by
+    // construction, so this is right for an iframe's element too, and it
+    // does not depend on any global existing -- the test harness for this
+    // file has none, and a global-based version silently fell back to the
+    // shadowed instance read there. Markup cannot alter a prototype chain;
+    // only script can, which is the documented residual risk.
+    let proto: object | null = Object.getPrototypeOf(el);
+    for (let depth = 0; proto && depth < 12; depth++) {
+      const desc = Object.getOwnPropertyDescriptor(proto, "ownerDocument");
+      if (desc?.get) {
+        const doc = desc.get.call(el) as Document | null | undefined;
+        return doc ?? null;
+      }
+      proto = Object.getPrototypeOf(proto);
+    }
+  } catch {
+    // fall through
+  }
+  try {
+    return el.ownerDocument ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Call a method the page may have shadowed on the instance.
+ *
+ * `el.click()` and `el.focus()` were the two DOM WRITES left on the action
+ * path after the reads were hardened. A `<form role="button">` is a listing
+ * entry and passes the gate; its `<input name="click">` replaced form.click
+ * with the input, and the handler threw "el.click is not a function" into
+ * "the page did not respond". Confirmed in Chromium on real markup.
+ */
+export function safeInvoke(el: Element, name: "click" | "focus"): boolean {
+  try {
+    const view = ownerDoc(el)?.defaultView as unknown as
+      | Record<string, { prototype: Record<string, unknown> } | undefined>
+      | undefined;
+    for (const iface of ["HTMLElement", "SVGElement", "Element"]) {
+      const fn = view?.[iface]?.prototype?.[name];
+      if (typeof fn === "function") {
+        (fn as (this: Element) => void).call(el);
+        return true;
+      }
+    }
+    const own = (el as unknown as Record<string, unknown>)[name];
+    if (typeof own === "function") {
+      (own as (this: Element) => void).call(el);
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function realmMethod<T extends Function>(el: Element, name: string): T | null {
   try {
-    const view = el.ownerDocument?.defaultView as unknown as
+    const view = ownerDoc(el)?.defaultView as unknown as
       | { Element?: { prototype: Record<string, unknown> } }
       | undefined;
     const proto = view?.Element?.prototype;
@@ -74,7 +144,7 @@ export function safeGetAttribute(el: Element, name: string): string | null {
 /** A property whose getter lives on a prototype the page can shadow. */
 function realmGetter<T>(el: Element, protoName: "Element" | "Node", prop: string): T | null {
   try {
-    const view = el.ownerDocument?.defaultView as unknown as
+    const view = ownerDoc(el)?.defaultView as unknown as
       | Record<string, { prototype: object } | undefined>
       | undefined;
     const proto = view?.[protoName]?.prototype;
@@ -348,6 +418,9 @@ export function elementRole(el: Element): string {
     const type = (safeGetAttribute(el, "type") || "text").toLowerCase();
     if (type === "checkbox" || type === "radio") return type;
     if (type === "submit" || type === "button" || type === "reset") return "button";
+    // A graphical submit button. The gate already refuses clicking it; the
+    // listing called it a textbox, which is not what it is.
+    if (type === "image") return "button";
     if (type === "password") return "password";
     return "textbox";
   }

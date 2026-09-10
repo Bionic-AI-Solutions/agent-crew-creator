@@ -255,7 +255,10 @@ def format_for_model(listing: PageListing, max_chars: int = MAX_PAGE_CHARS) -> s
         if dropped_count:
             # Said plainly, so the model does not conclude a control is absent
             # when it was merely cut.
-            suffix = f"({dropped_count} more controls not listed)"
+            # Clamped at the point of printing, not only at parse time: lines
+            # dropped locally by the budget loop are added after the parse
+            # clamp, and the sum could print past MAX_REPORTED_DROPPED.
+            suffix = f"({min(dropped_count, MAX_REPORTED_DROPPED)} more controls not listed)"
             body = f"{body}\n{suffix}" if body else suffix
         if listing.unexamined:
             # A different fact from the one above, and worded as one: these
