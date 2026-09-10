@@ -32,6 +32,26 @@ const MAX_TYPE_CHARS = 2000;
 /** How often the control UI is re-checked while control is on. */
 const VISIBILITY_POLL_MS = 1000;
 
+/**
+ * IntersectionObserver v2, which TypeScript's DOM lib does not describe yet.
+ *
+ * Declared rather than cast through `any` so the two fields actually used
+ * keep their types, and so a future lib update conflicts loudly instead of
+ * silently disagreeing.
+ */
+interface VisibilityObserverInit extends IntersectionObserverInit {
+  trackVisibility?: boolean;
+  /** Required to be >= 100 when trackVisibility is set. */
+  delay?: number;
+}
+interface VisibilityObserverEntry extends IntersectionObserverEntry {
+  isVisible?: boolean;
+}
+type VisibilityObserverCtor = new (
+  callback: (entries: VisibilityObserverEntry[]) => void,
+  options?: VisibilityObserverInit,
+) => IntersectionObserver;
+
 export interface ConfirmRequest {
   /** Opaque key to hand back to `confirm()` if the user agrees. */
   key: string;
@@ -145,6 +165,41 @@ export function usePageActions(options: PageActionsOptions) {
     let disposed = false;
     let lastUrl = window.location.href;
 
+    // The browser's own answer to "is something covering the bar".
+    // IntersectionObserver v2 (trackVisibility) is the clickjacking-protection
+    // primitive, and it replaces a hand-written scan that three review rounds
+    // could not get right. null until it has reported, or where it is not
+    // supported -- in which case the synchronous checks stand alone and a
+    // pointer-events:none scrim is not detected. That is stated in
+    // controlVisibility.ts rather than papered over.
+    let occluded: boolean | null = null;
+    let observer: IntersectionObserver | null = null;
+    const observeBar = () => {
+      const target = latest.current.getControlBar();
+      if (!target) return;
+      try {
+        const Observer = IntersectionObserver as unknown as VisibilityObserverCtor;
+        observer = new Observer(
+          (entries: VisibilityObserverEntry[]) => {
+            for (const entry of entries) {
+              // isVisible is only meaningful when the entry actually
+              // intersects; a bar scrolled out of a scroller reports false
+              // for a reason the rect check already covers.
+              occluded = entry.isIntersecting ? !entry.isVisible : null;
+            }
+          },
+          // delay >= 100 is required for trackVisibility.
+          { trackVisibility: true, delay: 150, threshold: 0 },
+        );
+        observer.observe(target);
+      } catch {
+        // Not supported here (only Chromium implements v2 today).
+        observer = null;
+        occluded = null;
+      }
+    };
+    observeBar();
+
     const ctx = (): GateContext => ({
       denylist: latest.current.denylist,
       allowedOrigins: latest.current.allowedOrigins,
@@ -171,10 +226,8 @@ export function usePageActions(options: PageActionsOptions) {
      * "the Stop button is gone" is to stop.
      */
     const controlIsVisible = (): { ok: true } | { ok: false; reason: string; detail: string } => {
-      // Actions always run the full check, overlay scan included: this is
-      // the moment something is about to be pressed.
       const verdict = controlUiVisibility(latest.current.getControlBar(), window, {
-        scanOverlays: true,
+        occluded,
       });
       if (verdict.visible) return { ok: true };
       latest.current.onControlRevoked?.(verdict.detail);
@@ -382,12 +435,12 @@ export function usePageActions(options: PageActionsOptions) {
         lastUrl = window.location.href;
         confirmedKeys.current.clear();
       }
-      // The heartbeat skips the overlay scan -- see controlUiVisibility. It
-      // still catches everything that hides the bar by styling it, and an
-      // action cannot slip past while it is skipped, because every action
-      // runs the full check itself.
+      // The same check as an action's. It used to be a cheaper variant,
+      // because the overlay scan cost 37ms at 4x CPU throttle and ran every
+      // second; reading the observer's flag costs nothing, so the heartbeat
+      // and the action path can be the same thing again.
       const verdict = controlUiVisibility(latest.current.getControlBar(), window, {
-        scanOverlays: false,
+        occluded,
       });
       if (!verdict.visible) latest.current.onControlRevoked?.(verdict.detail);
     }, VISIBILITY_POLL_MS);
@@ -395,6 +448,7 @@ export function usePageActions(options: PageActionsOptions) {
     return () => {
       disposed = true;
       window.clearInterval(poll);
+      observer?.disconnect();
       for (const [name] of methods) {
         try {
           room.localParticipant.unregisterRpcMethod(name);

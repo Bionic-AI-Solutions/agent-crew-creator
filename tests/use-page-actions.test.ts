@@ -313,47 +313,79 @@ describe("usePageActions — the user can always see and stop it", () => {
     h.unmount();
   });
 
-  test("a click is refused when a click-through scrim covers the bar", async () => {
-    // Pins that the ACTION path runs the full visibility check. The 1s
-    // heartbeat skips the overlay scan for cost, so if actions skipped it
-    // too, a pointer-events:none scrim would hide the bar with control
-    // still live -- and nothing else would notice.
+  test("a click is refused when the browser reports the bar covered", async () => {
+    // Hit testing skips a pointer-events:none scrim, so the hook asks the
+    // browser through IntersectionObserver v2 and feeds the answer into the
+    // visibility check. jsdom has no such observer, so one is installed that
+    // reports the bar covered -- which is exactly the shape the hook consumes.
     dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
     const bar = makeVisibleBar();
-    const veil = dom.window.document.createElement("div");
-    veil.id = "veil";
-    veil.style.cssText =
-      "position:fixed;top:0;left:0;width:100%;height:400px;background:rgb(255,255,255);pointer-events:none";
-    dom.window.document.body.appendChild(veil);
-    (veil as any).getBoundingClientRect = () => ({
-      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
-    });
+    // The hook resolves a bare `IntersectionObserver`, which is globalThis's,
+    // not dom.window's.
+    const previous = (globalThis as any).IntersectionObserver;
+    (globalThis as any).IntersectionObserver = class {
+      constructor(private cb: (entries: unknown[]) => void, _opts?: unknown) {}
+      observe() {
+        this.cb([{ isIntersecting: true, isVisible: false }]);
+      }
+      disconnect() {}
+      unobserve() {}
+    };
 
-    const { room, handlers } = makeFakeRoom();
-    let clicked = false;
-    dom.window.document.getElementById("go")!.addEventListener("click", () => {
-      clicked = true;
-    });
-    const revoked: string[] = [];
-    const h = mount(room, {
-      enabled: true,
-      denylist: [],
-      allowedOrigins: [ORIGIN],
-      getControlBar: () => bar,
-      onControlRevoked: (d) => revoked.push(d),
-    });
-    await flushMicrotasks();
+    try {
+      const { room, handlers } = makeFakeRoom();
+      let clicked = false;
+      dom.window.document.getElementById("go")!.addEventListener("click", () => {
+        clicked = true;
+      });
+      const revoked: string[] = [];
+      const h = mount(room, {
+        enabled: true,
+        denylist: [],
+        allowedOrigins: [ORIGIN],
+        getControlBar: () => bar,
+        onControlRevoked: (d) => revoked.push(d),
+      });
+      await flushMicrotasks();
 
-    const listing = await readListing(handlers);
-    const ref = refNamed(listing, "Continue");
-    const res = await callRpc(handlers, RPC_CLICK, { ref, expect: "Continue" });
+      const ref = refNamed(await readListing(handlers), "Continue");
+      const res = await callRpc(handlers, RPC_CLICK, { ref, expect: "Continue" });
 
-    assert.equal(res.ok, false);
-    assert.equal(res.reason, "control_ui_obscured");
-    assert.equal(clicked, false, "nothing may be pressed behind a scrim");
-    assert.ok(revoked.length > 0, "control must be revoked");
-    veil.remove();
-    void h;
+      assert.equal(res.ok, false);
+      assert.equal(res.reason, "control_ui_obscured");
+      assert.equal(clicked, false, "nothing may be pressed behind a scrim");
+      assert.ok(revoked.length > 0, "control must be revoked");
+      void h;
+    } finally {
+      (globalThis as any).IntersectionObserver = previous;
+    }
+  });
+
+  test("a missing IntersectionObserver does not revoke control", async () => {
+    // v2 is Chromium-only. Where it is absent the hook must still work --
+    // "we cannot tell" is not "we are hidden", and treating it as such would
+    // make control unusable on Firefox and Safari.
+    dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
+    const bar = makeVisibleBar();
+    const previous = (globalThis as any).IntersectionObserver;
+    delete (globalThis as any).IntersectionObserver;
+
+    try {
+      const { room, handlers } = makeFakeRoom();
+      const h = mount(room, {
+        enabled: true,
+        denylist: [],
+        allowedOrigins: [ORIGIN],
+        getControlBar: () => bar,
+      });
+      await flushMicrotasks();
+      const ref = refNamed(await readListing(handlers), "Continue");
+      const res = await callRpc(handlers, RPC_CLICK, { ref, expect: "Continue" });
+      assert.equal(res.ok, true, JSON.stringify(res));
+      void h;
+    } finally {
+      (globalThis as any).IntersectionObserver = previous;
+    }
   });
 
   test("a click goes through when the bar is visible", async () => {

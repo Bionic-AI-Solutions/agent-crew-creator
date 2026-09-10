@@ -14,46 +14,55 @@
  * Hardening the styles alone cannot close this. A page has too many ways to
  * make something invisible: an ancestor's `opacity: 0`, a full-screen overlay
  * on top, `pointer-events: none`, moving it past the viewport edge, or simply
- * removing the element. Enumerating them is a losing game.
+ * removing the element. Enumerating them is a losing game -- and this file
+ * spent three review rounds proving it, swinging between missing real
+ * overlays and revoking on ordinary pages as a hand-written scan tried to
+ * work out what paints on top of what.
  *
- * So this checks the property control actually depends on -- this element is
- * on screen, opaque, unfiltered, and the thing the user's cursor would land
- * on -- and the caller revokes control when it stops being true.
+ * It is split in two now, along the line of what can actually be answered:
  *
- * Fails closed: if a check cannot be performed, the answer is "not visible".
+ * 1. Everything measurable about the bar ITSELF -- is it on screen, big
+ *    enough, opaque, unfiltered, unmasked, unclipped, and the thing the
+ *    user's cursor would land on. Cheap, synchronous, and correct in every
+ *    browser.
+ *
+ * 2. "Is something painted over me", which needs paint order, stacking
+ *    contexts and the top layer, and which no reasonable amount of
+ *    in-page arithmetic gets right. The browser already computes it:
+ *    IntersectionObserver v2's `isVisible` exists to tell content whether it
+ *    is being covered -- it is the clickjacking-protection primitive, and
+ *    this is that question. The caller supplies its answer as `occluded`.
+ *
+ * Measured against rendered pixels, the browser's answer was right in all
+ * eighteen cases tried, including every one that defeated the scan and every
+ * innocent page the scan wrongly revoked -- and including a scrim inside a
+ * CLOSED shadow root, which an earlier version of this file documented as a
+ * permanent limit because nothing in the page can traverse one. The browser
+ * does not need to.
+ *
+ * Fails closed on its own checks: if one cannot be performed, the answer is
+ * "not visible". It does NOT fail closed on the observer, which is the one
+ * place a missing answer means "we do not know" rather than "we are hidden" --
+ * see the note on controlUiVisibility.
  *
  * WHAT THIS DOES NOT DO, stated plainly because the docstring used to claim
- * more than the code delivers:
+ * more than the code delivered:
  *
- * This is not proof against a host page that is actively trying to defeat it.
- * The page owns the document; it can restyle, cover or remove anything in it,
- * and short of sampling pixels -- which a page cannot do to itself -- no
- * in-page check can be exhaustive. Two rounds of review found two ways past
- * an earlier version of this file (an ancestor `filter`, and an opaque
- * `pointer-events: none` layer that hit testing skips); both are closed
- * below, and the honest expectation is that a third exists.
+ * IntersectionObserver v2 is Chromium-only today. Where it is absent --
+ * Firefox, Safari -- part 2 is simply unavailable, and a `pointer-events:
+ * none` scrim over the bar will not be detected. Part 1 still runs, so
+ * everything that hides the bar by styling it is still caught everywhere.
  *
- * The one gap that is known and named rather than merely suspected: a scrim
- * inside a CLOSED shadow root. No API traverses one -- that is what closed
- * means -- so nothing in the page can find it, and a pointer-events:none
- * layer inside one is skipped by hit testing too. Reaching that state needs
- * script on the host page (attachShadow is not something CSS can do), which
- * puts it squarely in the paragraph below rather than in the accident case
- * these checks exist for. Open shadow roots, which is what component
- * libraries actually use, ARE traversed.
- *
- * That is a bounded problem rather than an open one, because of who the host
- * page belongs to. Control only runs on origins the token owner explicitly
- * allowlisted (see domCapabilities), so the page doing the hiding is the
- * operator's own -- and an operator who can run script on their own site can
- * already click every button on it without involving an agent. Defeating this
- * check gains such a page nothing it did not already have.
+ * That residual gap is bounded by who the host page belongs to. Control only
+ * runs on origins the token owner explicitly allowlisted (see
+ * domCapabilities), so the page doing the hiding is the operator's own -- and
+ * an operator who can run script on their own site can already click every
+ * button on it without involving an agent.
  *
  * What these checks are really for is the case that is both likely and
  * genuinely harmful: a bar hidden BY ACCIDENT -- a CSS reset, an id
  * collision, a loading backdrop, a modal scrim -- while the agent keeps
- * acting and the user has no way to stop it. That is the failure this
- * prevents, and it prevents it well.
+ * acting and the user has no way to stop it.
  */
 
 /** Smaller than this and the bar is not something a user can find or press. */
@@ -105,9 +114,6 @@ export interface VisibilityWindow {
   };
 }
 
-/** How many elements the overlay scan will look at before giving up. */
-const MAX_OVERLAY_SCAN = 4000;
-
 /**
  * Does this `filter` value hide what it is applied to?
  *
@@ -142,115 +148,6 @@ export function filterHides(value: string | undefined): boolean {
   const blur = /blur\(\s*([0-9.]+)px\s*\)/.exec(lowered);
   if (blur && parseFloat(blur[1]) >= 8) return true;
   return false;
-}
-
-/** A colour that paints over what is behind it. */
-function isOpaqueColour(colour: string | undefined): boolean {
-  if (!colour) return false;
-  const m = /rgba?\(([^)]+)\)/.exec(colour);
-  if (!m) return colour !== "transparent";
-  const parts = m[1].split(",").map((p) => parseFloat(p));
-  const alpha = parts.length >= 4 ? parts[3] : 1;
-  return Number.isFinite(alpha) && alpha > 0.3;
-}
-
-/**
- * Does this element paint over what is behind it?
- *
- * background-color alone was not enough. A scrim built from a gradient or an
- * image -- `background: linear-gradient(#fff,#fff)`, which is how real UIs
- * build fades and backdrops -- has `background-color: rgba(0,0,0,0)` and went
- * straight through the colour check while covering the bar completely.
- */
-function paintsOver(
-  el: Element,
-  style: {
-    backgroundColor?: string;
-    backgroundImage?: string;
-    backdropFilter?: string;
-  },
-): boolean {
-  // Elements that paint their own content, whatever CSS says about their
-  // background. An <iframe> laid over the bar reports
-  // `background-color: rgba(0,0,0,0)` because the white a person sees comes
-  // from the document inside it, which we cannot inspect at all when it is
-  // cross-origin -- so an overlay iframe covered the bar completely while
-  // every background check said "transparent". Consent banners and chat
-  // widgets are built exactly like this.
-  if (REPLACED_ELEMENTS.has(el.tagName.toLowerCase())) return true;
-  if (isOpaqueColour(style.backgroundColor)) return true;
-  const image = style.backgroundImage ?? "none";
-  if (image !== "none" && image !== "") return true;
-  const backdrop = style.backdropFilter ?? "none";
-  return backdrop !== "none" && backdrop !== "";
-}
-
-/** Tags that render their own pixels rather than just a background. */
-const REPLACED_ELEMENTS = new Set([
-  "iframe", "frame", "object", "embed", "video", "canvas", "img",
-]);
-
-/**
- * The elements the overlay scan will consider, newest-painted first.
- *
- * `querySelectorAll("*")` does not cross a shadow boundary, so a scrim inside
- * some OTHER component's shadow root was invisible to this scan -- and that
- * is not an exotic construction: design-system modals put their backdrop in a
- * shadow root as a matter of course. Open roots are descended into here.
- *
- * A CLOSED shadow root cannot be traversed by anyone, so a scrim inside one
- * is not findable by any in-page check. Reaching that state needs script on
- * the host page, which is the residual risk this module's header already
- * states plainly -- a page that can run script can press the buttons itself.
- *
- * Reverse order within each root, because overlays are appended last and the
- * cap should truncate the page furniture rather than the backdrop.
- */
-function overlayCandidates(win: VisibilityWindow, cap: number): Element[] {
-  const out: Element[] = [];
-  const pending: Array<{ list: ArrayLike<Element>; i: number }> = [];
-
-  const push = (root: { querySelectorAll?(s: string): ArrayLike<Element> }) => {
-    let list: ArrayLike<Element> | undefined;
-    try {
-      list = root.querySelectorAll?.("*");
-    } catch {
-      return;
-    }
-    if (!list || list.length === 0) return;
-    // Reading .shadowRoot is a property access with no layout cost, so every
-    // root is enumerated for hosts regardless of the candidate budget. Only
-    // the expensive per-element work below is rationed.
-    for (let i = list.length - 1; i >= 0; i--) {
-      const nested = (list[i] as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
-      if (nested) push(nested);
-    }
-    pending.push({ list, i: list.length - 1 });
-  };
-  push(win.document);
-
-  // Round-robin, and the slice is divided by how many roots are waiting --
-  // never a fixed size. Draining each root in turn meant the roots that
-  // happened to be discovered first could spend the entire budget, and a
-  // scrim in a root discovered later was missed purely because the page was
-  // big, which the page controls. A fixed slice only moved the threshold:
-  // twenty crowded components still exhausted it before the twenty-first was
-  // reached. Dividing guarantees every waiting root gets at least one slot
-  // per pass, so no root can be starved by its neighbours' size.
-  let guard = 0;
-  while (pending.length > 0 && out.length < cap && guard++ <= cap) {
-    const share = Math.max(1, Math.floor((cap - out.length) / pending.length));
-    for (let r = 0; r < pending.length && out.length < cap; r++) {
-      const entry = pending[r];
-      const stop = Math.max(-1, entry.i - share);
-      for (; entry.i > stop && out.length < cap; entry.i--) out.push(entry.list[entry.i]);
-      if (entry.i < 0) {
-        pending.splice(r, 1);
-        r--;
-      }
-    }
-  }
-  return out;
 }
 
 /**
@@ -299,82 +196,35 @@ function hidingEffect(style: {
  * have backgrounds and sit behind us, not over us.
  */
 /**
- * The stacking level a candidate paints at, as a number we can compare.
+ * Could an ancestor's own painting explain a "not visible" that is not
+ * occlusion?
  *
- * `auto` is treated as 0: an element with no z-index paints below one that
- * has a positive index, which is all this comparison needs to decide.
+ * IntersectionObserver v2 refuses to certify visibility through effects it
+ * cannot reason about cheaply -- any filter, any translucency. Those are
+ * exactly the cases the checks above have already judged properly (a
+ * `drop-shadow` is fine, `opacity(0)` is not), so when one is present the
+ * observer is not adding information and its answer is set aside rather than
+ * acted on. Without this, `html { filter: invert(1) }` -- an ordinary
+ * dark-mode userstyle -- would revoke control on a page showing the bar
+ * perfectly.
  */
-function stackingLevel(value: string | undefined): number {
-  const n = parseInt(value ?? "", 10);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function opaqueOverlayAt(
-  win: VisibilityWindow,
-  host: Element,
-  bar: Element,
-  x: number,
-  y: number,
-): boolean {
-  // The bar sits at the maximum z-index (embed-styles.css), so anything
-  // painting at a lower one is BEHIND it and cannot be covering it, whatever
-  // its rect says. Without this the scan asked only "do these rectangles
-  // overlap", and answered yes for a full-bleed background video or canvas --
-  // pointer-events:none, z-index 0, an entirely ordinary hero-background
-  // pattern -- and revoked control on a page where the bar was plainly
-  // visible. Overlap is not occlusion.
-  let barLevel: number;
-  try {
-    barLevel = stackingLevel(win.getComputedStyle(bar).zIndex);
-  } catch {
-    return false;
-  }
-  const candidates = overlayCandidates(win, MAX_OVERLAY_SCAN);
-  for (const el of candidates) {
-    if (el === host || el === bar) continue;
-    // Ours, or something we sit inside: not painted over us.
-    if (el.contains?.(host) || host.contains?.(el)) continue;
-
-    let rect: DOMRect;
-    try {
-      rect = el.getBoundingClientRect();
-    } catch {
-      continue;
-    }
-    if (rect.width <= 0 || rect.height <= 0) continue;
-    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) continue;
-
+function effectsMayHideFromObserver(bar: Element, win: VisibilityWindow): boolean {
+  for (const el of ancestorChain(bar)) {
     let style: ReturnType<VisibilityWindow["getComputedStyle"]>;
     try {
       style = win.getComputedStyle(el);
     } catch {
-      continue;
+      return true;
     }
-    // Anything that accepts pointer events would have been reported by the
-    // hit test already; this scan exists only for what the hit test skips.
-    if (style.pointerEvents !== "none") continue;
-    if (style.display === "none" || style.visibility === "hidden") continue;
-    const position = style.position ?? "static";
-    if (position !== "fixed" && position !== "absolute" && position !== "sticky") continue;
-    // Equal levels are treated as covering: at the same z-index the later
-    // element in paint order wins, and this cannot cheaply tell which that
-    // is, so it errs towards revoking.
-    if (stackingLevel(style.zIndex) < barLevel) continue;
+    if (!style) return true;
+    if ((style.filter ?? "none") !== "none") return true;
+    if ((style.backdropFilter ?? "none") !== "none") return true;
     const opacity = parseFloat(style.opacity);
-    if (Number.isFinite(opacity) && opacity < 0.3) continue;
-    if (paintsOver(el, style)) return true;
+    if (Number.isFinite(opacity) && opacity < 1) return true;
   }
   return false;
 }
 
-/**
- * The outermost host: walk out of every shadow root the bar sits inside, to
- * the element the host page can actually see and style.
- *
- * That element, not the bar, is what `elementFromPoint` reports for a click
- * landing on our UI, because an open shadow root retargets the result to its
- * host.
- */
 export function outermostHost(bar: Element): Element {
   let node: Element = bar;
   for (let i = 0; i < MAX_ANCESTOR_DEPTH; i++) {
@@ -441,29 +291,36 @@ function pointHitsUs(win: VisibilityWindow, host: Element, x: number, y: number)
 /**
  * @param bar  the control bar element, inside the widget's shadow root
  * @param win  the host page's window
- * @param opts.scanOverlays  run the expensive covered-by-something scan
+ * @param opts.occluded  the browser's own answer to "is something covering
+ *   this", from IntersectionObserver v2. `null` when unknown or unsupported.
  *
- * The overlay scan reads a rect for up to MAX_OVERLAY_SCAN elements, which on
- * a 12k-element page measured 8ms unthrottled and 37ms at 4x CPU throttle --
- * fine once, but this also runs on a 1s heartbeat, and 37ms every second is
- * two dropped frames every second on a mid-range phone. Goal 1 is a smooth
- * conversation; spending that much of every second to re-answer a question
- * whose answer almost never changes is the wrong trade.
+ * This used to walk thousands of elements looking for a `pointer-events:none`
+ * scrim, because hit testing skips those. Three rounds of review swung that
+ * scan between missing real overlays and revoking on innocent pages -- a
+ * background video, then a portal container, then a stacking context on the
+ * wrapper -- which is what a heuristic for "what paints on top" looks like
+ * when the real answer needs paint order, stacking contexts and the top
+ * layer.
  *
- * So it is spent where it decides something. Every ACTION runs the full
- * check, because that is the moment the agent is about to touch the page.
- * The heartbeat runs the cheap checks only -- which still catch display,
- * visibility, opacity, filter, mask, clip, size, off-screen and a normal
- * covering overlay via the hit test. What the heartbeat alone can miss is a
- * `pointer-events: none` scrim appearing while nothing is happening, and the
- * next action catches that before anything is pressed.
+ * The browser already computes that answer. IntersectionObserver v2's
+ * `isVisible` exists to tell a frame whether it is being covered -- it is the
+ * clickjacking-protection primitive, which is this exact question -- and it
+ * agreed with rendered pixels in every case that defeated the scan, and in
+ * every innocent case the scan wrongly revoked.
+ *
+ * It is deliberately conservative, though: an ancestor `filter` or a
+ * translucent ancestor makes it answer "not visible" even when the bar is
+ * perfectly legible (a `drop-shadow` on body, or the `filter: invert(1)` a
+ * dark-mode userstyle applies). So its "no" is only acted on when nothing in
+ * the ancestor chain could explain a conservative answer -- and those effects
+ * are judged on their own terms just above, where `filter: opacity(0)` is
+ * hidden and `drop-shadow` is not.
  */
 export function controlUiVisibility(
   bar: Element | null | undefined,
   win: VisibilityWindow,
-  opts: { scanOverlays?: boolean } = {},
+  opts: { occluded?: boolean | null } = {},
 ): VisibilityVerdict {
-  const scanOverlays = opts.scanOverlays ?? true;
   if (!bar) return hidden("control_ui_missing", "the control bar is not mounted");
   if (!bar.isConnected) {
     return hidden("control_ui_detached", "the control bar was removed from the page");
@@ -557,12 +414,11 @@ export function controlUiVisibility(
 
   // The hit test above cannot see a `pointer-events: none` layer, so every
   // point it called reachable is checked again for one.
-  if (scanOverlays) {
-    for (const [x, py] of reachable) {
-      if (opaqueOverlayAt(win, host, bar, x, py)) {
-        return hidden("control_ui_obscured", "something on the page is covering the control bar");
-      }
-    }
+  // The hit test above cannot see a `pointer-events: none` layer, so the
+  // browser is asked directly. Only its "no" is acted on, and only when the
+  // ancestor chain offers no benign explanation for it -- see the note above.
+  if (opts.occluded === true && !effectsMayHideFromObserver(bar, win)) {
+    return hidden("control_ui_obscured", "something on the page is covering the control bar");
   }
 
   return VISIBLE;

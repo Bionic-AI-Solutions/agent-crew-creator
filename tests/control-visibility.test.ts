@@ -218,47 +218,6 @@ describe("controlUiVisibility", () => {
     assert.equal(v.reason, "control_ui_filtered");
   });
 
-  test("an opaque pointer-events:none layer over the bar revokes control", () => {
-    // elementFromPoint AND elementsFromPoint both skip pointer-events:none
-    // (verified in Chromium), so hit testing reports a clean hit on the bar
-    // underneath a layer the user plainly sees.
-    const { bar, doc, wrapper, win } = build({
-      styles: { veil: { pointerEvents: "none", backgroundColor: "rgb(255, 255, 255)", zIndex: BAR_Z } },
-    });
-    const veil = doc.createElement("div");
-    veil.id = "veil";
-    doc.body.appendChild(veil);
-    (veil as any).getBoundingClientRect = () => ({
-      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
-    });
-    void wrapper;
-    const v = controlUiVisibility(bar, win);
-    assert.equal(v.visible, false);
-    assert.equal(v.reason, "control_ui_obscured");
-  });
-
-  test("a transparent pointer-events:none layer does not revoke control", () => {
-    // The false-positive direction: invisible click-through shims are
-    // extremely common and must not break the feature.
-    const { bar, doc, win } = build({
-      styles: {
-        veil: {
-          pointerEvents: "none",
-          backgroundColor: "rgba(0, 0, 0, 0)",
-          backdropFilter: "none",
-          zIndex: BAR_Z,
-        },
-      },
-    });
-    const veil = doc.createElement("div");
-    veil.id = "veil";
-    doc.body.appendChild(veil);
-    (veil as any).getBoundingClientRect = () => ({
-      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
-    });
-    assert.equal(controlUiVisibility(bar, win).visible, true);
-  });
-
   test("filterHides only flags filters that actually hide", () => {
     // Rejecting every non-none filter would revoke control on the many pages
     // that put a drop-shadow or a dark-mode invert on a container.
@@ -318,317 +277,70 @@ describe("controlUiVisibility", () => {
     assert.equal(v.reason, "control_ui_hidden");
   });
 
-  test("a gradient scrim over the bar revokes control", () => {
-    // How real UIs build fades and backdrops. Its background-COLOR is
-    // transparent, so a colour-only check sailed straight through it.
-    const { bar, doc, win } = build({
-      styles: {
-        veil: {
-          pointerEvents: "none",
-          backgroundColor: "rgba(0, 0, 0, 0)",
-          backgroundImage: "linear-gradient(rgb(255,255,255), rgb(255,255,255))",
-          zIndex: BAR_Z,
-        },
-      },
-    });
-    const veil = doc.createElement("div");
-    veil.id = "veil";
-    doc.body.appendChild(veil);
-    (veil as any).getBoundingClientRect = () => ({
-      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
-    });
-    const v = controlUiVisibility(bar, win);
+  // ── what the browser says is covering us ──────────────────────
+  //
+  // Hit testing skips a pointer-events:none layer, so the browser is asked
+  // directly (IntersectionObserver v2). These pin how its answer is used --
+  // in particular that its "no" is not taken at face value, because it
+  // refuses to certify visibility through effects it cannot reason about.
+
+  test("the browser reporting the bar covered revokes control", () => {
+    const { bar, win } = build();
+    const v = controlUiVisibility(bar, win, { occluded: true });
     assert.equal(v.visible, false);
     assert.equal(v.reason, "control_ui_obscured");
   });
 
-  test("an overlay appended last on a large page is still found", () => {
-    // querySelectorAll returns document order and the scan is capped, so
-    // taking the first N never reached a modal backdrop -- portals append
-    // theirs at the end of <body>, which is where the cap had already
-    // stopped. The scan runs backwards for exactly this.
-    const { bar, doc, win } = build({
-      styles: { veil: { pointerEvents: "none", backgroundColor: "rgb(255, 255, 255)", zIndex: BAR_Z } },
-    });
-    for (let i = 0; i < 5000; i++) {
-      const filler = doc.createElement("span");
-      (filler as any).getBoundingClientRect = () => ({
-        width: 0, height: 0, top: 0, left: 0, bottom: 0, right: 0,
-      });
-      doc.body.appendChild(filler);
-    }
-    const veil = doc.createElement("div");
-    veil.id = "veil";
-    doc.body.appendChild(veil);
-    (veil as any).getBoundingClientRect = () => ({
-      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
-    });
-    const v = controlUiVisibility(bar, win);
-    assert.equal(v.visible, false);
-    assert.equal(v.reason, "control_ui_obscured");
+  test("the browser reporting the bar visible allows control", () => {
+    const { bar, win } = build();
+    assert.equal(controlUiVisibility(bar, win, { occluded: false }).visible, true);
   });
 
-  test("the cheap heartbeat skips the overlay scan; a full check does not", () => {
-    // The scan reads a rect for thousands of elements -- 37ms at 4x CPU
-    // throttle on a 12k-element page, which is two dropped frames every
-    // second if it runs on the 1s heartbeat. Actions run it; the heartbeat
-    // does not, and an action cannot slip past because it checks for itself.
-    const { bar, doc, win } = build({
-      styles: { veil: { pointerEvents: "none", backgroundColor: "rgb(255, 255, 255)", zIndex: BAR_Z } },
-    });
-    const veil = doc.createElement("div");
-    veil.id = "veil";
-    doc.body.appendChild(veil);
-    (veil as any).getBoundingClientRect = () => ({
-      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
-    });
-
-    assert.equal(
-      controlUiVisibility(bar, win, { scanOverlays: false }).visible,
-      true,
-      "the heartbeat does not pay for the scan",
-    );
-    const full = controlUiVisibility(bar, win, { scanOverlays: true });
-    assert.equal(full.visible, false, "an action does");
-    assert.equal(full.reason, "control_ui_obscured");
-
-    // Default is the full check, so a caller that forgets is safe.
-    assert.equal(controlUiVisibility(bar, win).visible, false);
+  test("no answer at all is not treated as covered", () => {
+    // IntersectionObserver v2 is Chromium-only today, and there is a moment
+    // before its first callback on every browser. Neither is evidence of
+    // anything, and revoking on absence of evidence would make the feature
+    // unusable where it is unsupported.
+    const { bar, win } = build();
+    assert.equal(controlUiVisibility(bar, win, { occluded: null }).visible, true);
+    assert.equal(controlUiVisibility(bar, win, {}).visible, true);
   });
 
-  test("the cheap heartbeat still catches everything done by styling", () => {
-    // What the heartbeat gives up is narrow: only a pointer-events:none
-    // scrim. Everything that hides the bar by styling it is still caught
-    // without the scan.
-    for (const styles of [
-      { wrapper: { display: "none" } },
-      { bar: { visibility: "hidden" } },
-      { wrapper: { opacity: "0" } },
-      { wrapper: { filter: "opacity(0)" } },
-      { wrapper: { clipPath: "inset(100%)" } },
-      { wrapper: { contentVisibility: "hidden" } },
-    ]) {
-      const { bar, win } = build({ styles });
+  test("a benign ancestor filter makes the browser's 'covered' untrustworthy", () => {
+    // Measured: with `filter: drop-shadow(...)` on an ancestor the observer
+    // answers isVisible=false while the bar renders perfectly. Same for the
+    // `filter: invert(1)` a dark-mode userstyle applies. Acting on that would
+    // revoke control on ordinary pages, so it is set aside -- the filter
+    // itself is judged on its own terms by filterHides.
+    for (const filter of ["drop-shadow(0 1px 2px black)", "invert(1)", "saturate(1.4)"]) {
+      const { bar, win } = build({ styles: { wrapper: { filter } } });
       assert.equal(
-        controlUiVisibility(bar, win, { scanOverlays: false }).visible,
-        false,
-        JSON.stringify(styles),
+        controlUiVisibility(bar, win, { occluded: true }).visible,
+        true,
+        filter,
       );
     }
   });
 
-  test("a scrim inside another component's open shadow root revokes control", () => {
-    // querySelectorAll("*") does not cross a shadow boundary, so this was
-    // invisible to the scan -- and it is not exotic: design-system modals put
-    // their backdrop inside a shadow root as a matter of course. Reproduced
-    // in Chromium (bar rendered 0 pixels while the check said visible).
-    const { bar, doc, win } = build({
-      styles: { veil: { pointerEvents: "none", backgroundColor: "rgb(255, 255, 255)", zIndex: BAR_Z } },
-    });
-    const other = doc.createElement("div");
-    doc.body.appendChild(other);
-    const otherShadow = other.attachShadow({ mode: "open" });
-    const veil = doc.createElement("div");
-    veil.id = "veil";
-    otherShadow.appendChild(veil);
-    (veil as any).getBoundingClientRect = () => ({
-      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
-    });
+  test("a translucent ancestor also makes it untrustworthy", () => {
+    const { bar, win } = build({ styles: { wrapper: { opacity: "0.95" } } });
+    assert.equal(controlUiVisibility(bar, win, { occluded: true }).visible, true);
+  });
 
-    const v = controlUiVisibility(bar, win);
+  test("a hiding filter still revokes, whatever the browser says", () => {
+    // The ancestor-effect escape hatch must not become a way past the checks
+    // that judge those effects properly.
+    const { bar, win } = build({ styles: { wrapper: { filter: "opacity(0)" } } });
+    const v = controlUiVisibility(bar, win, { occluded: false });
     assert.equal(v.visible, false);
-    assert.equal(v.reason, "control_ui_obscured");
+    assert.equal(v.reason, "control_ui_filtered");
   });
 
-  test("an iframe laid over the bar revokes control", () => {
-    // An <iframe> reports background-color rgba(0,0,0,0) -- the white a
-    // person sees comes from the document inside it, which we cannot inspect
-    // and, cross-origin, are not allowed to. Every background check said
-    // "transparent" while it covered the bar completely. Consent banners and
-    // chat widgets are built exactly like this.
-    const { bar, doc, win } = build({
-      styles: {
-        veil: {
-          pointerEvents: "none",
-          backgroundColor: "rgba(0, 0, 0, 0)",
-          backgroundImage: "none",
-          zIndex: BAR_Z,
-        },
-      },
-    });
-    const frame = doc.createElement("iframe");
-    frame.id = "veil";
-    doc.body.appendChild(frame);
-    (frame as any).getBoundingClientRect = () => ({
-      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
-    });
-
-    const v = controlUiVisibility(bar, win);
+  test("a cheap check that fails wins over the browser saying visible", () => {
+    const { bar, win } = build({ styles: { wrapper: { display: "none" } } });
+    const v = controlUiVisibility(bar, win, { occluded: false });
     assert.equal(v.visible, false);
-    assert.equal(v.reason, "control_ui_obscured");
-  });
-
-  test("a scrim inside a CLOSED shadow root is a known, documented limit", () => {
-    // Pinned so the limit is visible in the suite rather than only in a
-    // comment. No API traverses a closed shadow root -- that is what closed
-    // means -- so this cannot be detected from inside the page, and reaching
-    // it needs script on the host (attachShadow is not something CSS can do),
-    // which is the residual risk the module header states plainly.
-    //
-    // If this test ever starts failing because the verdict became false,
-    // that is good news and the assertion should be updated, not silenced.
-    const { bar, doc, win } = build();
-    const other = doc.createElement("div");
-    doc.body.appendChild(other);
-    const closed = other.attachShadow({ mode: "closed" });
-    const veil = doc.createElement("div");
-    closed.appendChild(veil);
-    (veil as any).getBoundingClientRect = () => ({
-      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
-    });
-
-    assert.equal(
-      controlUiVisibility(bar, win).visible,
-      true,
-      "documents the known limit; see the module header",
-    );
-  });
-
-  test("an iframe that does not cover the bar does not revoke control", () => {
-    // Replaced elements count as opaque wherever they overlap the bar, which
-    // is why an iframe elsewhere on the page must not be treated as covering
-    // it. A check that revokes on ordinary pages is as broken as one that
-    // misses an attack; verified in Chromium alongside this.
-    const { bar, doc, win } = build();
-    const frame = doc.createElement("iframe");
-    frame.id = "elsewhere";
-    doc.body.appendChild(frame);
-    (frame as any).getBoundingClientRect = () => ({
-      width: 400, height: 200, top: 300, left: 0, bottom: 500, right: 400,
-    });
-    assert.equal(controlUiVisibility(bar, win).visible, true);
-  });
-
-  test("a shadow-DOM component elsewhere does not revoke control", () => {
-    const { bar, doc, win } = build();
-    const card = doc.createElement("div");
-    doc.body.appendChild(card);
-    const inner = doc.createElement("div");
-    inner.id = "elsewhere";
-    card.attachShadow({ mode: "open" }).appendChild(inner);
-    (inner as any).getBoundingClientRect = () => ({
-      width: 300, height: 100, top: 400, left: 0, bottom: 500, right: 300,
-    });
-    assert.equal(controlUiVisibility(bar, win).visible, true);
-  });
-
-  test("a background video behind the bar does not revoke control", () => {
-    // Overlap is not occlusion. A full-bleed background video or canvas --
-    // pointer-events:none, z-index 0, an entirely ordinary hero pattern --
-    // overlaps the bar's rect while painting behind it. Checking only the
-    // rectangles revoked control on pages where the bar was plainly visible.
-    for (const tag of ["video", "canvas", "iframe", "img"]) {
-      const { bar, doc, win } = build({
-        styles: { bg: { pointerEvents: "none", zIndex: "0" } },
-      });
-      const bg = doc.createElement(tag);
-      bg.id = "bg";
-      doc.body.appendChild(bg);
-      (bg as any).getBoundingClientRect = () => ({
-        width: 1024, height: 768, top: 0, left: 0, bottom: 768, right: 1024,
-      });
-      assert.equal(controlUiVisibility(bar, win).visible, true, tag);
-    }
-  });
-
-  test("a scrim at the bar's own stacking level still revokes", () => {
-    // Equal levels err towards revoking: at the same z-index paint order
-    // decides, and this cannot cheaply tell which came last.
-    const { bar, doc, win } = build({
-      styles: { veil: { pointerEvents: "none", zIndex: BAR_Z } },
-    });
-    const veil = doc.createElement("div");
-    veil.id = "veil";
-    doc.body.appendChild(veil);
-    (veil as any).getBoundingClientRect = () => ({
-      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
-    });
-    const v = controlUiVisibility(bar, win);
-    assert.equal(v.visible, false);
-    assert.equal(v.reason, "control_ui_obscured");
-  });
-
-  test("one crowded shadow root does not starve another", () => {
-    // The budget used to be drained root by root. Roots are discovered in
-    // reverse document order, so a scrim in a host EARLY in the document is
-    // discovered last -- and if the hosts after it hold more elements than
-    // the whole budget, it never got any and the scrim was missed purely
-    // because the page was big, which the page controls.
-    const { bar, doc, win } = build({
-      styles: { veil: { pointerEvents: "none", zIndex: BAR_Z } },
-    });
-    const nowhere = () => ({
-      width: 0, height: 0, top: 0, left: 0, bottom: 0, right: 0,
-    });
-
-    // The scrim's host goes FIRST, so it is discovered LAST.
-    const scrimHost = doc.createElement("div");
-    doc.body.appendChild(scrimHost);
-    const veil = doc.createElement("div");
-    veil.id = "veil";
-    scrimHost.attachShadow({ mode: "open" }).appendChild(veil);
-    (veil as any).getBoundingClientRect = () => ({
-      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
-    });
-
-    // Then twenty crowded components after it -- 6000 elements, well past
-    // the whole scan budget.
-    for (let h = 0; h < 20; h++) {
-      const host = doc.createElement("div");
-      doc.body.appendChild(host);
-      const root = host.attachShadow({ mode: "open" });
-      for (let i = 0; i < 300; i++) {
-        const filler = doc.createElement("span");
-        (filler as any).getBoundingClientRect = nowhere;
-        root.appendChild(filler);
-      }
-    }
-
-    const v = controlUiVisibility(bar, win);
-    assert.equal(v.visible, false, "the scrim must still be found");
-    assert.equal(v.reason, "control_ui_obscured");
-  });
-
-  test("a big light DOM does not starve the shadow-root scan", () => {
-    // The scan budget used to be drained root by root, so a light DOM larger
-    // than the cap spent all of it before any shadow root was looked at --
-    // and a scrim inside one was missed purely because the page was big,
-    // which the page controls. Every root gets a share now.
-    const { bar, doc, win } = build({
-      styles: { veil: { pointerEvents: "none", zIndex: BAR_Z } },
-    });
-    const holder = doc.createElement("div");
-    doc.body.appendChild(holder);
-    const veil = doc.createElement("div");
-    veil.id = "veil";
-    holder.attachShadow({ mode: "open" }).appendChild(veil);
-    (veil as any).getBoundingClientRect = () => ({
-      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
-    });
-
-    // ...and then far more light-DOM elements than the whole budget, all
-    // AFTER the shadow host, which is the order that defeated the old scan.
-    for (let i = 0; i < 4500; i++) {
-      const filler = doc.createElement("span");
-      (filler as any).getBoundingClientRect = () => ({
-        width: 0, height: 0, top: 0, left: 0, bottom: 0, right: 0,
-      });
-      doc.body.appendChild(filler);
-    }
-
-    const v = controlUiVisibility(bar, win);
-    assert.equal(v.visible, false);
-    assert.equal(v.reason, "control_ui_obscured");
+    assert.equal(v.reason, "control_ui_hidden");
   });
 
   test("outermostHost climbs out of the shadow root to the light-DOM wrapper", () => {
