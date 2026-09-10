@@ -9,6 +9,7 @@
  * 3. Render <LiveKitRoom> + <VideoConference> for full audio/video/chat parity.
  */
 import { useMemo, useState } from "react";
+import { agentDisplayName } from "@shared/agentDisplayName";
 import { LiveKitRoom, VideoConference, useChat, RoomAudioRenderer } from "@livekit/components-react";
 import {
   useTopicTextStream,
@@ -96,7 +97,10 @@ function TranscriptionPanel({
       })),
       ...chatMessages.map((m, i) => ({
         id: `chat:${m.id ?? i}`, ts: m.timestamp,
-        text: m.message, label: m.from?.identity ?? "you",
+        // Not the raw identity: a dispatch id is not a speaker name. Fixed
+        // here at the same time as the embed panel rather than after it.
+        text: m.message,
+        label: m.from?.identity === localIdentity ? "You" : m.from?.name || agentName,
       })),
     ];
     return rows.sort((a, b) => a.ts - b.ts);
@@ -400,7 +404,7 @@ export default function Playground() {
               </div>
               <TranscriptionPanel
                 localIdentity={bundle.identity}
-                agentName={bundle.agent.name}
+                agentName={agentDisplayName(bundle.agent.name)}
               />
             </div>
           </LiveKitRoom>

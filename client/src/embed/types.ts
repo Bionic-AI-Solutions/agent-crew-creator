@@ -9,6 +9,8 @@ export interface EmbedConfig {
   showTranscription: boolean;
   theme: string;
   agentHasAvatar: boolean;
+  /** Display name for the agent's speech; its participant has no name set. */
+  agentName: string;
 }
 
 export interface ConnectionDetails {
