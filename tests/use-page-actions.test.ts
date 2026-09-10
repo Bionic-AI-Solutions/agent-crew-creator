@@ -1060,6 +1060,96 @@ describe("usePageActions — asking the user first", () => {
     h.unmount();
   });
 
+  test("one approval cannot be spent twice by concurrent calls", async () => {
+    // The approval used to be spent AFTER the click and its 350ms settle,
+    // leaving a window it was still live in. The agent's own runtime opens
+    // that window: livekit-agents runs the function calls in one LLM
+    // response as concurrent tasks, and these tools allow duplicates -- so
+    // two identical click calls overlap and one approval pressed "Pay now"
+    // twice.
+    dom.window.document.body.innerHTML = '<button id="d">Pay now</button>';
+    const bar = makeVisibleBar();
+    const { room, handlers } = makeFakeRoom();
+    let presses = 0;
+    dom.window.document.getElementById("d")!.addEventListener("click", () => {
+      presses += 1;
+    });
+    const offered: ConfirmRequest[] = [];
+    let api: { confirm: (key: string) => void } | null = null;
+    const h = mount(room, {
+      enabled: true,
+      denylist: ["pay"],
+      allowedOrigins: [ORIGIN],
+      getControlBar: () => bar,
+      onRefusal: (_d, c) => {
+        if (c) offered.push(c);
+      },
+      onReady: (a) => {
+        api = a;
+      },
+    });
+    await flushMicrotasks();
+
+    const ref = refNamed(await readListing(handlers), "Pay now");
+    assert.equal((await callRpc(handlers, RPC_CLICK, { ref, expect: "Pay now" })).ok, false);
+    assert.ok(api);
+    api!.confirm(offered[0].key);
+
+    // Both dispatched before either settles, exactly as the runtime does.
+    const [a, b] = await Promise.all([
+      callRpc(handlers, RPC_CLICK, { ref, expect: "Pay now" }),
+      callRpc(handlers, RPC_CLICK, { ref, expect: "Pay now" }),
+    ]);
+    assert.equal(presses, 1, "one approval, one press");
+    assert.equal([a.ok, b.ok].filter(Boolean).length, 1, "exactly one may succeed");
+    h.unmount();
+  });
+
+  test("an approval is spent even if the press itself fails", async () => {
+    // If el.click() threw, the delete never ran and the approval survived
+    // for a later, unapproved click.
+    dom.window.document.body.innerHTML = '<button id="d">Pay now</button>';
+    const bar = makeVisibleBar();
+    const { room, handlers } = makeFakeRoom();
+    const target = dom.window.document.getElementById("d")! as any;
+    target.click = () => {
+      throw new Error("the page refuses to be clicked");
+    };
+    const offered: ConfirmRequest[] = [];
+    let api: { confirm: (key: string) => void } | null = null;
+    const h = mount(room, {
+      enabled: true,
+      denylist: ["pay"],
+      allowedOrigins: [ORIGIN],
+      getControlBar: () => bar,
+      onRefusal: (_d, c) => {
+        if (c) offered.push(c);
+      },
+      onReady: (a) => {
+        api = a;
+      },
+    });
+    await flushMicrotasks();
+
+    const ref = refNamed(await readListing(handlers), "Pay now");
+    assert.equal((await callRpc(handlers, RPC_CLICK, { ref, expect: "Pay now" })).ok, false);
+    api!.confirm(offered[0].key);
+
+    // The approved attempt throws out of the handler.
+    await handlers
+      .get(RPC_CLICK)!({ payload: JSON.stringify({ ref, expect: "Pay now" }) })
+      .then(
+        () => {},
+        () => {},
+      );
+
+    // The approval must be gone.
+    const after = await callRpc(handlers, RPC_CLICK, { ref, expect: "Pay now" });
+    assert.equal(after.ok, false);
+    assert.equal(after.reason, "awaiting_user_confirmation");
+    h.unmount();
+  });
+
   test("after the user allows it, the same click goes through exactly once", async () => {
     // Before this, the gate refused every denylisted action and nothing could
     // ever populate its confirmed set -- so a user saying yes changed nothing

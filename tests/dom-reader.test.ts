@@ -475,3 +475,74 @@ describe("publisher signature", () => {
     assert.equal(signatureForTest(page as never), signatureForTest({ ...page } as never));
   });
 });
+
+describe("isRendered — ancestor effects the element's own style does not show", () => {
+  test("a control under a transparent ancestor is not listed as visible", () => {
+    // opacity does not inherit, does not change the element's own computed
+    // style, and does not change its rect -- so a button under an
+    // `opacity: 0` panel was listed visible:true, and the [PAGE] block told
+    // the agent an invisible control was on the user's screen.
+    withLayout();
+    document.body.innerHTML =
+      '<div id="panel" style="opacity:0"><button>Hidden away</button></div>' +
+      "<button>Plainly there</button>";
+    const page = capturePage(document, window);
+    const names = page.elements.map((e) => e.name);
+    assert.ok(names.includes("Plainly there"));
+    assert.ok(!names.includes("Hidden away"), "must not list a control nobody can see");
+  });
+
+  test("a control under a clipped ancestor is not listed", () => {
+    withLayout();
+    document.body.innerHTML =
+      '<div style="clip-path:inset(100%)"><button>Clipped</button></div>' +
+      "<button>Visible</button>";
+    const names = capturePage(document, window).elements.map((e) => e.name);
+    assert.ok(!names.includes("Clipped"));
+    assert.ok(names.includes("Visible"));
+  });
+
+  test("an ordinary nested control is still listed", () => {
+    withLayout();
+    document.body.innerHTML =
+      '<div><section><button>Deeply nested</button></section></div>';
+    const names = capturePage(document, window).elements.map((e) => e.name);
+    assert.deepEqual(names, ["Deeply nested"]);
+  });
+});
+
+describe("capturePage — a page cannot break the reader by naming things", () => {
+  test("a form control named hasAttribute does not throw", () => {
+    // A form's named controls become properties of the form element, so
+    // <form role="search"><input name="hasAttribute"> -- ARIA's own
+    // recommended search markup plus one chosen name -- replaced
+    // form.hasAttribute with an input. Calling it threw out of capturePage,
+    // and the RPC handlers do not catch, so every action answered "the page
+    // did not respond".
+    withLayout();
+    document.body.innerHTML =
+      '<form id="f" role="search"><input name="hasAttribute"><input name="getAttribute">' +
+      '<input name="closest"><button>Search</button></form>';
+
+    // A browser exposes a form's named controls as properties of the form,
+    // which is what shadows these methods. jsdom does not implement that, so
+    // the shadowing is applied directly here -- the effect on our code is
+    // identical, and it is the effect that matters.
+    const form = document.getElementById("f")! as any;
+    for (const name of ["hasAttribute", "getAttribute", "closest"]) {
+      form[name] = document.querySelector(`[name="${name}"]`);
+    }
+    assert.notEqual(typeof form.hasAttribute, "function", "the method is shadowed");
+
+    const page = capturePage(document, window);
+    assert.ok(page.elements.length > 0, "the page still reads");
+    assert.ok(page.elements.some((e) => e.name === "Search"));
+
+    // And it reads the shadowed element CORRECTLY, not merely without
+    // throwing. Catching the error would answer "no role" for a form that
+    // plainly has one; going through the realm's own prototype gets the real
+    // answer, which is what the agent is then told.
+    const listedForm = page.elements.find((e) => e.role === "search");
+    assert.ok(listedForm, 'the clobbered form must still be read as role="search"');
+  });
+});

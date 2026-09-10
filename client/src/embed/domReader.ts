@@ -13,6 +13,74 @@
  * browser and without LiveKit.
  */
 
+/**
+ * DOM methods called off the prototype, not off the element.
+ *
+ * A form's named controls become properties of the form element, so
+ * `<form role="search"><input name="hasAttribute">` -- ARIA's own recommended
+ * search markup plus one attacker-chosen name -- replaces `form.hasAttribute`
+ * with an input. Calling it threw straight out of capturePage, and while the
+ * publisher caught that and degraded to vision-only, the RPC handlers did not
+ * and every action answered "the page did not respond".
+ *
+ * Reading through the prototype cannot be clobbered by anything the page
+ * names.
+ */
+/**
+ * Resolved per call, from the element's OWN realm.
+ *
+ * Not captured once at module scope: this module is imported before any DOM
+ * exists in some environments, and a same-origin iframe's elements belong to
+ * a different realm whose prototypes are different objects -- the same reason
+ * domGate.ts judges by tagName rather than instanceof.
+ */
+function realmMethod<T extends Function>(el: Element, name: string): T | null {
+  try {
+    const view = el.ownerDocument?.defaultView as unknown as
+      | { Element?: { prototype: Record<string, unknown> } }
+      | undefined;
+    const proto = view?.Element?.prototype;
+    const fn = proto ? proto[name] : undefined;
+    if (typeof fn === "function") return fn as unknown as T;
+    // No realm to ask (a detached node in a bare environment): fall back to
+    // the element's own method, which is what we had before this existed.
+    const own = (el as unknown as Record<string, unknown>)[name];
+    return typeof own === "function" ? (own as unknown as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function safeHasAttribute(el: Element, name: string): boolean {
+  const fn = realmMethod<(this: Element, n: string) => boolean>(el, "hasAttribute");
+  if (!fn) return false;
+  try {
+    return fn.call(el, name);
+  } catch {
+    return false;
+  }
+}
+
+export function safeGetAttribute(el: Element, name: string): string | null {
+  const fn = realmMethod<(this: Element, n: string) => string | null>(el, "getAttribute");
+  if (!fn) return null;
+  try {
+    return fn.call(el, name);
+  } catch {
+    return null;
+  }
+}
+
+export function safeClosest(el: Element, selector: string): Element | null {
+  const fn = realmMethod<(this: Element, s: string) => Element | null>(el, "closest");
+  if (!fn) return null;
+  try {
+    return fn.call(el, selector);
+  } catch {
+    return null;
+  }
+}
+
 /** One control the agent may refer to, and in Phase B act on. */
 export interface PageElement {
   ref: string;
@@ -52,6 +120,13 @@ const INTERACTIVE_SELECTOR = [
  * control the user is being guided to is almost always one they can see.
  */
 export const MAX_ELEMENTS = 200;
+
+/**
+ * How many interactive elements are examined at all.
+ *
+ * Bounds the cost of a capture on a very large page; see capturePage.
+ */
+export const MAX_RAW_ELEMENTS = 2000;
 
 /**
  * Longest accessible name kept.
@@ -117,7 +192,7 @@ export function cleanName(raw: string): string {
 function isPasswordField(el: Element): boolean {
   return (
     el.tagName.toLowerCase() === "input" &&
-    (el.getAttribute("type") || "").toLowerCase() === "password"
+    (safeGetAttribute(el, "type") || "").toLowerCase() === "password"
   );
 }
 
@@ -132,10 +207,10 @@ function isPasswordField(el: Element): boolean {
 function rawAccessibleName(el: Element, doc: Document): string {
   // A password field is named but never described by its content, so no
   // branch below can reach its value.
-  const ariaLabel = el.getAttribute("aria-label");
+  const ariaLabel = safeGetAttribute(el, "aria-label");
   if (ariaLabel?.trim()) return ariaLabel.trim();
 
-  const labelledBy = el.getAttribute("aria-labelledby");
+  const labelledBy = safeGetAttribute(el, "aria-labelledby");
   if (labelledBy) {
     const text = labelledBy
       .split(/\s+/)
@@ -152,14 +227,14 @@ function rawAccessibleName(el: Element, doc: Document): string {
   // widget runs -- a throw here would lose the whole capture, not one name.
   if (el.id) {
     for (const label of Array.from(doc.querySelectorAll("label[for]"))) {
-      if (label.getAttribute("for") === el.id) {
+      if (safeGetAttribute(label, "for") === el.id) {
         const text = label.textContent?.trim();
         if (text) return text;
         break;
       }
     }
   }
-  const wrapping = el.closest("label");
+  const wrapping = safeClosest(el, "label");
   if (wrapping?.textContent?.trim()) return wrapping.textContent.trim();
 
   if (!isPasswordField(el)) {
@@ -168,11 +243,11 @@ function rawAccessibleName(el: Element, doc: Document): string {
   }
 
   for (const attr of ["placeholder", "title", "alt"]) {
-    const value = el.getAttribute(attr);
+    const value = safeGetAttribute(el, attr);
     if (value?.trim()) return value.trim();
   }
 
-  const valueAttr = el.getAttribute("value");
+  const valueAttr = safeGetAttribute(el, "value");
   if (valueAttr?.trim() && !isPasswordField(el)) return valueAttr.trim();
 
   return "";
@@ -195,7 +270,7 @@ export function accessibleName(el: Element, doc: Document = el.ownerDocument): s
  * and therefore what the page author meant.
  */
 export function elementRole(el: Element): string {
-  const explicit = el.getAttribute("role");
+  const explicit = safeGetAttribute(el, "role");
   if (explicit?.trim()) return explicit.trim().toLowerCase();
 
   const tag = el.tagName.toLowerCase();
@@ -204,13 +279,13 @@ export function elementRole(el: Element): string {
   if (tag === "textarea") return "textbox";
   if (tag === "input") {
     // Absent type means text, matching how the browser treats it.
-    const type = (el.getAttribute("type") || "text").toLowerCase();
+    const type = (safeGetAttribute(el, "type") || "text").toLowerCase();
     if (type === "checkbox" || type === "radio") return type;
     if (type === "submit" || type === "button" || type === "reset") return "button";
     if (type === "password") return "password";
     return "textbox";
   }
-  if (el.hasAttribute("contenteditable")) return "textbox";
+  if (safeHasAttribute(el, "contenteditable")) return "textbox";
   return tag;
 }
 
@@ -220,14 +295,46 @@ export function elementRole(el: Element): string {
  * Not the same question as "in the viewport" -- a control below the fold is
  * still real and still worth listing, it just sorts later.
  */
+/** How far up to look for an ancestor that hides this control. */
+const MAX_RENDER_ANCESTORS = 60;
+
 export function isRendered(el: Element, win: Window): boolean {
-  if (el.hasAttribute("hidden")) return false;
-  if (el.getAttribute("aria-hidden") === "true") return false;
+  if (safeHasAttribute(el, "hidden")) return false;
+  if (safeGetAttribute(el, "aria-hidden") === "true") return false;
   const style = win.getComputedStyle(el);
   if (style.display === "none" || style.visibility === "hidden") return false;
   if (style.opacity === "0") return false;
   const rect = el.getBoundingClientRect();
-  return rect.width > 0 && rect.height > 0;
+  if (rect.width <= 0 || rect.height <= 0) return false;
+
+  // Ancestors too, for the properties that do not inherit and do not change
+  // the element's own box: `opacity`, `clip-path` and `mask`. A control under
+  // an `opacity: 0` panel was listed as visible:true, so the [PAGE] block
+  // told the agent an invisible control was on the user's screen -- and the
+  // agent then told the user to click it. `visibility` needs no walk because
+  // it inherits, and `display:none` on an ancestor already zeroes the rect.
+  //
+  // These are the same properties controlVisibility.ts walks for our own
+  // bar; the page's controls deserve the same reading.
+  let node: Element | null = el.parentElement;
+  for (let i = 0; i < MAX_RENDER_ANCESTORS && node; i++) {
+    let ancestorStyle: CSSStyleDeclaration;
+    try {
+      ancestorStyle = win.getComputedStyle(node);
+    } catch {
+      return false;
+    }
+    if (ancestorStyle.opacity === "0") return false;
+    const clip = ancestorStyle.clipPath ?? "none";
+    if (clip !== "none" && clip !== "") return false;
+    const mask =
+      ancestorStyle.maskImage ??
+      (ancestorStyle as unknown as { webkitMaskImage?: string }).webkitMaskImage ??
+      "none";
+    if (mask !== "none" && mask !== "") return false;
+    node = node.parentElement;
+  }
+  return true;
 }
 
 function isInViewport(el: Element, win: Window): boolean {
@@ -365,7 +472,20 @@ export function listedName(el: Element, doc: Document): string {
 export function capturePage(doc: Document, win: Window = doc.defaultView!): PageListing {
   const seen: { el: Element; visible: boolean }[] = [];
 
-  for (const el of Array.from(doc.querySelectorAll(INTERACTIVE_SELECTOR))) {
+  // The cap bounds the WALK, not just the listing. MAX_ELEMENTS trimmed the
+  // output while every interactive element on the page was still measured --
+  // and measuring means getComputedStyle plus a rect each. On a page with
+  // 40,000 of them that was 205ms unthrottled and 816ms at 4x CPU throttle,
+  // on the host page's main thread, twice per click. This is someone else's
+  // page and someone else's conversation; it does not get to cost that.
+  //
+  // Deliberately more than MAX_ELEMENTS: off-screen controls sort after
+  // visible ones, so the walk needs headroom to find visible controls that
+  // appear late in document order before it stops.
+  const all = doc.querySelectorAll(INTERACTIVE_SELECTOR);
+  const walkLimit = Math.min(all.length, MAX_RAW_ELEMENTS);
+  for (let i = 0; i < walkLimit; i++) {
+    const el = all[i];
     if (!isRendered(el, win)) continue;
     seen.push({ el, visible: isInViewport(el, win) });
   }

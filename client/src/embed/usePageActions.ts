@@ -410,12 +410,22 @@ export function usePageActions(options: PageActionsOptions) {
         return refuse(verdict.reason, verdict.detail, confirmable);
       }
 
+      // Spent the moment the gate passes, before anything can go wrong.
+      //
+      // It used to be spent after the click and its 350ms settle, which left
+      // a window the approval was still live in. The agent's own runtime
+      // opens it: livekit-agents runs the function calls in one LLM response
+      // as concurrent tasks, and these tools allow duplicates, so two
+      // identical click calls overlap -- one approval, two presses of "Pay
+      // now", reproduced. The same window swallowed a failed press: if
+      // el.click() threw, the delete never ran and the approval survived for
+      // a later, unapproved click.
+      confirmedKeys.current.delete(key);
+
       const before = pageFingerprint();
       (el as HTMLElement).click();
       // Give the page a beat to react before reporting what changed.
       await new Promise((r) => setTimeout(r, 350));
-      // Spent: an approval is for one press, not for the rest of the session.
-      confirmedKeys.current.delete(key);
       latest.current.onAction?.(`clicked "${name}"`);
       // One capture, used both to decide whether anything changed and as the
       // reply. It was two, and capturePage walks the whole document.

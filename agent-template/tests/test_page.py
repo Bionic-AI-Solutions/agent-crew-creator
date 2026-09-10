@@ -1020,5 +1020,53 @@ def test_no_visitor_means_no_one_to_act_for():
     assert _actor([]) is None
 
 
+# ── goal 4: an agent with DOM off is untouched ─────────────────
+#
+# Not just the prompt. @function_tool registers at class-definition time, so
+# the tools exist on every agent unless something removes them.
+
+def _tool_names(monkeypatch, *, read: bool, control: bool):
+    from config import settings
+    import agent.main_agent as ma
+
+    monkeypatch.setattr(settings, "dom_read_enabled", read)
+    monkeypatch.setattr(settings, "dom_control_enabled", control)
+
+    # Only the tool-withholding step is exercised, on a stand-in: Agent.tools
+    # is a read-only property, and constructing a real agent would pull in
+    # models, plugins and a room. The method touches nothing else.
+    class _Stand:
+        def __init__(self):
+            self.tools = [
+                type("T", (), {"name": n})()
+                for n in ["read_page", "click", "type_text", "scroll", "delegate_to_letta"]
+            ]
+
+        def update_tools(self, new):
+            self.tools = list(new)
+
+    stand = _Stand()
+    ma.MainAgent._drop_disabled_page_tools(stand)
+    return {t.name for t in stand.tools}
+
+
+def test_an_agent_with_dom_off_carries_no_page_tools(monkeypatch):
+    names = _tool_names(monkeypatch, read=False, control=False)
+    assert "read_page" not in names
+    assert not {"click", "type_text", "scroll"} & names
+    assert "delegate_to_letta" in names, "unrelated tools must be left alone"
+
+
+def test_a_reading_agent_gets_read_page_but_cannot_act(monkeypatch):
+    names = _tool_names(monkeypatch, read=True, control=False)
+    assert "read_page" in names
+    assert not {"click", "type_text", "scroll"} & names
+
+
+def test_a_controlling_agent_gets_all_of_them(monkeypatch):
+    names = _tool_names(monkeypatch, read=True, control=True)
+    assert {"read_page", "click", "type_text", "scroll"} <= names
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

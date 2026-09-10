@@ -380,3 +380,66 @@ describe("evaluateTyping", () => {
     assert.equal((v as any).reason, "origin_not_granted");
   });
 });
+
+describe("submitsForm — association, not containment", () => {
+  test("a button associated by the form attribute counts, wherever it sits", () => {
+    // closest("form") only sees containment. <button form="checkout"> placed
+    // outside its form is ordinary HTML and submits just as hard -- verified
+    // against a real request, the click POSTed to /account/delete.
+    const dom = new JSDOM(
+      '<!doctype html><body>' +
+      '<form id="f" action="/account/delete" method="post"></form>' +
+      '<button id="b" form="f">Continue</button>' +
+      "</body>",
+    );
+    const btn = dom.window.document.getElementById("b")!;
+    assert.equal(submitsForm(btn), true);
+  });
+
+  test("input type=image is a submit button", () => {
+    const dom = new JSDOM(
+      '<!doctype html><body><form><input id="i" type="image" src="go.png" alt="Go"></form></body>',
+    );
+    assert.equal(submitsForm(dom.window.document.getElementById("i")!), true);
+  });
+
+  test("an ordinary button not associated with a form does not count", () => {
+    const dom = new JSDOM('<!doctype html><body><button id="b">Show more</button></body>');
+    assert.equal(submitsForm(dom.window.document.getElementById("b")!), false);
+  });
+});
+
+describe("enclosingDialogText — text inside components", () => {
+  test("reads dialog text rendered inside a shadow root", () => {
+    // textContent stops at a shadow boundary, so a dialog whose message is
+    // rendered by a web component read as just "OK" -- and the rule that
+    // catches an innocuous button confirming something dangerous saw nothing.
+    // Every design system that renders dialog bodies in components did this.
+    const dom = new JSDOM(
+      '<!doctype html><body><div role="dialog">' +
+      "<x-msg id=\"m\"></x-msg><button id=\"ok\">OK</button></div></body>",
+    );
+    const doc = dom.window.document;
+    const msg = doc.getElementById("m")!;
+    msg.attachShadow({ mode: "open" }).textContent =
+      "Permanently delete your account?";
+
+    const text = enclosingDialogText(doc.getElementById("ok")!);
+    assert.match(text, /Permanently delete your account/);
+    assert.equal(matchesDenylist(text, ["delete"]), "delete");
+  });
+
+  test("still reads ordinary light-DOM dialog text", () => {
+    const dom = new JSDOM(
+      '<!doctype html><body><div role="dialog">' +
+      "<p>Permanently delete your account?</p><button id=\"ok\">OK</button></div></body>",
+    );
+    const text = enclosingDialogText(dom.window.document.getElementById("ok")!);
+    assert.match(text, /Permanently delete your account/);
+  });
+
+  test("a control outside any dialog has no dialog text", () => {
+    const dom = new JSDOM('<!doctype html><body><button id="b">OK</button></body>');
+    assert.equal(enclosingDialogText(dom.window.document.getElementById("b")!), "");
+  });
+});

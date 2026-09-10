@@ -562,6 +562,41 @@ class MainAgent(Agent):
             instructions += "\n" + page_rules()
         super().__init__(instructions=instructions)
 
+        # And the page tools themselves, for the same reason the rules are
+        # conditional: an agent that cannot read or act on a page should not
+        # be carrying the schemas for doing so.
+        #
+        # @function_tool registers at class definition time, so every agent in
+        # the fleet had read_page/click/type_text/scroll on every turn -- four
+        # extra schemas of prompt on agents that will never use them, and a
+        # model that called one got "Acting on the page is not enabled for
+        # this agent" in the middle of a conversation. The goal was that
+        # existing agents stay untouched; this is what makes that true rather
+        # than merely intended.
+        self._drop_disabled_page_tools()
+
+    def _drop_disabled_page_tools(self) -> None:
+        """Remove the page tools this agent's configuration does not allow."""
+        unavailable: set[str] = set()
+        if not settings.dom_read_enabled:
+            unavailable.add("read_page")
+        if not settings.dom_control_enabled:
+            unavailable.update({"click", "type_text", "scroll"})
+        if not unavailable:
+            return
+        try:
+            kept = [t for t in self.tools if getattr(t, "name", None) not in unavailable]
+            if len(kept) != len(self.tools):
+                self.update_tools(kept)
+                logger.info(
+                    "Page tools withheld (not enabled for this agent): %s",
+                    ", ".join(sorted(unavailable)),
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            # Carrying an extra tool is a great deal better than failing to
+            # start, so this never raises.
+            logger.warning("Could not withhold page tools: %s", exc)
+
     # ── Vision ───────────────────────────────────────────────
     #
     # WHY THE AGENT DOES THIS ITSELF (2026-08-29).

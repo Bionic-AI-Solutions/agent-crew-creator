@@ -85,9 +85,20 @@ export function submitsForm(el: Element): boolean {
   if (tag !== "input" && tag !== "button") return false;
   const type = (el.getAttribute("type") || "").toLowerCase();
   if (type === "submit") return true;
-  // A <button> inside a form with no explicit type submits it. The single
-  // most commonly missed way to send something by accident.
-  if (tag === "button" && !type && el.closest("form")) return true;
+  // <input type="image"> is a graphical submit button. Nothing about the tag
+  // or the type says "submit", and it posts the form exactly the same way --
+  // verified against a real request.
+  if (tag === "input" && type === "image") return true;
+
+  // Associated with a form, NOT merely inside one. `closest("form")` misses
+  // `<button form="checkout">` placed outside its form, which is ordinary
+  // HTML and submits just as hard: the click was allowed through the gate and
+  // POSTed to /account/delete. The `form` IDL property is the association the
+  // browser itself uses, wherever the element sits.
+  const owner =
+    (el as HTMLButtonElement | HTMLInputElement).form ??
+    (el.getAttribute("form") ? el.ownerDocument?.getElementById(el.getAttribute("form")!) : null);
+  if (tag === "button" && !type && owner) return true;
   return false;
 }
 
@@ -123,7 +134,48 @@ export function isDismissal(name: string): boolean {
  */
 export function enclosingDialogText(el: Element): string {
   const dialog = el.closest('[role="dialog"], [role="alertdialog"], dialog');
-  return visibleText(dialog?.textContent ?? "").trim();
+  if (!dialog) return "";
+  return visibleText(deepTextContent(dialog)).trim();
+}
+
+/**
+ * All the text a person reads in this subtree, including inside components.
+ *
+ * `textContent` stops at a shadow boundary, so a dialog whose message is
+ * rendered by a web component read as just its buttons -- "OK" -- and the
+ * rule that catches an innocuously-named button confirming something
+ * dangerous saw nothing to catch. That is not only an attack: every design
+ * system that renders dialog body text inside a component (Shoelace, Lit,
+ * LWC, Ionic, Vaadin) silently lost the rule.
+ *
+ * Bounded so a huge dialog cannot make this expensive: the denylist only
+ * needs enough text to match a term.
+ */
+const MAX_DIALOG_TEXT = 4000;
+
+function deepTextContent(root: Element): string {
+  let out = "";
+
+  const visitChildren = (parent: Node) => {
+    for (const child of Array.from(parent.childNodes)) {
+      if (out.length >= MAX_DIALOG_TEXT) return;
+      // Text nodes anywhere, including directly inside a shadow root -- a
+      // component that simply sets shadowRoot.textContent has no element
+      // children at all, so walking only `children` found nothing.
+      if (child.nodeType === 3) out += " " + (child.nodeValue ?? "");
+      else if (child.nodeType === 1) visit(child as Element);
+    }
+  };
+
+  const visit = (node: Element) => {
+    if (out.length >= MAX_DIALOG_TEXT) return;
+    const shadow = (node as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+    if (shadow) visitChildren(shadow);
+    visitChildren(node);
+  };
+
+  visit(root);
+  return out.slice(0, MAX_DIALOG_TEXT);
 }
 
 export interface GateContext {
