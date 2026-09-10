@@ -20,6 +20,7 @@ import {
   MAX_ELEMENTS,
   MAX_NAME_CHARS,
   cleanName,
+  __resetRefNumberingForTest,
 } from "../client/src/embed/domReader.ts";
 import { signatureForTest } from "../client/src/embed/usePagePublisher.ts";
 
@@ -378,6 +379,54 @@ describe("resolveRef", () => {
       "A",
       "the ref must still name row A's Edit, not whichever Edit is now first",
     );
+  });
+
+  test("a ref is never handed out twice, even across a navigation", () => {
+    // Numbering used to restart at 1 whenever the URL changed, so a ref the
+    // agent was still holding was reissued to a DIFFERENT element -- and
+    // because it resolved cleanly in the new registry, the only guard left
+    // was the name. On a table of identically-named controls that is no guard
+    // at all, which is the exact failure the identity design exists to
+    // prevent. A plain history.pushState reaches it, including one caused by
+    // the agent's own click.
+    //
+    // Numbering is reset here so the refs this test issues are predictable;
+    // nothing in the widget ever resets it.
+    __resetRefNumberingForTest();
+
+    document.body.innerHTML = "<button>One</button><button>Two</button>";
+    const before = capturePage(document, window);
+    const issuedBefore = before.elements.map((e) => e.ref);
+    assert.deepEqual(issuedBefore, ["ref_1", "ref_2"]);
+
+    const elsewhere = new Proxy(window, {
+      get(target, prop, receiver) {
+        if (prop === "location") return { href: "https://mail.example.com/inbox?tab=archive" };
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as Window;
+
+    document.body.innerHTML = "<button>Three</button><button>Four</button>";
+    const after = capturePage(document, elsewhere);
+    const issuedAfter = after.elements.map((e) => e.ref);
+
+    for (const ref of issuedAfter) {
+      assert.ok(
+        !issuedBefore.includes(ref),
+        `${ref} was already issued before the URL changed and must not be reused`,
+      );
+    }
+
+    // And the harm itself: a ref the agent is still holding must find
+    // nothing, rather than whatever inherited its number.
+    for (const stale of issuedBefore) {
+      assert.equal(
+        resolveRef(stale, document, elsewhere),
+        null,
+        `${stale} is stale and must not resolve to a different control`,
+      );
+    }
   });
 
   test("a ref from a previous page does not resolve after navigation", () => {

@@ -296,10 +296,11 @@ def format_for_model(listing: PageListing, max_chars: int = MAX_PAGE_CHARS) -> s
 class PageHolder:
     """The newest listing, and whether it is still worth showing.
 
-    Deliberately holds ONE listing rather than a history. Refs are renumbered
-    by every capture, so an older listing's refs describe a page that no longer
-    exists -- keeping them around would let the agent act on a ref that now
-    points at something else.
+    Deliberately holds ONE listing rather than a history. A ref still names
+    the control it named, so an old one is not dangerous the way it once was
+    -- but an old listing describes a page that has moved on: controls that
+    have since gone, names that have since changed, things now off screen.
+    Offering the agent two listings would let it reason from the stale one.
     """
 
     def __init__(self, max_age: float = MAX_PAGE_AGE_SECONDS) -> None:

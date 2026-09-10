@@ -505,6 +505,74 @@ describe("usePageActions — a ref must still be what the agent named", () => {
   });
 });
 
+describe("usePageActions — controls with no name", () => {
+  test("an icon-only button can still be clicked", async () => {
+    // format_for_model shows the model "(no name)" for an unnamed control,
+    // the model copies what it is shown, and the browser compared it against
+    // "" -- so every hamburger, close X and send arrow was refused forever
+    // with "the page changed", and re-reading produced the identical block.
+    dom.window.document.body.innerHTML = '<button id="x"><svg></svg></button>';
+    const bar = makeVisibleBar();
+    const { room, handlers } = makeFakeRoom();
+    let clicked = false;
+    dom.window.document.getElementById("x")!.addEventListener("click", () => {
+      clicked = true;
+    });
+    const h = mount(room, {
+      enabled: true,
+      denylist: [],
+      allowedOrigins: [ORIGIN],
+      getControlBar: () => bar,
+    });
+    await flushMicrotasks();
+
+    const listing = await readListing(handlers);
+    const unnamed = listing.find((e) => e.name === "");
+    assert.ok(unnamed, "an unnamed control should be listed");
+
+    const res = await callRpc(handlers, RPC_CLICK, {
+      ref: unnamed!.ref,
+      expect: "(no name)",
+    });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(clicked, true);
+    void h;
+  });
+
+  test("a password field is refused as a password field, not as a moved ref", async () => {
+    // capturePage lists a password field with an empty name so nothing about
+    // its contents leaves the browser, but the act-time name was computed
+    // separately and came back as its label -- so the mismatch fired first
+    // and the password rule, which is the one that must never be reachable
+    // around, was never reached at all.
+    dom.window.document.body.innerHTML =
+      '<input id="p" type="password" aria-label="Password" />';
+    const bar = makeVisibleBar();
+    const { room, handlers } = makeFakeRoom();
+    const h = mount(room, {
+      enabled: true,
+      denylist: [],
+      allowedOrigins: [ORIGIN],
+      getControlBar: () => bar,
+    });
+    await flushMicrotasks();
+
+    const listing = await readListing(handlers);
+    const field = listing.find((e) => e.role === "textbox" || e.name === "");
+    assert.ok(field, "the password box should be listed");
+    assert.equal(field!.name, "", "and listed with no name");
+
+    const res = await callRpc(handlers, RPC_TYPE_TEXT, {
+      ref: field!.ref,
+      text: "hunter2",
+      expect: "(no name)",
+    });
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, "password_field");
+    void h;
+  });
+});
+
 describe("usePageActions — typing", () => {
   test("types into a contenteditable instead of throwing", async () => {
     // domReader offers contenteditable elements as typeable, and the native

@@ -32,6 +32,12 @@ const GOOD_STYLE = {
   pointerEvents: "auto",
   filter: "none",
   position: "fixed",
+  backgroundImage: "none",
+  maskImage: "none",
+  webkitMaskImage: "none",
+  webkitMaskBoxImage: "none",
+  clipPath: "none",
+  contentVisibility: "visible",
   backgroundColor: "rgb(255, 255, 255)",
   backdropFilter: "none",
 };
@@ -94,8 +100,16 @@ describe("controlUiVisibility", () => {
   });
 
   test("visibility:hidden on the wrapper revokes control", () => {
-    const { bar, win } = build({ styles: { wrapper: { visibility: "hidden" } } });
-    assert.equal(controlUiVisibility(bar, win).visible, false);
+    // visibility INHERITS, so a real browser computes "hidden" on the bar too
+    // unless something re-declares it. getComputedStyle is faked per element
+    // here and models no inheritance, so both are set -- which is what
+    // Chromium actually reports for this page.
+    const { bar, win } = build({
+      styles: { wrapper: { visibility: "hidden" }, bar: { visibility: "hidden" } },
+    });
+    const v = controlUiVisibility(bar, win);
+    assert.equal(v.visible, false);
+    assert.equal(v.reason, "control_ui_hidden");
   });
 
   test("an ancestor made transparent revokes control", () => {
@@ -251,6 +265,100 @@ describe("controlUiVisibility", () => {
     ]) {
       assert.equal(filterHides(harmless), false, String(harmless));
     }
+  });
+
+  test("a mask on an ancestor revokes control", () => {
+    // Same class as filter: an ancestor compositing effect a descendant
+    // cannot undo. `mask-image: linear-gradient(transparent,transparent)`
+    // renders the bar to zero pixels with its own style untouched.
+    for (const prop of ["maskImage", "webkitMaskImage", "webkitMaskBoxImage"] as const) {
+      const { bar, win } = build({
+        styles: { wrapper: { [prop]: "linear-gradient(transparent, transparent)" } },
+      });
+      const v = controlUiVisibility(bar, win);
+      assert.equal(v.visible, false, prop);
+      assert.equal(v.reason, "control_ui_filtered", prop);
+    }
+  });
+
+  test("clip-path on an ancestor revokes control", () => {
+    const { bar, win } = build({ styles: { wrapper: { clipPath: "inset(100%)" } } });
+    const v = controlUiVisibility(bar, win);
+    assert.equal(v.visible, false);
+    assert.equal(v.reason, "control_ui_filtered");
+  });
+
+  test("content-visibility:hidden on an ancestor revokes control", () => {
+    const { bar, win } = build({ styles: { wrapper: { contentVisibility: "hidden" } } });
+    const v = controlUiVisibility(bar, win);
+    assert.equal(v.visible, false);
+    assert.equal(v.reason, "control_ui_filtered");
+  });
+
+  test("visibility:hidden on an ancestor does not revoke when the bar re-enables it", () => {
+    // `body { visibility: hidden }` is a standard anti-FOUC pattern, and the
+    // wrapper's inline reset re-declares visibility:visible, so the bar
+    // really does render. Revoking there killed control on innocent pages.
+    const { bar, win } = build({
+      styles: { wrapper: { visibility: "hidden" }, bar: { visibility: "visible" } },
+    });
+    assert.equal(controlUiVisibility(bar, win).visible, true);
+  });
+
+  test("visibility:hidden on the bar itself still revokes", () => {
+    const { bar, win } = build({ styles: { bar: { visibility: "hidden" } } });
+    const v = controlUiVisibility(bar, win);
+    assert.equal(v.visible, false);
+    assert.equal(v.reason, "control_ui_hidden");
+  });
+
+  test("a gradient scrim over the bar revokes control", () => {
+    // How real UIs build fades and backdrops. Its background-COLOR is
+    // transparent, so a colour-only check sailed straight through it.
+    const { bar, doc, win } = build({
+      styles: {
+        veil: {
+          pointerEvents: "none",
+          backgroundColor: "rgba(0, 0, 0, 0)",
+          backgroundImage: "linear-gradient(rgb(255,255,255), rgb(255,255,255))",
+        },
+      },
+    });
+    const veil = doc.createElement("div");
+    veil.id = "veil";
+    doc.body.appendChild(veil);
+    (veil as any).getBoundingClientRect = () => ({
+      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
+    });
+    const v = controlUiVisibility(bar, win);
+    assert.equal(v.visible, false);
+    assert.equal(v.reason, "control_ui_obscured");
+  });
+
+  test("an overlay appended last on a large page is still found", () => {
+    // querySelectorAll returns document order and the scan is capped, so
+    // taking the first N never reached a modal backdrop -- portals append
+    // theirs at the end of <body>, which is where the cap had already
+    // stopped. The scan runs backwards for exactly this.
+    const { bar, doc, win } = build({
+      styles: { veil: { pointerEvents: "none", backgroundColor: "rgb(255, 255, 255)" } },
+    });
+    for (let i = 0; i < 5000; i++) {
+      const filler = doc.createElement("span");
+      (filler as any).getBoundingClientRect = () => ({
+        width: 0, height: 0, top: 0, left: 0, bottom: 0, right: 0,
+      });
+      doc.body.appendChild(filler);
+    }
+    const veil = doc.createElement("div");
+    veil.id = "veil";
+    doc.body.appendChild(veil);
+    (veil as any).getBoundingClientRect = () => ({
+      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
+    });
+    const v = controlUiVisibility(bar, win);
+    assert.equal(v.visible, false);
+    assert.equal(v.reason, "control_ui_obscured");
   });
 
   test("outermostHost climbs out of the shadow root to the light-DOM wrapper", () => {

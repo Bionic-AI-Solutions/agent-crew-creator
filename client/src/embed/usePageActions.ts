@@ -17,7 +17,7 @@
  */
 import { useCallback, useEffect, useRef } from "react";
 import { useRoomContext } from "@livekit/components-react";
-import { capturePage, resolveRef, accessibleName } from "./domReader";
+import { capturePage, resolveRef, listedName } from "./domReader";
 import { evaluateAction, evaluateTyping, visibleText, type GateContext } from "./domGate";
 import { controlUiVisibility } from "./controlVisibility";
 
@@ -64,9 +64,16 @@ interface ActionResult {
   elements?: ReturnType<typeof capturePage>["elements"];
 }
 
-function listingReply(changed: boolean): ActionResult {
-  const page = capturePage(document, window);
+function listingReply(changed: boolean, page = capturePage(document, window)): ActionResult {
   return { ok: true, changed, url: page.url, elements: page.elements };
+}
+
+/** The fingerprint of a listing we have already captured. */
+function fingerprintOf(page: ReturnType<typeof capturePage>): string {
+  return JSON.stringify([
+    page.url,
+    page.elements.map((e) => [e.role, e.name, e.visible]),
+  ]);
 }
 
 /**
@@ -77,25 +84,35 @@ function listingReply(changed: boolean): ActionResult {
  * identical instruction this feature exists to stop.
  */
 function pageFingerprint(): string {
-  const page = capturePage(document, window);
-  return JSON.stringify([
-    page.url,
-    page.elements.map((e) => [e.role, e.name, e.visible]),
-  ]);
+  return fingerprintOf(capturePage(document, window));
 }
+
+/**
+ * What the model is shown in place of a name it has not got.
+ *
+ * format_for_model renders an unnamed control as `(no name)`, because a blank
+ * where a name should be reads as a rendering fault rather than as a fact
+ * about the control. The model copies what it is shown, so the browser has to
+ * accept what it showed: without this, every icon-only button with no
+ * aria-label -- a hamburger, a close X, a send arrow -- was refused forever
+ * with "the page changed", and re-reading produced the identical block. The
+ * two halves of the expect contract were written separately and disagreed.
+ */
+const NO_NAME_PLACEHOLDER = "(no name)";
 
 /** Compare names the way a person would, not the way a page writes them. */
 function normaliseName(raw: string): string {
-  return visibleText(raw || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const cleaned = visibleText(raw || "").toLowerCase().replace(/\s+/g, " ").trim();
+  return cleaned === NO_NAME_PLACEHOLDER ? "" : cleaned;
 }
 
 /**
  * A confirmation is bound to the element's NAME as well as its ref.
  *
- * A ref is a position in the current listing, so "the user approved ref_7"
- * would survive the page reordering and approve whatever slid into seventh
- * place. Keying on the name too means an approval only ever spends itself on
- * the thing the user was actually shown.
+ * A ref names one control, so an approval already cannot slide onto a
+ * neighbour. Keying on the name as well covers the remaining case: the same
+ * element, renamed since the user was asked about it. An approval only ever
+ * spends itself on the thing the user was actually shown.
  */
 function confirmKey(ref: string, name: string): string {
   return `${ref} ${normaliseName(name)}`;
@@ -163,17 +180,16 @@ export function usePageActions(options: PageActionsOptions) {
     /**
      * Resolve a ref AND check it is still the thing the agent named.
      *
-     * Refs are positional: resolveRef recomputes the ordering at act time, so
-     * `ref_7` means "the seventh interactive element right now", not "the
-     * element I described a moment ago". On a page that reorders between the
-     * listing and the click -- a toast appearing, a row loading -- that is a
-     * click on a different control. The gate still re-reads the LIVE
-     * element's name, so a denylisted one is still refused; what was missing
-     * was any check that a harmless-but-different element had taken its place.
+     * resolveRef answers "the element this ref named", never "whatever is in
+     * that position now" -- see the ref registry in domReader.ts. That closes
+     * the reorder case, including the one a name check cannot see: a table
+     * where every row has its own "Edit".
      *
-     * So the agent has to say what it thinks it is pressing, and the browser
-     * checks. Not a prompt rule asking it to re-read: a mismatch is refused
-     * here, with the current listing attached so it can try again.
+     * `expect` is the other half. The element can still be the same node and
+     * no longer be the same control -- relabelled by the page between the
+     * listing and the click -- so the agent says what it believes it is
+     * pressing and the browser checks. A mismatch is refused here, with the
+     * current listing attached so it can try again.
      */
     const resolveExpected = (
       ref: string,
@@ -192,7 +208,7 @@ export function usePageActions(options: PageActionsOptions) {
           }),
         };
       }
-      const name = accessibleName(el);
+      const name = listedName(el, document);
       const claimed = typeof expect === "string" ? expect : "";
       if (normaliseName(claimed) !== normaliseName(name)) {
         const reply = listingReply(false);
@@ -242,7 +258,10 @@ export function usePageActions(options: PageActionsOptions) {
       // Spent: an approval is for one press, not for the rest of the session.
       confirmedKeys.current.delete(key);
       latest.current.onAction?.(`clicked "${name}"`);
-      return JSON.stringify(listingReply(pageFingerprint() !== before));
+      // One capture, used both to decide whether anything changed and as the
+      // reply. It was two, and capturePage walks the whole document.
+      const after = capturePage(document, window);
+      return JSON.stringify(listingReply(fingerprintOf(after) !== before, after));
     };
 
     const typeText = async (data: { payload: string }): Promise<string> => {
@@ -300,7 +319,8 @@ export function usePageActions(options: PageActionsOptions) {
       target.dispatchEvent(new Event("change", { bubbles: true }));
       await new Promise((r) => setTimeout(r, 150));
       latest.current.onAction?.(`typed into "${name || "a field"}"`);
-      return JSON.stringify(listingReply(pageFingerprint() !== before));
+      const after = capturePage(document, window);
+      return JSON.stringify(listingReply(fingerprintOf(after) !== before, after));
     };
 
     const scroll = async (data: { payload: string }): Promise<string> => {

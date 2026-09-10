@@ -81,7 +81,13 @@ export interface VisibilityWindow {
     filter?: string;
     position?: string;
     backgroundColor?: string;
+    backgroundImage?: string;
     backdropFilter?: string;
+    maskImage?: string;
+    webkitMaskImage?: string;
+    webkitMaskBoxImage?: string;
+    clipPath?: string;
+    contentVisibility?: string;
   };
   document: {
     elementFromPoint(x: number, y: number): Element | null;
@@ -129,13 +135,61 @@ export function filterHides(value: string | undefined): boolean {
 }
 
 /** A colour that paints over what is behind it. */
-function isOpaquePaint(colour: string | undefined): boolean {
+function isOpaqueColour(colour: string | undefined): boolean {
   if (!colour) return false;
   const m = /rgba?\(([^)]+)\)/.exec(colour);
   if (!m) return colour !== "transparent";
   const parts = m[1].split(",").map((p) => parseFloat(p));
   const alpha = parts.length >= 4 ? parts[3] : 1;
   return Number.isFinite(alpha) && alpha > 0.3;
+}
+
+/**
+ * Does this element paint over what is behind it?
+ *
+ * background-color alone was not enough. A scrim built from a gradient or an
+ * image -- `background: linear-gradient(#fff,#fff)`, which is how real UIs
+ * build fades and backdrops -- has `background-color: rgba(0,0,0,0)` and went
+ * straight through the colour check while covering the bar completely.
+ */
+function paintsOver(style: {
+  backgroundColor?: string;
+  backgroundImage?: string;
+  backdropFilter?: string;
+}): boolean {
+  if (isOpaqueColour(style.backgroundColor)) return true;
+  const image = style.backgroundImage ?? "none";
+  if (image !== "none" && image !== "") return true;
+  const backdrop = style.backdropFilter ?? "none";
+  return backdrop !== "none" && backdrop !== "";
+}
+
+/**
+ * Ancestor effects that hide a descendant and that a descendant cannot undo.
+ *
+ * The same class as `filter`: compositing and clipping properties that apply
+ * to a whole subtree. `mask-image: linear-gradient(transparent,transparent)`,
+ * `clip-path: inset(100%)` and `content-visibility: hidden` each render the
+ * bar to zero pixels while leaving its own computed style, and in two of the
+ * three cases its rect, completely unremarkable. The wrapper's inline reset
+ * lists clip-path and content-visibility, so they were anticipated on the
+ * element itself -- but never checked on the chain above it, where the reset
+ * cannot reach.
+ */
+function hidingEffect(style: {
+  maskImage?: string;
+  webkitMaskImage?: string;
+  webkitMaskBoxImage?: string;
+  clipPath?: string;
+  contentVisibility?: string;
+}): string | null {
+  for (const mask of [style.maskImage, style.webkitMaskImage, style.webkitMaskBoxImage]) {
+    if (mask && mask !== "none" && mask !== "") return "masked";
+  }
+  const clip = style.clipPath ?? "none";
+  if (clip !== "none" && clip !== "") return "clipped";
+  if ((style.contentVisibility ?? "visible") === "hidden") return "not rendered";
+  return null;
 }
 
 /**
@@ -164,9 +218,14 @@ function opaqueOverlayAt(
 ): boolean {
   const all = win.document.querySelectorAll?.("*");
   if (!all) return false;
+  // Backwards. querySelectorAll returns document order, and the cap used to
+  // take the FIRST 4000 -- which on a large page is the header and the
+  // content, never the modal backdrop, because portals append theirs at the
+  // end of <body>. Scanning from the end puts the overlays first and the page
+  // furniture last, so the cap now truncates the part that never matters.
   const limit = Math.min(all.length, MAX_OVERLAY_SCAN);
   for (let i = 0; i < limit; i++) {
-    const el = all[i];
+    const el = all[all.length - 1 - i];
     if (el === host || el === bar) continue;
     // Ours, or something we sit inside: not painted over us.
     if (el.contains?.(host) || host.contains?.(el)) continue;
@@ -194,9 +253,7 @@ function opaqueOverlayAt(
     if (position !== "fixed" && position !== "absolute" && position !== "sticky") continue;
     const opacity = parseFloat(style.opacity);
     if (Number.isFinite(opacity) && opacity < 0.3) continue;
-    if (isOpaquePaint(style.backgroundColor) || (style.backdropFilter ?? "none") !== "none") {
-      return true;
-    }
+    if (paintsOver(style)) return true;
   }
   return false;
 }
@@ -321,7 +378,14 @@ export function controlUiVisibility(
     if (style.display === "none") {
       return hidden("control_ui_hidden", "the control bar is hidden by the page (display)");
     }
-    if (style.visibility === "hidden" || style.visibility === "collapse") {
+    // Only on the bar itself. visibility INHERITS, so an ancestor's "hidden"
+    // already shows up in the bar's own computed value -- but it is also the
+    // one property a descendant may legally re-enable, and the wrapper's
+    // inline reset sets visibility:visible !important. Checking the chain
+    // therefore revoked control on `body { visibility: hidden }`, a standard
+    // anti-FOUC pattern, while the bar was rendering perfectly. Fail-closed,
+    // but closed on a page doing nothing wrong.
+    if (el === bar && (style.visibility === "hidden" || style.visibility === "collapse")) {
       return hidden("control_ui_hidden", "the control bar is hidden by the page (visibility)");
     }
     const opacity = parseFloat(style.opacity);
@@ -333,6 +397,10 @@ export function controlUiVisibility(
     // be undone from below.
     if (filterHides(style.filter)) {
       return hidden("control_ui_filtered", "the control bar has been filtered out of view");
+    }
+    const effect = hidingEffect(style);
+    if (effect) {
+      return hidden("control_ui_filtered", `the control bar is ${effect} by the page`);
     }
     // Only the bar itself needs to be clickable; `pointer-events: none` on an
     // ancestor is routinely re-enabled by a descendant, and the hit test

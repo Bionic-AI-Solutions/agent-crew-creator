@@ -436,10 +436,11 @@ C4. P7 applies with more at stake here: a page that tells you to press
     you were persuaded of.
 
 C5. click and type_text both need `expect`: the control's name copied exactly
-    from the current [PAGE]. A ref is a position in that listing, so if the
-    page moved underneath you the same ref is a different control. If the
-    answer says "ref_moved", the page changed — read the listing it hands
-    back and start from that, never retry the same ref.
+    from the current [PAGE], including "(no name)" when that is what is
+    shown. It is checked against the control the ref names, so a control that
+    has been renamed or replaced is refused rather than pressed. If the answer
+    says "ref_moved" or "ref_not_found", work from the listing it hands back
+    rather than retrying the same ref.
 
 C6. If a refusal says the user asked to be asked first, say what you were
     about to press and wait. They have an "Allow once" button; when they use
@@ -1146,11 +1147,13 @@ class MainAgent(Agent):
         ref: the ref from the current page listing, e.g. "ref_12".
         expect: that control's name exactly as the listing shows it.
 
-        A ref is a POSITION in the listing, not a handle on an element, so if
-        the page reorders between reading and clicking, the same ref is a
-        different control. `expect` is how the browser checks: if the name no
-        longer matches, the click is refused and the current listing comes
-        back instead. Copy the name from the listing; do not paraphrase it.
+        A ref names one control and keeps naming it, so it does not drift onto
+        a neighbour when the page reorders; a ref whose control is gone
+        resolves to nothing rather than to whatever replaced it. `expect` is
+        the second half of that check: if the control has been renamed since
+        the listing, the click is refused and the current listing comes back
+        instead. Copy the name from the listing exactly, including
+        "(no name)"; do not paraphrase it.
         """
         return await self._page_rpc(
             context, "bionic.click", {"ref": ref, "expect": expect}

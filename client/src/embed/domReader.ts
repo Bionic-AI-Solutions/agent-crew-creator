@@ -262,24 +262,58 @@ function isInViewport(el: Element, win: Window): boolean {
 interface RefRegistry {
   byElement: WeakMap<Element, string>;
   byRef: Map<string, WeakRef<Element>>;
-  next: number;
   /** Refs mean nothing across a navigation; this is how we notice one. */
   url: string;
 }
 
+/**
+ * Never reused, for the lifetime of the page.
+ *
+ * Deliberately NOT per registry. It was, and a registry is rebuilt whenever
+ * the URL changes -- so numbering restarted at 1 and refs were handed out
+ * again to different elements. A ref the agent was still holding then
+ * resolved, in the new registry, to whatever now owned that string, and the
+ * name check was the only thing left standing between that and a click. On a
+ * table of identically-named controls it is not standing at all, which is the
+ * precise failure the whole identity design exists to prevent -- reintroduced
+ * by the reset, and reachable by a plain history.pushState. The agent's own
+ * click can cause one.
+ *
+ * Monotonic means a stale ref finds nothing, which is the honest answer.
+ */
+let nextRef = 1;
+
 const registries = new WeakMap<Document, RefRegistry>();
+
+/**
+ * Drops byRef entries once their element has been collected.
+ *
+ * byRef is a strong Map of WeakRefs: the elements can be collected but the
+ * entries never were, so a long-lived page accumulated one dead entry per
+ * control it had ever shown. Measured at ~14 MB after an hour of a churning
+ * SPA -- in the customer's page, not ours.
+ *
+ * Guarded because FinalizationRegistry is absent in older environments and in
+ * some test runtimes; without it the Map simply behaves as it did before.
+ */
+const refCleanup =
+  typeof FinalizationRegistry !== "undefined"
+    ? new FinalizationRegistry<{ reg: RefRegistry; ref: string }>(({ reg, ref }) => {
+        if (reg.byRef.get(ref)?.deref() === undefined) reg.byRef.delete(ref);
+      })
+    : null;
 
 function registryFor(doc: Document, url: string): RefRegistry {
   let reg = registries.get(doc);
   if (!reg || reg.url !== url) {
-    reg = { byElement: new WeakMap(), byRef: new Map(), next: 1, url };
+    reg = { byElement: new WeakMap(), byRef: new Map(), url };
     registries.set(doc, reg);
   }
   return reg;
 }
 
 /**
- * The ref this element already has, or the next unused one.
+ * The ref this element already has, or one that has never been used.
  *
  * The byRef check is not redundant: a registry rebuilt by a navigation, or a
  * ref whose WeakRef has been collected, must not hand the same string to two
@@ -288,10 +322,35 @@ function registryFor(doc: Document, url: string): RefRegistry {
 function refFor(reg: RefRegistry, el: Element): string {
   const existing = reg.byElement.get(el);
   if (existing && reg.byRef.get(existing)?.deref() === el) return existing;
-  const ref = `ref_${reg.next++}`;
+  const ref = `ref_${nextRef++}`;
   reg.byElement.set(el, ref);
   reg.byRef.set(ref, new WeakRef(el));
+  refCleanup?.register(el, { reg, ref });
   return ref;
+}
+
+/** Exposed for tests only; nothing in the widget resets numbering. */
+export function __resetRefNumberingForTest(): void {
+  nextRef = 1;
+}
+
+/**
+ * The name the agent is shown for a control -- the single definition of it.
+ *
+ * capturePage used to compute this inline while usePageActions called
+ * accessibleName directly at act time, and the two disagreed on password
+ * fields: listed as "" so nothing about their contents can leave the browser,
+ * but accessibleName gives them their label, so the agent's echoed name never
+ * matched and the action was refused as "the page changed" instead of as the
+ * password field it is. Two definitions of one thing is how that happens, so
+ * there is one.
+ *
+ * A password field is listed so the agent knows the box exists, and named
+ * empty so nothing about its content can leave the browser. The value is
+ * never read on any path -- see accessibleName.
+ */
+export function listedName(el: Element, doc: Document): string {
+  return isPasswordField(el) ? "" : accessibleName(el, doc);
 }
 
 /**
@@ -323,10 +382,7 @@ export function capturePage(doc: Document, win: Window = doc.defaultView!): Page
   const elements: PageElement[] = kept.map((entry) => ({
     ref: refFor(reg, entry.el),
     role: elementRole(entry.el),
-    // A password field is listed so the agent knows the box exists, and named
-    // empty so nothing about its content can leave the browser. The value is
-    // never read on any path -- see accessibleName.
-    name: isPasswordField(entry.el) ? "" : accessibleName(entry.el, doc),
+    name: listedName(entry.el, doc),
     visible: entry.visible,
   }));
 

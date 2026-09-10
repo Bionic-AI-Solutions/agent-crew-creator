@@ -144,9 +144,9 @@ def test_holds_the_newest_listing_and_offers_it_for_a_turn():
 
 
 def test_a_newer_listing_replaces_the_older_one_entirely():
-    # Refs are renumbered by every capture, so an old listing describes a page
-    # that no longer exists. Merging them would let the agent act on a ref
-    # that now points at something else.
+    # An old listing describes a page that has moved on -- controls gone,
+    # names changed, things now off screen. Merging them would let the agent
+    # reason from the stale half.
     holder = PageHolder()
     holder.update(listing_payload(), now=100.0)
     holder.update(json.dumps({"url": "u", "title": "t", "capturedAt": 0, "elements": [
