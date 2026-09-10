@@ -2335,6 +2335,22 @@ async def entrypoint(ctx: JobContext):
     ctx.add_shutdown_callback(_shutdown)
 
 
+def _is_page_block(item: str) -> bool:
+    """Whether a content item is the page listing rather than speech.
+
+    The prefix alone is not enough to tell them apart: a user who types
+    "[PAGE]" into the chat would have their own turn silently dropped from
+    what Letta is told led to a delegation. The real block is always the
+    header, a newline, then the url, so requiring the newline distinguishes it
+    from anything short a person would plausibly type -- while still matching
+    every block this code actually produces.
+    """
+    from agent.page import PAGE_BLOCK_PREFIX
+
+    stripped = item.lstrip()
+    return stripped.startswith(PAGE_BLOCK_PREFIX) and "\n" in stripped
+
+
 def _spoken_text(msg) -> str:
     """What the user actually said, with page text excluded.
 
@@ -2349,15 +2365,13 @@ def _spoken_text(msg) -> str:
     downstream: the listing is for the model deciding what to say, and is not
     conversation.
     """
-    from agent.page import PAGE_BLOCK_PREFIX
-
     items = getattr(msg, "content", None) or []
     parts = [
         item.strip()
         for item in items
         if isinstance(item, str)
         and item.strip()
-        and not item.lstrip().startswith(PAGE_BLOCK_PREFIX)
+        and not _is_page_block(item)
     ]
     if parts:
         return "\n".join(parts).strip()[:300]

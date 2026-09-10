@@ -42,6 +42,21 @@ PAGE_BLOCK_PREFIX = "[PAGE]"
 # arrival" should mean bounded, not bounded in length only.
 MAX_ELEMENTS = 200
 
+# How many raw entries are examined before giving up. Junk entries do not
+# count toward MAX_ELEMENTS, so without this a payload of a million nulls
+# would be walked in full.
+MAX_RAW_ELEMENTS = 2000
+
+# Largest "N more controls not listed" this will print. The number itself is
+# page-authored, so left alone it can be long enough to blow the budget the
+# rest of the block was carefully fitted into.
+MAX_REPORTED_DROPPED = 99_999
+
+# First-pass reserve for the trailing "(N more...)" line. Not load-bearing on
+# its own -- format_for_model measures the finished block and gives lines back
+# until it fits -- but it means the common case gets there in one pass.
+SUFFIX_RESERVE = 48
+
 
 @dataclass
 class PageElement:
@@ -77,11 +92,26 @@ def _clean(raw: str, limit: int) -> str:
     # implementations clean the same string, so a character one removes and
     # the other keeps means one of them is wrong -- C1 (0x80-0x9f) was kept
     # here and stripped there.
+    # Lone surrogates go too. They survive JSON, but the resulting string
+    # cannot be encoded as UTF-8 at all -- a "\ud800" in the title produced a
+    # block that raised UnicodeEncodeError on its way anywhere. json.dumps
+    # happens to neutralise them inside `name`; the header is not quoted, so
+    # nothing was neutralising them there.
     mapped = "".join(
-        " " if ch < " " or "\x7f" <= ch <= "\x9f" else ch for ch in raw
+        " " if ch < " " or "\x7f" <= ch <= "\x9f" or "\ud800" <= ch <= "\udfff" else ch
+        for ch in raw
     )
     flat = " ".join(mapped.split())
     return flat[:limit] if len(flat) > limit else flat
+
+
+def _bounded_count(value: Any) -> int:
+    """A count from the wire, forced into a range that can be printed."""
+    try:
+        count = int(value or 0)
+    except (ValueError, TypeError):
+        return 0
+    return max(0, min(count, MAX_REPORTED_DROPPED))
 
 
 def parse_listing(payload: str) -> PageListing | None:
@@ -98,10 +128,23 @@ def parse_listing(payload: str) -> PageListing | None:
     if not isinstance(raw, dict):
         return None
 
+    # Bound the walk itself, not only its output. Junk entries are skipped
+    # without counting toward the element cap, so a payload of a million
+    # non-objects would otherwise be walked in full.
+    raw_elements = raw.get("elements") or []
+    if not isinstance(raw_elements, list):
+        raw_elements = []
+    considered = raw_elements[:MAX_RAW_ELEMENTS]
+    dropped_by_cap = len(raw_elements) - len(considered)
+
     elements: list[PageElement] = []
-    for item in raw.get("elements") or []:
+    for item in considered:
         if len(elements) >= MAX_ELEMENTS:
-            break
+            # Counted, not silently discarded. Dropping elements without
+            # saying so is what makes the model believe it saw the whole page
+            # -- and then tell the user a control does not exist.
+            dropped_by_cap += 1
+            continue
         if not isinstance(item, dict):
             continue
         ref = str(item.get("ref") or "")
@@ -125,7 +168,11 @@ def parse_listing(payload: str) -> PageListing | None:
         # The widget sends epoch milliseconds; everything here is seconds.
         captured_at=float(captured) / 1000.0 if isinstance(captured, (int, float)) else 0.0,
         elements=elements,
-        truncated=int(raw.get("truncated") or 0),
+        # Clamped, because this arrives from the wire like everything else.
+        # Unbounded, it defeated the very budget it is supposed to fit inside:
+        # a 4290-digit `truncated` rendered a "(N more...)" line thousands of
+        # characters long, and the block overshot max_chars by 2968.
+        truncated=_bounded_count(raw.get("truncated")) + dropped_by_cap,
     )
 
 
@@ -143,14 +190,21 @@ def format_for_model(listing: PageListing, max_chars: int = MAX_PAGE_CHARS) -> s
         e for e in listing.elements if not e.visible
     ]
 
+    def render(kept: list[str], dropped_count: int) -> str:
+        body = "\n".join(kept)
+        if dropped_count:
+            # Said plainly, so the model does not conclude a control is absent
+            # when it was merely cut.
+            suffix = f"({dropped_count} more controls not listed)"
+            body = f"{body}\n{suffix}" if body else suffix
+        return f"{header}\n{body}" if body else header
+
     lines: list[str] = []
-    # Reserve room for the trailing "(N more...)" line up front. It used to be
-    # appended after the loop with no budget of its own, so the block could
-    # exceed max_chars by however long that line happened to be -- and the
-    # existing test tolerated it with a 15% fudge factor rather than catching
-    # it.
-    suffix_budget = 40
-    used = len(header) + suffix_budget
+    # A reserve is a guess, and a guess is not a bound: the suffix length
+    # depends on a page-authored count, so reserving a fixed 40 characters for
+    # it let the block overshoot by thousands. The reserve stays as a cheap
+    # first pass, and the loop below turns it into an actual guarantee.
+    used = len(header) + SUFFIX_RESERVE
     dropped = listing.truncated
     for element in ordered:
         name = element.name or "(no name)"
@@ -169,12 +223,17 @@ def format_for_model(listing: PageListing, max_chars: int = MAX_PAGE_CHARS) -> s
         lines.append(line)
         used += len(line) + 1
 
-    body = "\n".join(lines)
-    if dropped:
-        # Said plainly, so the model does not conclude a control is absent when
-        # it was merely cut.
-        body += f"\n({dropped} more controls not listed)"
-    return f"{header}\n{body}"
+    # Now measure what was actually produced, and give back lines until it
+    # fits. Every line surrendered raises the dropped count, which can itself
+    # lengthen the suffix, so this loops rather than adjusting once.
+    while lines and len(render(lines, dropped)) > max_chars:
+        lines.pop()
+        dropped += 1
+
+    rendered = render(lines, dropped)
+    # A header longer than the whole budget is the only way to still be over,
+    # and a truncated header beats an unbounded one.
+    return rendered if len(rendered) <= max_chars else rendered[:max_chars]
 
 
 class PageHolder:

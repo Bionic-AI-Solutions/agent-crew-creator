@@ -111,6 +111,22 @@ describe("cleanName", () => {
     assert.ok(out.endsWith("…"));
   });
 
+  test("strips an unpaired surrogate wherever it appears", () => {
+    // Not just a trailing one. A lone surrogate anywhere survives JSON but
+    // cannot be encoded as UTF-8, so it is a crash waiting for the first
+    // consumer that touches the raw string instead of a JSON-escaped copy.
+    for (const raw of ["a\uD800b", "a\uDFFFb", "\uD800", "a\uD800"]) {
+      const out = cleanName(raw);
+      assert.doesNotThrow(() => Buffer.from(out, "utf8"));
+      assert.equal(/[\uD800-\uDFFF]/.test(out), false, JSON.stringify(raw));
+    }
+  });
+
+  test("keeps a valid surrogate pair intact", () => {
+    // The point is unpaired ones. A real emoji must survive.
+    assert.equal(cleanName("hi \u{1F600} there"), "hi \u{1F600} there");
+  });
+
   test("never truncates through the middle of a character", () => {
     // A lone surrogate survives JSON but cannot be encoded as UTF-8, so it is
     // a crash waiting for the first consumer that touches the raw name.

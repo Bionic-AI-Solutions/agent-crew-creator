@@ -74,7 +74,12 @@ export const MAX_NAME_CHARS = 120;
  */
 export function cleanName(raw: string): string {
   const flat = raw
+    // Control characters, and any unpaired surrogate. A lone surrogate
+    // survives JSON but cannot be encoded as UTF-8, so it is a crash waiting
+    // for the first consumer that touches the raw string.
     .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, " ")
+    .replace(/(^|[^\uD800-\uDBFF])([\uDC00-\uDFFF])/g, "$1 ")
     .replace(/\s+/g, " ")
     .trim();
   if (flat.length <= MAX_NAME_CHARS) return flat;

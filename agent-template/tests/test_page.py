@@ -324,8 +324,11 @@ def test_one_huge_control_does_not_hide_the_real_ones():
         {"ref": "ref_2", "role": "button", "name": "Submit Order", "visible": True},
         {"ref": "ref_3", "role": "button", "name": "Cancel", "visible": True},
     ]})
-    # A budget that fits the small controls but not the padded one.
-    block = format_for_model(parse_listing(payload), max_chars=100)
+    # A budget that fits both small controls and the "(N more...)" line, but
+    # not the padded one. (Raised from 100 when the suffix reserve grew: at
+    # 100 the block correctly could not fit all three, which tested the bound
+    # rather than the skip-vs-stop behaviour this test is about.)
+    block = format_for_model(parse_listing(payload), max_chars=130)
     assert "Submit Order" in block
     assert "Cancel" in block
     assert "1 more controls not listed" in block
@@ -439,6 +442,93 @@ def test_a_truncated_name_keeps_its_ellipsis():
         {"ref": "ref_1", "role": "button", "name": name, "visible": True},
     ]})
     assert parse_listing(payload).elements[0].name.endswith("…")
+
+
+# ── round 3 ────────────────────────────────────────────────────
+
+def test_a_page_authored_truncated_count_cannot_blow_the_budget():
+    """The exact reproduction from review: `truncated` came off the wire
+    unbounded, and the reserved suffix budget was a fixed 40 characters, so a
+    4290-digit count rendered a line thousands of characters long and the
+    block overshot by 2968."""
+    payload = json.dumps({
+        "url": "u", "title": "t", "capturedAt": 0,
+        "truncated": int("9" * 4290),
+        "elements": [
+            {"ref": f"ref_{i}", "role": "button", "name": f"Control {i}", "visible": True}
+            for i in range(150)
+        ],
+    })
+    block = format_for_model(parse_listing(payload), max_chars=8000)
+    assert len(block) <= 8000
+
+
+@pytest.mark.parametrize("count,budget", [
+    (50, 400), (300, 8000), (200, 8000), (1, 60), (500, 200),
+])
+def test_the_block_is_never_longer_than_its_budget(count, budget):
+    payload = json.dumps({"url": "u" * 250, "title": "t" * 150, "capturedAt": 0,
+                          "truncated": 987654321, "elements": [
+        {"ref": f"ref_{i}", "role": "button", "name": "N" * 120, "visible": True}
+        for i in range(count)
+    ]})
+    block = format_for_model(parse_listing(payload), max_chars=budget)
+    assert len(block) <= budget, f"{count} elements, budget {budget}: got {len(block)}"
+
+
+def test_elements_dropped_by_the_cap_are_reported_not_hidden():
+    """500 elements in, 200 kept -- and the model must be told, or it will
+    tell the user a control does not exist. P2 and P3 depend on this."""
+    payload = json.dumps({"url": "u", "title": "t", "capturedAt": 0, "truncated": 0,
+                          "elements": [
+        {"ref": f"ref_{i}", "role": "button", "name": f"B{i}", "visible": True}
+        for i in range(500)
+    ]})
+    listing = parse_listing(payload)
+    assert len(listing.elements) == 200
+    assert listing.truncated == 300
+    assert "(300 more controls not listed)" in format_for_model(listing)
+
+
+def test_junk_entries_cannot_make_the_parser_walk_forever():
+    payload = json.dumps({"url": "u", "title": "t", "capturedAt": 0,
+                          "elements": [None] * 50_000})
+    listing = parse_listing(payload)
+    assert listing is not None
+    assert listing.elements == []
+
+
+def test_a_lone_surrogate_cannot_make_the_block_unencodable():
+    """A "\ud800" in the title survived _clean and produced a block that
+    raised UnicodeEncodeError on its way anywhere. json.dumps neutralised it
+    inside a name; the header is not quoted, so nothing neutralised it there."""
+    payload = json.dumps({
+        "url": "https://e\ud800.example", "title": "Ti\ud800tle", "capturedAt": 0,
+        "elements": [{"ref": "ref_1", "role": "but\udfffton",
+                      "name": "Na\ud800me", "visible": True}],
+    })
+    block = format_for_model(parse_listing(payload))
+    block.encode("utf-8")          # must not raise
+    assert "\ud800" not in block
+
+
+def test_a_user_typing_the_page_marker_keeps_their_own_turn():
+    """The filter must tell page text from speech, not just match a prefix."""
+    from agent.main_agent import _spoken_text
+
+    class Msg:
+        content = ["[PAGE] what does this marker do?"]
+
+    assert _spoken_text(Msg()) == "[PAGE] what does this marker do?"
+
+
+def test_a_real_block_is_still_filtered():
+    from agent.main_agent import _spoken_text
+
+    class Msg:
+        content = ["what is on screen?", '[PAGE] Title\nhttps://e\nref_1 button "Go"']
+
+    assert _spoken_text(Msg()) == "what is on screen?"
 
 
 if __name__ == "__main__":
