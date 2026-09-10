@@ -976,6 +976,69 @@ describe("usePageActions — a password field's label never leaves the browser",
   });
 });
 
+describe("usePageActions — what the agent is told about the listing", () => {
+  test("a plain read carries no changed flag", async () => {
+    // read_page used to send changed:false, which the agent side rendered as
+    // "NOTHING CHANGED. Say so; do not move on" -- on the first read of every
+    // conversation.
+    dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
+    const bar = makeVisibleBar();
+    const { room, handlers } = makeFakeRoom();
+    const h = mount(room, {
+      enabled: true, denylist: [], allowedOrigins: [ORIGIN], getControlBar: () => bar,
+    });
+    await flushMicrotasks();
+    const page = await callRpc(handlers, RPC_READ_PAGE, {});
+    assert.equal(page.ok, true);
+    assert.ok(!("changed" in page), `a read is not an action: ${JSON.stringify(page)}`);
+    void h;
+  });
+
+  test("truncation reaches the wire", async () => {
+    // Computed by capturePage and then dropped on the floor here, so on the
+    // path the agent actually works through, a 200-line listing always
+    // looked complete.
+    dom.window.document.body.innerHTML = Array.from(
+      { length: 230 },
+      (_, i) => `<button>B${i}</button>`,
+    ).join("");
+    const bar = makeVisibleBar();
+    const { room, handlers } = makeFakeRoom();
+    const h = mount(room, {
+      enabled: true, denylist: [], allowedOrigins: [ORIGIN], getControlBar: () => bar,
+    });
+    await flushMicrotasks();
+    const page = await callRpc(handlers, RPC_READ_PAGE, {});
+    assert.ok(
+      (page.truncated ?? 0) + (page.unexamined ?? 0) > 0,
+      `the agent must be told the listing is partial: ${JSON.stringify(Object.keys(page))}`,
+    );
+    void h;
+  });
+
+  test("a capture that throws is reported as unreadable, not as an empty page", async () => {
+    dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
+    const bar = makeVisibleBar();
+    const { room, handlers } = makeFakeRoom();
+    const h = mount(room, {
+      enabled: true, denylist: [], allowedOrigins: [ORIGIN], getControlBar: () => bar,
+    });
+    await flushMicrotasks();
+    const original = dom.window.document.querySelectorAll;
+    (dom.window.document as any).querySelectorAll = () => {
+      throw new Error("the page refuses to be read");
+    };
+    try {
+      const page = await callRpc(handlers, RPC_READ_PAGE, {});
+      assert.equal(page.ok, false);
+      assert.equal(page.reason, "read_failed");
+    } finally {
+      (dom.window.document as any).querySelectorAll = original;
+    }
+    void h;
+  });
+});
+
 describe("usePageActions — typing", () => {
   test("types into a contenteditable instead of throwing", async () => {
     // domReader offers contenteditable elements as typeable, and the native

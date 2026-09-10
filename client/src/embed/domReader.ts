@@ -150,8 +150,10 @@ export interface PageListing {
   title: string;
   capturedAt: number;
   elements: PageElement[];
-  /** Set when elements were dropped to stay under the cap. */
+  /** Rendered controls dropped to stay under the cap. An exact count. */
   truncated?: number;
+  /** Interactive elements the walk never examined. A bound, not a count. */
+  unexamined?: number;
 }
 
 /**
@@ -385,11 +387,31 @@ export function clipsEverything(value: string | undefined): boolean {
   if (!value) return false;
   const v = value.trim().toLowerCase();
   if (v === "" || v === "none") return false;
-  // inset(100%) and anything >= 50% from each side leaves no area.
-  const inset = /^inset\(\s*(\d+(?:\.\d+)?)%/.exec(v);
-  if (inset && parseFloat(inset[1]) >= 50) return true;
+  // inset() hides everything only when OPPOSITE sides meet: top+bottom or
+  // left+right reaching 100%. Reading just the first value was wrong in the
+  // direction that breaks the feature -- `inset(50% 0 0 0)` clips only the
+  // top half, and a button in the fully painted bottom half was dropped from
+  // the listing. Confirmed in Chromium: legible, hit-testable, and gone.
+  const inset = /^inset\((.*)\)$/.exec(v);
+  if (inset) {
+    // Shorthand expands like margin: 1 = all, 2 = tb lr, 3 = t lr b, 4 = t r b l.
+    // A side given in anything but % (or zero) cannot be judged, and an
+    // unjudgeable side counts as 0 -- towards listing, never towards hiding.
+    const raw = inset[1].split(/\bround\b/)[0].trim().split(/\s+/).filter(Boolean);
+    const pct = raw.map((t) => (t.endsWith("%") ? parseFloat(t) : parseFloat(t) === 0 ? 0 : 0));
+    const [a = 0, b = a, c = a, d = b] = pct;
+    const [top, right, bottom, left] =
+      pct.length === 1 ? [a, a, a, a] : pct.length === 2 ? [a, b, a, b] : pct.length === 3 ? [a, b, c, b] : [a, b, c, d];
+    return top + bottom >= 100 || left + right >= 100;
+  }
   if (/^circle\(\s*0(px|%|\s|\))/.test(v)) return true;
   if (/^ellipse\(\s*0(px|%)?\s/.test(v)) return true;
+  // A polygon whose every vertex is the same point has no area.
+  const poly = /^polygon\((.*)\)$/.exec(v);
+  if (poly) {
+    const points = poly[1].split(",").map((pt) => pt.trim().replace(/\s+/g, " "));
+    if (points.length > 0 && points.every((pt) => pt === points[0])) return true;
+  }
   return false;
 }
 
@@ -576,6 +598,7 @@ export function capturePage(doc: Document, win: Window = doc.defaultView!): Page
   const walkLimit = Math.min(all.length, MAX_RAW_ELEMENTS);
   let onScreen = 0;
   let unexamined = 0;
+  let exitedEarly = false;
   for (let i = 0; i < walkLimit; i++) {
     const el = all[i];
     if (!isRendered(el, win)) continue;
@@ -592,9 +615,16 @@ export function capturePage(doc: Document, win: Window = doc.defaultView!): Page
       // told the listing is partial -- that is what makes it re-read or ask
       // the user to scroll rather than concluding a control does not exist.
       unexamined = all.length - (i + 1);
+      exitedEarly = true;
       break;
     }
   }
+  // The hard ceiling truncates too, and used to do so SILENTLY: `unexamined`
+  // was only set on the early-exit path, so a page whose interactive
+  // elements outnumbered MAX_RAW_ELEMENTS without ever reaching 200 on
+  // screen got a listing with nothing to say it was partial -- the exact
+  // defect the early exit was added to fix, moved to a higher threshold.
+  if (!exitedEarly && all.length > walkLimit) unexamined = all.length - walkLimit;
 
   // Visible first, original document order preserved within each group, so
   // the listing still reads top-to-bottom the way the page does.
@@ -618,9 +648,16 @@ export function capturePage(doc: Document, win: Window = doc.defaultView!): Page
     capturedAt: Date.now(),
     elements,
   };
-  // What was dropped from the listing, plus what the walk never reached.
-  const dropped = ordered.length - kept.length + unexamined;
+  // Two different facts, kept apart. `truncated` is rendered controls that
+  // did not fit: an exact count of things the agent could have been told
+  // about. `unexamined` is raw elements the walk never looked at -- a bound,
+  // not a count, since most may be hidden scaffolding ([role="row"],
+  // [role="presentation"]) that would never have been listed. Folding the
+  // second into the first told the model "30000 more controls" on an ARIA
+  // grid with 200.
+  const dropped = ordered.length - kept.length;
   if (dropped > 0) listing.truncated = dropped;
+  if (unexamined > 0) listing.unexamined = unexamined;
   return listing;
 }
 

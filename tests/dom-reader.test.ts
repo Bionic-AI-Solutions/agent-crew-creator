@@ -18,6 +18,7 @@ import {
   capturePage,
   resolveRef,
   MAX_ELEMENTS,
+  MAX_RAW_ELEMENTS,
   MAX_NAME_CHARS,
   cleanName,
   clipsEverything,
@@ -244,7 +245,31 @@ describe("capturePage", () => {
     ).join("");
     const page = capturePage(document, window);
     assert.equal(page.elements.length, MAX_ELEMENTS);
-    assert.equal(page.truncated, 25);
+    // The walk stops once the listing is full, so the 25 beyond it were never
+    // examined -- reported as exactly that, not as "25 more controls".
+    assert.equal(page.truncated, undefined);
+    assert.equal(page.unexamined, 25);
+  });
+
+  test("the hard ceiling is reported too, not just the early exit", () => {
+    // `unexamined` used to be set only on the early-exit path. A page whose
+    // interactive elements outnumbered the ceiling without ever reaching 200
+    // on screen got a listing with nothing to say it was partial -- the exact
+    // defect the early exit was added to fix, moved to a higher threshold.
+    withLayout();
+    const many = MAX_RAW_ELEMENTS + 7;
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < many; i++) {
+      const b = document.createElement("button");
+      b.textContent = "x";
+      b.style.display = "none";
+      frag.appendChild(b);
+    }
+    document.body.innerHTML = "";
+    document.body.appendChild(frag);
+    const page = capturePage(document, window);
+    assert.equal(page.elements.length, 0);
+    assert.equal(page.unexamined, 7, "the tail past the ceiling must be reported");
   });
 
   test("finds visible controls declared after thousands of hidden ones", () => {
@@ -540,11 +565,23 @@ describe("isRendered — ancestor effects the element's own style does not show"
   });
 
   test("clipsEverything recognises only the shapes that leave nothing", () => {
-    for (const hiding of ["inset(100%)", "inset(50%)", "inset( 100% )", "circle(0)", "circle(0px at 50% 50%)"]) {
+    for (const hiding of [
+      "inset(100%)", "inset(50%)", "inset( 100% )", "circle(0)", "circle(0px at 50% 50%)",
+      // Opposite sides meeting, in every shorthand arity.
+      "inset(0 0 100% 0)", "inset(100% 0 0 0)", "inset(0 100% 0 0)", "inset(0 0 0 100%)",
+      "inset(50% 0)", "inset(60% 10% 40%)", "inset(30% 0 70% 0)",
+      // Every vertex the same point: no area.
+      "polygon(0 0, 0 0, 0 0)", "polygon(0px 0px, 0px 0px, 0px 0px)",
+    ]) {
       assert.equal(clipsEverything(hiding), true, hiding);
     }
     for (const harmless of [
       undefined, "", "none", "inset(0 round 12px)", "inset(10%)",
+      // Only one side inset: half the box is fully painted. Reading just the
+      // first value called these hidden and dropped a legible, clickable
+      // button. Confirmed in Chromium.
+      "inset(50% 0 0 0)", "inset(60% 0 0 0)", "inset(0 0 50% 0)", "inset(50% 0 49% 0)",
+      "inset(10px)", "inset(40% 40%)",
       "circle(50%)", "polygon(0 0, 100% 0, 100% 100%)", "url(#mask)",
     ]) {
       assert.equal(clipsEverything(harmless), false, String(harmless));

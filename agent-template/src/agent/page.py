@@ -74,6 +74,8 @@ class PageListing:
     captured_at: float = 0.0
     elements: list[PageElement] = field(default_factory=list)
     truncated: int = 0
+    # Interactive elements the browser never examined. A bound, not a count.
+    unexamined: int = 0
 
 
 # Invisibles that Unicode does not classify as a format character: the
@@ -230,6 +232,7 @@ def parse_listing(payload: str) -> PageListing | None:
             _bounded_count(raw.get("truncated")) + dropped_by_cap,
             MAX_REPORTED_DROPPED,
         ),
+        unexamined=min(_bounded_count(raw.get("unexamined")), MAX_REPORTED_DROPPED),
     )
 
 
@@ -254,6 +257,14 @@ def format_for_model(listing: PageListing, max_chars: int = MAX_PAGE_CHARS) -> s
             # when it was merely cut.
             suffix = f"({dropped_count} more controls not listed)"
             body = f"{body}\n{suffix}" if body else suffix
+        if listing.unexamined:
+            # A different fact from the one above, and worded as one: these
+            # were never looked at, so this is a bound on what might exist,
+            # not a count of controls. Folding it into "N more controls" told
+            # the model about thousands of hidden ARIA rows as if they were
+            # buttons.
+            note = f"(listing may be incomplete: {listing.unexamined} elements not examined)"
+            body = f"{body}\n{note}" if body else note
         return f"{header}\n{body}" if body else header
 
     lines: list[str] = []
@@ -383,11 +394,21 @@ def summarise_action_result(reply: str, max_chars: int = MAX_PAGE_CHARS) -> str:
         url=_clean(str(data.get("url") or ""), 300),
         title="",
         elements=elements,
+        truncated=_bounded_count(data.get("truncated")),
+        unexamined=_bounded_count(data.get("unexamined")),
     )
 
     if not data.get("ok"):
         reason = _clean(str(data.get("reason") or "refused"), 60)
         detail = _clean(str(data.get("detail") or ""), 300)
+        # Not a refusal and not a fact about the page. An empty listing here
+        # used to be reported as "the page has no controls", and the agent
+        # told the user the control they were looking at did not exist.
+        if reason == "read_failed":
+            return (
+                "The page could not be read this time. Work from what you can "
+                "see; do not conclude that any control is absent."
+            )
         if reason == "awaiting_user_confirmation":
             return (
                 f"REFUSED by the browser: {detail} Tell the user what you were about to do "
@@ -405,9 +426,15 @@ def summarise_action_result(reply: str, max_chars: int = MAX_PAGE_CHARS) -> str:
             )
         return f"REFUSED by the browser ({reason}): {detail}"
 
-    header = (
-        "The page changed. Here it is now:"
-        if data.get("changed")
-        else "NOTHING CHANGED on the page. Say so; do not move on to the next step."
-    )
+    # Three states, not two. A plain read has no action to compare against,
+    # and rendering it as "NOTHING CHANGED -- do not move on" put that
+    # instruction in front of the model on the first read of every
+    # conversation.
+    changed = data.get("changed")
+    if changed is None:
+        header = "Here is the page now:"
+    elif changed:
+        header = "The page changed. Here it is now:"
+    else:
+        header = "NOTHING CHANGED on the page. Say so; do not move on to the next step."
     return f"{header}\n{format_for_model(listing, max_chars=max_chars)}"

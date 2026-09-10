@@ -10,6 +10,8 @@
  * rules are testable without a browser, a room, or a model.
  */
 
+import { safeTagName, safeGetAttribute, safeClosest } from "./domReader";
+
 export type GateVerdict =
   | { allowed: true }
   | { allowed: false; reason: GateRefusalReason; detail: string };
@@ -98,18 +100,22 @@ function formOwner(el: Element): Element | null {
     // Fall through to the attribute, below.
   }
   try {
-    const id = el.getAttribute("form");
+    const id = safeGetAttribute(el, "form");
     if (id) return el.ownerDocument?.getElementById(id) ?? null;
-    return el.closest("form");
+    return safeClosest(el, "form");
   } catch {
     return null;
   }
 }
 
 export function submitsForm(el: Element): boolean {
-  const tag = el.tagName.toLowerCase();
+  // Read the way the reader reads: a `<form role="button">` is a listing
+  // entry, a form's named inputs shadow its own tagName and closest (real
+  // Chromium behaviour), and this used to throw out of evaluateAction into
+  // the click handler as "the page did not respond".
+  const tag = safeTagName(el).toLowerCase();
   if (tag !== "input" && tag !== "button") return false;
-  const type = (el.getAttribute("type") || "").toLowerCase();
+  const type = (safeGetAttribute(el, "type") || "").toLowerCase();
   if (type === "submit") return true;
   // <input type="image"> is a graphical submit button. Nothing about the tag
   // or the type says "submit", and it posts the form exactly the same way --
@@ -134,8 +140,8 @@ export function submitsForm(el: Element): boolean {
 /** Realm-independent, for the same reason as submitsForm. */
 export function isPasswordField(el: Element): boolean {
   return (
-    el.tagName.toLowerCase() === "input" &&
-    (el.getAttribute("type") || "").toLowerCase() === "password"
+    safeTagName(el).toLowerCase() === "input" &&
+    (safeGetAttribute(el, "type") || "").toLowerCase() === "password"
   );
 }
 
@@ -162,7 +168,7 @@ export function isDismissal(name: string): boolean {
  * can gate a button that is innocuously named "OK" or "Yes".
  */
 export function enclosingDialogText(el: Element): string {
-  const dialog = el.closest('[role="dialog"], [role="alertdialog"], dialog');
+  const dialog = safeClosest(el, '[role="dialog"], [role="alertdialog"], dialog');
   if (!dialog) return "";
   return visibleText(deepTextContent(dialog)).trim();
 }

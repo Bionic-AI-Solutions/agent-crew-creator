@@ -922,6 +922,58 @@ def test_the_result_is_bounded_like_the_listing_is():
     assert len(out) <= 2000 + 80   # header line plus the bounded block
 
 
+def test_a_plain_read_is_not_told_nothing_changed():
+    # read_page carries no `changed` at all. Rendering its absence as "NOTHING
+    # CHANGED -- do not move on" put that instruction in front of the model
+    # on the first read of every conversation.
+    out = summarise_action_result(json.dumps({
+        "ok": True, "url": "https://e/x",
+        "elements": [{"ref": "ref_1", "role": "button", "name": "Compose", "visible": True}],
+    }))
+    assert "NOTHING CHANGED" not in out
+    assert "do not move on" not in out.lower()
+    assert "Here is the page now" in out
+    assert 'ref_1 button "Compose"' in out
+
+
+def test_an_unreadable_page_is_not_an_empty_page():
+    out = summarise_action_result(json.dumps({
+        "ok": False, "reason": "read_failed", "detail": "The page could not be read this time.",
+    }))
+    assert "could not be read" in out
+    assert "do not conclude that any control is absent" in out
+    assert "REFUSED" not in out
+    assert "NOTHING CHANGED" not in out
+
+
+def test_a_partial_listing_says_so_on_the_action_path():
+    out = summarise_action_result(json.dumps({
+        "ok": True, "changed": True, "url": "https://e/x",
+        "elements": [{"ref": "ref_1", "role": "button", "name": "Compose", "visible": True}],
+        "truncated": 3, "unexamined": 4000,
+    }))
+    assert "3 more controls not listed" in out
+    assert "listing may be incomplete: 4000 elements not examined" in out
+
+
+def test_unexamined_is_worded_as_a_bound_not_a_count():
+    # 30,000 hidden ARIA rows must not be reported as 30,000 controls.
+    out = summarise_action_result(json.dumps({
+        "ok": True, "changed": False, "url": "https://e/x",
+        "elements": [{"ref": "ref_1", "role": "button", "name": "Compose", "visible": True}],
+        "unexamined": 30000,
+    }))
+    assert "more controls" not in out
+    assert "elements not examined" in out
+
+
+def test_parse_listing_carries_unexamined_from_the_publisher():
+    listing = parse_listing(listing_payload(unexamined=12))
+    assert listing is not None
+    assert listing.unexamined == 12
+    assert "12 elements not examined" in format_for_model(listing)
+
+
 def test_a_non_list_elements_field_does_not_raise():
     # The reply is written by our own browser code, so this should not happen
     # -- but this function is the last thing between a wire payload and the

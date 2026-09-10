@@ -17,7 +17,7 @@
  */
 import { useCallback, useEffect, useRef } from "react";
 import { useRoomContext } from "@livekit/components-react";
-import { capturePage, resolveRef, listedName } from "./domReader";
+import { capturePage, resolveRef, listedName, safeTagName } from "./domReader";
 import { evaluateAction, evaluateTyping, visibleText, type GateContext } from "./domGate";
 import { controlUiVisibility, type TopLayerState } from "./controlVisibility";
 
@@ -118,6 +118,8 @@ interface ActionResult {
   detail?: string;
   url?: string;
   elements?: ReturnType<typeof capturePage>["elements"];
+  truncated?: number;
+  unexamined?: number;
 }
 
 /**
@@ -131,17 +133,46 @@ interface ActionResult {
  * it existed. The individual reads are hardened now; this is the net under
  * them, because the next such property is not one anybody has thought of.
  */
-function safeCapture(): ReturnType<typeof capturePage> {
+type Capture = { page: ReturnType<typeof capturePage>; failed: false } | { page: null; failed: true };
+
+function safeCapture(): Capture {
   try {
-    return capturePage(document, window);
+    return { page: capturePage(document, window), failed: false };
   } catch (error) {
     console.warn("[page] could not read the page:", error);
-    return { url: window.location?.href ?? "", title: "", capturedAt: Date.now(), elements: [] };
+    return { page: null, failed: true };
   }
 }
 
-function listingReply(changed: boolean, page = safeCapture()): ActionResult {
-  return { ok: true, changed, url: page.url, elements: page.elements };
+/**
+ * The fresh listing, as the agent should hear it.
+ *
+ * `changed` is three-valued on purpose: true and false describe an action's
+ * effect, and undefined is a plain read with no action to compare against.
+ * read_page used to send false, which the agent side rendered as "NOTHING
+ * CHANGED. Say so; do not move on" -- on the first read of every
+ * conversation. That is the "repeats itself, will not progress" failure goal
+ * 1 exists to remove, coming from our own side.
+ *
+ * A capture that threw is reported as exactly that. Returning an empty
+ * listing marked ok made "could not read the page" indistinguishable from
+ * "this page has no controls", and the agent told the user the control they
+ * were looking at did not exist.
+ *
+ * `truncated` and `unexamined` ride along. They were computed and then
+ * dropped here, so on the path the agent actually works through a 200-line
+ * listing always looked complete.
+ */
+function listingReply(changed: boolean | undefined, cap: Capture = safeCapture()): ActionResult {
+  if (cap.failed) {
+    return { ok: false, reason: "read_failed", detail: "The page could not be read this time." };
+  }
+  const page = cap.page;
+  const reply: ActionResult = { ok: true, url: page.url, elements: page.elements };
+  if (changed !== undefined) reply.changed = changed;
+  if (page.truncated) reply.truncated = page.truncated;
+  if (page.unexamined) reply.unexamined = page.unexamined;
+  return reply;
 }
 
 /** The fingerprint of a listing we have already captured. */
@@ -160,7 +191,8 @@ function fingerprintOf(page: ReturnType<typeof capturePage>): string {
  * identical instruction this feature exists to stop.
  */
 function pageFingerprint(): string {
-  return fingerprintOf(safeCapture());
+  const cap = safeCapture();
+  return cap.failed ? "" : fingerprintOf(cap.page);
 }
 
 /**
@@ -406,7 +438,7 @@ export function usePageActions(options: PageActionsOptions) {
       return { el, name };
     };
 
-    const readPage = async (): Promise<string> => JSON.stringify(listingReply(false));
+    const readPage = async (): Promise<string> => JSON.stringify(listingReply(undefined));
 
     const click = async (data: { payload: string }): Promise<string> => {
       const vis = controlIsVisible();
@@ -450,7 +482,8 @@ export function usePageActions(options: PageActionsOptions) {
       // One capture, used both to decide whether anything changed and as the
       // reply. It was two, and capturePage walks the whole document.
       const after = safeCapture();
-      return JSON.stringify(listingReply(fingerprintOf(after) !== before, after));
+      const changed = after.failed ? undefined : fingerprintOf(after.page) !== before;
+      return JSON.stringify(listingReply(changed, after));
     };
 
     const typeText = async (data: { payload: string }): Promise<string> => {
@@ -471,7 +504,7 @@ export function usePageActions(options: PageActionsOptions) {
       const target = el as HTMLElement;
       target.focus();
 
-      const tag = target.tagName.toLowerCase();
+      const tag = safeTagName(target).toLowerCase();
       if (tag === "input" || tag === "textarea") {
         // Set through the native setter so React and other frameworks that
         // track the value see the change; assigning .value directly is
@@ -509,7 +542,8 @@ export function usePageActions(options: PageActionsOptions) {
       await new Promise((r) => setTimeout(r, 150));
       latest.current.onAction?.(`typed into "${name || "a field"}"`);
       const after = safeCapture();
-      return JSON.stringify(listingReply(fingerprintOf(after) !== before, after));
+      const changed = after.failed ? undefined : fingerprintOf(after.page) !== before;
+      return JSON.stringify(listingReply(changed, after));
     };
 
     const scroll = async (data: { payload: string }): Promise<string> => {

@@ -20,6 +20,7 @@ import {
   evaluateAction,
   evaluateTyping,
   type GateContext,
+  type GateVerdict,
 } from "../client/src/embed/domGate.ts";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", {
@@ -443,3 +444,35 @@ describe("enclosingDialogText — text inside components", () => {
     assert.equal(enclosingDialogText(dom.window.document.getElementById("b")!), "");
   });
 });
+
+describe("the gate on a form that shadows its own methods", () => {
+  test("a <form role=\"button\"> with clobbering inputs is judged, not thrown on", () => {
+    // A form with a role is a listing entry, so it can be the target of a
+    // click. Its named inputs shadow tagName and closest (real Chromium),
+    // and evaluateAction used to throw out of the click handler as "the page
+    // did not respond". defineProperty here because jsdom does not implement
+    // named properties; the effect on our code is identical.
+    const dom = new JSDOM(
+      '<!doctype html><body><form id="f" role="button" action="/x">' +
+      '<input name="tagName"><input name="closest"><input name="getAttribute">' +
+      "</form></body>",
+      { url: "https://shop.example.com/checkout" },
+    );
+    const form = dom.window.document.getElementById("f")! as any;
+    for (const name of ["tagName", "closest", "getAttribute"]) {
+      Object.defineProperty(form, name, {
+        value: dom.window.document.querySelector(`[name="${name}"]`), configurable: true,
+      });
+    }
+    const ctx: GateContext = {
+      denylist: ["delete"], allowedOrigins: ["https://shop.example.com"],
+      currentOrigin: "https://shop.example.com",
+    };
+    let verdict: GateVerdict | null = null;
+    assert.doesNotThrow(() => {
+      verdict = evaluateAction(form, "Continue", "ref_1", ctx);
+    });
+    assert.ok(verdict, "a verdict was reached");
+  });
+});
+
