@@ -440,4 +440,10 @@ def summarise_action_result(reply: str, max_chars: int = MAX_PAGE_CHARS) -> str:
         header = "The page changed. Here it is now:"
     else:
         header = "NOTHING CHANGED on the page. Say so; do not move on to the next step."
+    if data.get("textTruncated"):
+        typed = _bounded_count(data.get("typedChars"))
+        header = (
+            f"Only the first {typed} characters of the text were typed; the rest "
+            f"was cut. Type the remainder separately if it matters.\n{header}"
+        )
     return f"{header}\n{format_for_model(listing, max_chars=max_chars)}"

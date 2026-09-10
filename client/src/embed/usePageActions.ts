@@ -17,7 +17,7 @@
  */
 import { useCallback, useEffect, useRef } from "react";
 import { useRoomContext } from "@livekit/components-react";
-import { capturePage, resolveRef, listedName, safeTagName, safeInvoke } from "./domReader";
+import { capturePage, resolveRef, listedName, safeTagName, safeInvoke, safeTextContent, safeGetAttribute } from "./domReader";
 import { evaluateAction, evaluateTyping, visibleText, type GateContext } from "./domGate";
 import { controlUiVisibility, type TopLayerState } from "./controlVisibility";
 
@@ -120,6 +120,9 @@ interface ActionResult {
   elements?: ReturnType<typeof capturePage>["elements"];
   truncated?: number;
   unexamined?: number;
+  /** Set when type_text cut the text at MAX_TYPE_CHARS. */
+  textTruncated?: boolean;
+  typedChars?: number;
 }
 
 /**
@@ -176,10 +179,71 @@ function listingReply(changed: boolean | undefined, cap: Capture = safeCapture()
 }
 
 /** The fingerprint of a listing we have already captured. */
+/**
+ * What a person would notice changed, beyond which controls exist.
+ *
+ * The fingerprint used to be the captured controls' role/name/visible and
+ * nothing else. So typing into a field did not count as a change -- the
+ * field is still a textbox with the same label -- and clicking a counter
+ * did not either, because the count is not a control. Both were reproduced
+ * against real React: the action worked, res.changed was false, and the
+ * model was told "NOTHING CHANGED. Say so; do not move on" right after it
+ * had done exactly what was asked. The inverse of the failure the flag
+ * exists to prevent, on the majority of real actions.
+ *
+ * So the page's text and its field values are folded in. A page with a live
+ * clock will report "changed" after any action, which costs a re-read and
+ * nothing else; a page that changed and was reported unchanged cost the
+ * whole task. Password values are never read, here or anywhere.
+ *
+ * Hashed rather than kept: this is compared, never sent.
+ */
+function contentDigest(doc: Document): string {
+  let text = "";
+  try {
+    text = doc.body ? safeTextContent(doc.body) : "";
+  } catch {
+    text = "";
+  }
+  const values: string[] = [];
+  try {
+    const fields = doc.querySelectorAll(
+      "input,textarea,select,[contenteditable]:not([contenteditable=false])",
+    );
+    const limit = Math.min(fields.length, MAX_DIGEST_FIELDS);
+    for (let i = 0; i < limit; i++) {
+      const f = fields[i];
+      const tag = safeTagName(f).toLowerCase();
+      if (tag === "input" && (safeGetAttribute(f, "type") || "").toLowerCase() === "password") continue;
+      const asField = f as unknown as { value?: unknown; checked?: unknown };
+      const value =
+        tag === "input" || tag === "textarea" || tag === "select"
+          ? `${String(asField.value ?? "")}|${String(asField.checked ?? "")}`
+          : safeTextContent(f);
+      values.push(value);
+    }
+  } catch {
+    // A page that throws from here changes the digest, which reads as
+    // "changed": a re-read, not a lie.
+  }
+  return `${hashText(text)}:${text.length}:${hashText(values.join("\u0001"))}`;
+}
+
+/** How many fields the digest reads. Bounded so a huge form is not O(page). */
+const MAX_DIGEST_FIELDS = 500;
+
+/** djb2. Not cryptographic and does not need to be: two snapshots are compared. */
+function hashText(text: string): string {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
 function fingerprintOf(page: ReturnType<typeof capturePage>): string {
   return JSON.stringify([
     page.url,
     page.elements.map((e) => [e.role, e.name, e.visible]),
+    contentDigest(document),
   ]);
 }
 
@@ -499,7 +563,11 @@ export function usePageActions(options: PageActionsOptions) {
       const verdict = evaluateTyping(el, ctx());
       if (!verdict.allowed) return refuse(verdict.reason, verdict.detail);
 
-      const value = String(text ?? "").slice(0, MAX_TYPE_CHARS);
+      const requested = String(text ?? "");
+      const value = requested.slice(0, MAX_TYPE_CHARS);
+      // Cutting the text silently left the agent believing it had typed all
+      // of it. Say so in the reply, so it can continue or tell the user.
+      const textTruncated = requested.length > value.length;
       const before = pageFingerprint();
       const target = el as HTMLElement;
       safeInvoke(target, "focus");
@@ -543,7 +611,12 @@ export function usePageActions(options: PageActionsOptions) {
       latest.current.onAction?.(`typed into "${name || "a field"}"`);
       const after = safeCapture();
       const changed = after.failed ? undefined : fingerprintOf(after.page) !== before;
-      return JSON.stringify(listingReply(changed, after));
+      const reply = listingReply(changed, after);
+      if (textTruncated) {
+        reply.textTruncated = true;
+        reply.typedChars = value.length;
+      }
+      return JSON.stringify(reply);
     };
 
     const scroll = async (data: { payload: string }): Promise<string> => {

@@ -1068,6 +1068,72 @@ describe("usePageActions — a target that shadows its own click", () => {
   });
 });
 
+describe("usePageActions — changed means what a person would notice", () => {
+  async function mounted(html: string) {
+    dom.window.document.body.innerHTML = html;
+    const bar = makeVisibleBar();
+    const { room, handlers } = makeFakeRoom();
+    const h = mount(room, {
+      enabled: true, denylist: [], allowedOrigins: [ORIGIN], getControlBar: () => bar,
+      reassertControlBar: () => "top-layer",
+    });
+    await flushMicrotasks();
+    return { handlers, h };
+  }
+
+  test("typing into a field is a change", async () => {
+    // The field is still a textbox with the same label, so a fingerprint of
+    // the controls alone said nothing happened -- and the model was told
+    // "NOTHING CHANGED. Say so; do not move on" right after typing worked.
+    const { handlers } = await mounted('<input id="f" aria-label="Search" />');
+    const ref = refNamed(await readListing(handlers), "Search");
+    const res = await callRpc(handlers, RPC_TYPE_TEXT, { ref, text: "kettles", expect: "Search" });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(res.changed, true, "typed text must count as a change");
+  });
+
+  test("a click whose effect is text, not a control, is a change", async () => {
+    const { handlers } = await mounted(
+      '<button id="inc">Add one</button><span id="count">0</span>',
+    );
+    const doc = dom.window.document;
+    doc.getElementById("inc")!.addEventListener("click", () => {
+      doc.getElementById("count")!.textContent = "1";
+    });
+    const ref = refNamed(await readListing(handlers), "Add one");
+    const res = await callRpc(handlers, RPC_CLICK, { ref, expect: "Add one" });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(res.changed, true, "a counter going 0 -> 1 is a change");
+  });
+
+  test("a click that does nothing is still reported as nothing", async () => {
+    const { handlers } = await mounted('<button id="noop">Nothing</button>');
+    const ref = refNamed(await readListing(handlers), "Nothing");
+    const res = await callRpc(handlers, RPC_CLICK, { ref, expect: "Nothing" });
+    assert.equal(res.ok, true);
+    assert.equal(res.changed, false);
+  });
+
+  test("cut text is reported, not hidden", async () => {
+    const { handlers } = await mounted('<textarea aria-label="Body"></textarea>');
+    const ref = refNamed(await readListing(handlers), "Body");
+    const res = await callRpc(handlers, RPC_TYPE_TEXT, {
+      ref, text: "x".repeat(2500), expect: "Body",
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.textTruncated, true);
+    assert.equal(res.typedChars, 2000);
+    assert.equal((dom.window.document.querySelector("textarea") as HTMLTextAreaElement).value.length, 2000);
+  });
+
+  test("a full-length text carries no truncation flag", async () => {
+    const { handlers } = await mounted('<textarea aria-label="Body"></textarea>');
+    const ref = refNamed(await readListing(handlers), "Body");
+    const res = await callRpc(handlers, RPC_TYPE_TEXT, { ref, text: "short", expect: "Body" });
+    assert.ok(!("textTruncated" in res), JSON.stringify(res));
+  });
+});
+
 describe("usePageActions — typing", () => {
   test("types into a contenteditable instead of throwing", async () => {
     // domReader offers contenteditable elements as typeable, and the native

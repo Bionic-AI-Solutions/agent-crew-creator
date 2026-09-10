@@ -946,6 +946,16 @@ def test_an_unreadable_page_is_not_an_empty_page():
     assert "NOTHING CHANGED" not in out
 
 
+def test_cut_text_is_reported_to_the_agent():
+    out = summarise_action_result(json.dumps({
+        "ok": True, "changed": True, "url": "https://e/x",
+        "elements": [{"ref": "ref_1", "role": "textbox", "name": "Body", "visible": True}],
+        "textTruncated": True, "typedChars": 2000,
+    }))
+    assert "Only the first 2000 characters" in out
+    assert "The page changed" in out
+
+
 def test_a_partial_listing_says_so_on_the_action_path():
     out = summarise_action_result(json.dumps({
         "ok": True, "changed": True, "url": "https://e/x",
