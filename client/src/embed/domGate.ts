@@ -33,15 +33,19 @@ export type GateRefusalReason =
 /**
  * Characters that take up no space and therefore cannot be seen.
  *
- * Zero-width spaces and joiners, the bidi controls, the word joiner, and the
- * BOM. A page names its own controls, so a button labelled "Del\u200Bete
- * Account" reads as "Delete Account" to every human who looks at it and as
- * something else entirely to a string comparison.
+ * The Unicode format category rather than a hand-written list of ranges. The
+ * hand-written version missed soft hyphen, the Arabic letter mark, the
+ * interlinear annotation marks and the whole tag block -- and a list assembled
+ * by remembering things is exactly as complete as whoever assembled it, which
+ * is not a property to rest a safety gate on. \p{Cf} is the property that
+ * means "formatting, not rendered", so it is what the rule should say.
  *
- * Removed rather than replaced with a space: replacing splits "delete" into
- * two words, which fails to match just as thoroughly.
+ * The explicit additions are the invisibles Unicode does NOT classify as Cf:
+ * the combining grapheme joiner, the Hangul and Khmer fillers, and the blank
+ * braille pattern.
  */
-const INVISIBLE_CHARS = /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g;
+const INVISIBLE_CHARS =
+  /[\p{Cf}\u034F\u115F\u1160\u17B4\u17B5\u2800\u3164\uFFA0]/gu;
 
 /** Strip what cannot be seen, so a comparison sees what a person sees. */
 export function visibleText(raw: string): string {

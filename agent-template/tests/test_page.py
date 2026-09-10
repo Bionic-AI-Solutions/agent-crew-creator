@@ -590,5 +590,50 @@ def test_a_real_block_is_still_recognised():
     assert _spoken_text(Msg()) == "what is this?"
 
 
+# ── round 5 ────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("hidden", [
+    "\u00ad",              # soft hyphen
+    "\u034f",              # combining grapheme joiner
+    "\u115f", "\u1160",    # Hangul fillers
+    "\u17b4",              # Khmer inherent vowel
+    "\u180e",              # Mongolian vowel separator
+    "\u3164", "\uffa0",    # Hangul filler, halfwidth
+    "\u061c",              # Arabic letter mark
+    "\ufff9",              # interlinear annotation anchor
+    "\U000e0020",          # tag space
+])
+def test_invisibles_the_range_list_forgot_are_removed(hidden):
+    # Must match the browser exactly: a character one removes and the other
+    # keeps means one of them is wrong.
+    payload = json.dumps({"url": "u", "title": "t", "capturedAt": 0, "elements": [
+        {"ref": "ref_1", "role": "button", "name": f"Del{hidden}ete Account",
+         "visible": True},
+    ]})
+    assert parse_listing(payload).elements[0].name == "Delete Account"
+
+
+def test_visible_text_is_left_alone():
+    payload = json.dumps({"url": "u", "title": "t", "capturedAt": 0, "elements": [
+        {"ref": "ref_1", "role": "button", "name": "naïve 😀 café", "visible": True},
+    ]})
+    assert parse_listing(payload).elements[0].name == "naïve 😀 café"
+
+
+def test_the_dropped_total_is_clamped_not_just_the_wire_half():
+    """Clamping only the wire term left the other addend -- the tail past
+    MAX_RAW_ELEMENTS -- uncapped, so the two together sailed past the bound
+    the clamp exists to hold."""
+    from agent.page import MAX_REPORTED_DROPPED
+
+    payload = json.dumps({
+        "url": "u", "title": "t", "capturedAt": 0,
+        "truncated": MAX_REPORTED_DROPPED,
+        "elements": [{"ref": f"ref_{i}", "role": "button", "name": "B", "visible": True}
+                     for i in range(5050)],
+    })
+    assert parse_listing(payload).truncated <= MAX_REPORTED_DROPPED
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

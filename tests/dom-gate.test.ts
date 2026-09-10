@@ -112,6 +112,31 @@ describe("matchesDenylist", () => {
     assert.equal(matchesDenylist("\u202EPay now", DEFAULT_DENYLIST), "pay");
   });
 
+  test("covers the invisibles a hand-written range list forgot", () => {
+    // Each of these defeated the previous, enumerated version. The point is
+    // less the specific characters than that a list assembled from memory is
+    // as complete as the memory that assembled it -- so the rule now asks
+    // Unicode what is a format character instead.
+    const hidden = [
+      "\u00AD",              // soft hyphen
+      "\u034F",              // combining grapheme joiner
+      "\u115F", "\u1160",    // Hangul fillers
+      "\u17B4",              // Khmer inherent vowel
+      "\u180E",              // Mongolian vowel separator
+      "\u3164", "\uFFA0",    // Hangul filler, halfwidth
+      "\u061C",              // Arabic letter mark
+      "\uFFF9",              // interlinear annotation anchor
+      "\uDB40\uDC20",        // tag space, U+E0020
+    ];
+    for (const ch of hidden) {
+      assert.equal(
+        matchesDenylist(`Del${ch}ete Account`, DEFAULT_DENYLIST),
+        "delete",
+        JSON.stringify(ch),
+      );
+    }
+  });
+
   test("removing the invisible does not join two real words", () => {
     // Removed, not spaced -- but a genuine space must still separate.
     assert.equal(matchesDenylist("Resend link", DEFAULT_DENYLIST), null);

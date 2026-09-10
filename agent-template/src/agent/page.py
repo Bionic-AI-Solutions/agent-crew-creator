@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -75,20 +76,27 @@ class PageListing:
     truncated: int = 0
 
 
+# Invisibles that Unicode does not classify as a format character: the
+# combining grapheme joiner, the Hangul and Khmer fillers, the blank braille
+# pattern. Everything else comes from the category itself.
+_EXTRA_INVISIBLE = frozenset(
+    "\u034f\u115f\u1160\u17b4\u17b5\u2800\u3164\uffa0"
+)
+
+
 def _is_invisible(ch: str) -> bool:
     """Characters that occupy no space, and so cannot be read.
 
-    Zero-width spaces and joiners, the bidi controls, the word joiner, the
-    BOM. Removed rather than spaced, and the same set the browser removes --
-    two cleaners that disagree about a character mean one of them is wrong,
-    and this pair disagreed about the BOM.
+    Asks Unicode whether the character is a format character rather than
+    listing ranges by hand. The hand-written version missed soft hyphen, the
+    Arabic letter mark, the interlinear annotation marks and the whole tag
+    block -- and a list assembled from memory is exactly as complete as the
+    memory that assembled it.
+
+    Must agree exactly with the browser's regex: two cleaners that disagree
+    about a character mean one of them is wrong.
     """
-    return (
-        "\u200b" <= ch <= "\u200f"
-        or "\u202a" <= ch <= "\u202e"
-        or "\u2060" <= ch <= "\u206f"
-        or ch == "\ufeff"
-    )
+    return unicodedata.category(ch) == "Cf" or ch in _EXTRA_INVISIBLE
 
 
 def _clean(raw: str, limit: int) -> str:
@@ -196,7 +204,13 @@ def parse_listing(payload: str) -> PageListing | None:
         # Unbounded, it defeated the very budget it is supposed to fit inside:
         # a 4290-digit `truncated` rendered a "(N more...)" line thousands of
         # characters long, and the block overshot max_chars by 2968.
-        truncated=_bounded_count(raw.get("truncated")) + dropped_by_cap,
+        # Clamped as a total. Clamping only the wire term left the other
+        # addend -- the unexamined tail past MAX_RAW_ELEMENTS -- uncapped, so
+        # the two together sailed past the bound the clamp exists to hold.
+        truncated=min(
+            _bounded_count(raw.get("truncated")) + dropped_by_cap,
+            MAX_REPORTED_DROPPED,
+        ),
     )
 
 

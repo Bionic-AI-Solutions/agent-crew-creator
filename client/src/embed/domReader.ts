@@ -79,7 +79,10 @@ export function cleanName(raw: string): string {
     // Invisible characters are removed, not spaced: a zero-width space inside
     // a word is not a word break, and turning it into one would make the name
     // read differently from how it looks.
-    .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, "")
+    // The Unicode format category, not a remembered list of ranges: the list
+    // missed soft hyphen, the Arabic letter mark and the entire tag block.
+    // Plus the invisibles Unicode does not classify as Cf.
+    .replace(/[\p{Cf}\u034F\u115F\u1160\u17B4\u17B5\u2800\u3164\uFFA0]/gu, "")
     // Unpaired surrogates. Matching a VALID pair first is what makes this
     // right: the previous version used a lookbehind-ish chained pair of
     // regexes, and in a run of three lone low surrogates the middle one was

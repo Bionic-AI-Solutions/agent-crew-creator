@@ -59,9 +59,18 @@ export function usePagePublisher(enabled: boolean) {
     // through a reconnect. Without this, each mutation 1.2s later would start
     // another independent publish on top of the stalled one.
     let inFlight = false;
+    // A capture that arrived while a send was in flight. Without this it was
+    // simply dropped: the guard returned, nothing was queued, and on a page
+    // that then went quiet the agent kept describing the state before the
+    // change until the listing aged out two minutes later.
+    let missed = false;
 
     const publish = async () => {
-      if (cancelled || inFlight || room.state !== "connected") return;
+      if (cancelled || room.state !== "connected") return;
+      if (inFlight) {
+        missed = true;
+        return;
+      }
       inFlight = true;
       try {
         const listing = capturePage(document, window);
@@ -83,14 +92,22 @@ export function usePagePublisher(enabled: boolean) {
         console.warn("[page] could not publish listing:", error);
       } finally {
         inFlight = false;
+        // Whatever changed while this send was busy still needs sending.
+        if (missed && !cancelled) {
+          missed = false;
+          schedule();
+        }
       }
     };
 
     // Re-read on the things that actually change a page: the user did
     // something, the DOM changed, or the app navigated. Coalesced onto a
     // timer so a chatty app cannot turn this into a publish loop.
+    //
+    // `function` rather than `const`: publish() retries through it, and it is
+    // declared after publish() so a const would be in its temporal dead zone.
     let pending = false;
-    const schedule = () => {
+    function schedule() {
       if (pending || cancelled) return;
       pending = true;
       timer = window.setTimeout(() => {
