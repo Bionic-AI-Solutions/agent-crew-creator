@@ -91,6 +91,16 @@ const MIN_OPACITY = 0.5;
 /** How far up the ancestor chain to walk before giving up. */
 const MAX_ANCESTOR_DEPTH = 100;
 
+/**
+ * Where the bar actually is.
+ *
+ * "unsupported" is a browser without the popover API -- a fact of life, and
+ * the ancestor checks fall back to covering what the top layer would have.
+ * "failed" is a browser that HAS it where we could not get there anyway,
+ * which means something is interfering and is not a state to carry on in.
+ */
+export type TopLayerState = "top-layer" | "unsupported" | "failed";
+
 export interface VisibilityVerdict {
   visible: boolean;
   reason: string;
@@ -305,9 +315,10 @@ function pointHitsUs(win: VisibilityWindow, host: Element, x: number, y: number)
 export function controlUiVisibility(
   bar: Element | null | undefined,
   win: VisibilityWindow,
-  opts: { occluded?: boolean | null; inTopLayer?: boolean } = {},
+  opts: { occluded?: boolean | null; topLayer?: TopLayerState } = {},
 ): VisibilityVerdict {
-  const inTopLayer = opts.inTopLayer ?? false;
+  const topLayer = opts.topLayer ?? "unsupported";
+  const inTopLayer = topLayer === "top-layer";
   if (!bar) return hidden("control_ui_missing", "the control bar is not mounted");
   if (!bar.isConnected) {
     return hidden("control_ui_detached", "the control bar was removed from the page");
@@ -431,6 +442,15 @@ export function controlUiVisibility(
   // from real scrims -- by scanning, by stacking level, by probing what each
   // candidate paints -- were each defeated by something not modelled. Without
   // the top layer there is no sound way to act on it, so it is left alone.
+  // Something is preventing the bar from reaching the top layer on a browser
+  // that supports it. The page can cause exactly this by removing the popover
+  // attribute, and the previous version treated it as "no top layer here" and
+  // relaxed -- turning off the only check that sees a pointer-events:none
+  // scrim. An anomaly is not a licence to check less.
+  if (topLayer === "failed") {
+    return hidden("control_ui_detached", "the control bar could not be kept in front");
+  }
+
   if (inTopLayer && opts.occluded === true) {
     return hidden("control_ui_obscured", "something on the page is covering the control bar");
   }

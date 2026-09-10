@@ -119,7 +119,7 @@ interface HarnessProps {
   denylist: string[];
   allowedOrigins: string[];
   getControlBar: () => Element | null;
-  reassertControlBar?: () => boolean;
+  reassertControlBar?: (force?: boolean) => "top-layer" | "unsupported" | "failed";
   onRefusal?: (d: string, c?: ConfirmRequest) => void;
   onAction?: (s: string) => void;
   onControlRevoked?: (d: string) => void;
@@ -321,7 +321,11 @@ describe("usePageActions — the user can always see and stop it", () => {
    * `version` 2 reports `isVisible`; version 1 does NOT -- and that is the
    * shape Firefox and Safari actually ship, which is the case worth pinning.
    */
-  function installObserver(version: 1 | 2, isVisible = true) {
+  function installObserver(
+    version: 1 | 2,
+    isVisible = true,
+    opts: { keepReporting?: boolean } = {},
+  ) {
     const previousObserver = (globalThis as any).IntersectionObserver;
     const previousEntry = (globalThis as any).IntersectionObserverEntry;
 
@@ -332,6 +336,13 @@ describe("usePageActions — the user can always see and stop it", () => {
     (globalThis as any).IntersectionObserver = class {
       constructor(private cb: (entries: unknown[]) => void, _opts?: unknown) {}
       observe() {
+        this.emit();
+        // Keeps answering, so a report can post-date a re-assertion the way a
+        // real overlay's would.
+        if (opts.keepReporting) this.timer = setInterval(() => this.emit(), 5);
+      }
+      private timer: any = null;
+      emit() {
         this.cb([
           version === 2
             ? { isIntersecting: true, isVisible }
@@ -341,7 +352,9 @@ describe("usePageActions — the user can always see and stop it", () => {
               { isIntersecting: true },
         ]);
       }
-      disconnect() {}
+      disconnect() {
+        if (this.timer) clearInterval(this.timer);
+      }
       unobserve() {}
     };
     return () => {
@@ -366,7 +379,7 @@ describe("usePageActions — the user can always see and stop it", () => {
       // It matters: outside the top layer the observer's answer is not acted
       // on at all, because there it cannot be told apart from a transparent
       // portal root.
-      reassertControlBar: () => inTopLayer,
+      reassertControlBar: () => (inTopLayer ? "top-layer" : "unsupported"),
       onControlRevoked: (d) => revoked.push(d),
     });
     await flushMicrotasks();
@@ -376,21 +389,109 @@ describe("usePageActions — the user can always see and stop it", () => {
     return { res, clicked, revoked };
   }
 
-  test("a click is refused when the browser reports the bar covered", async () => {
-    // In the top layer the only thing that can be over the bar is another
-    // top-layer element, so a report that survives re-assertion is real.
+  test("a first covered report re-asserts rather than revoking", async () => {
+    // The browser reports our bar as not visible whenever ANY other top-layer
+    // element exists -- a cookie dialog in the far corner does it, overlap or
+    // not. Re-asserting puts us back on top and it reports visible again, so
+    // a first report is a cue to re-assert, never a reason to stop.
     dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
     const bar = makeVisibleBar();
     const restore = installObserver(2, false);
+    const forced: boolean[] = [];
     try {
-      const { res, clicked, revoked } = await clickThrough(bar);
-      assert.equal(res.ok, false);
-      assert.equal(res.reason, "control_ui_obscured");
-      assert.equal(clicked, false, "nothing may be pressed behind a modal");
-      assert.ok(revoked.length > 0, "control must be revoked");
+      const { room, handlers } = makeFakeRoom();
+      const h = mount(room, {
+        enabled: true,
+        denylist: [],
+        allowedOrigins: [ORIGIN],
+        getControlBar: () => bar,
+        reassertControlBar: (force) => {
+          forced.push(!!force);
+          return "top-layer";
+        },
+      });
+      await flushMicrotasks();
+      const ref = refNamed(await readListing(handlers), "Continue");
+      const res = await callRpc(handlers, RPC_CLICK, { ref, expect: "Continue" });
+
+      assert.equal(res.ok, true, JSON.stringify(res));
+      // And it was a REAL re-assertion. showPopover on an already-open
+      // popover is a silent no-op, so without force the bar stays underneath
+      // whatever opened over it, forever.
+      assert.ok(
+        forced.some((f) => f === true),
+        "a covered report must force a hide-then-show re-assertion",
+      );
+      void h;
     } finally {
       restore();
     }
+  });
+
+  test("a report that survives re-assertion does revoke", async () => {
+    // The observer keeps saying covered even after we have put ourselves back
+    // on top: something really is there.
+    dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
+    const bar = makeVisibleBar();
+    const restore = installObserver(2, false, { keepReporting: true });
+    try {
+      const { room, handlers } = makeFakeRoom();
+      let clicks = 0;
+      dom.window.document.getElementById("go")!.addEventListener("click", () => {
+        clicks += 1;
+      });
+      const revoked: string[] = [];
+      const h = mount(room, {
+        enabled: true,
+        denylist: [],
+        allowedOrigins: [ORIGIN],
+        getControlBar: () => bar,
+        reassertControlBar: () => "top-layer",
+        onControlRevoked: (d) => revoked.push(d),
+      });
+      await flushMicrotasks();
+      const ref = refNamed(await readListing(handlers), "Continue");
+
+      // The first attempt re-asserts and goes through -- that is the cue
+      // being acted on, not ignored.
+      const first = await callRpc(handlers, RPC_CLICK, { ref, expect: "Continue" });
+      assert.equal(first.ok, true, JSON.stringify(first));
+
+      // The observer keeps saying covered, so the next reading post-dates the
+      // re-assertion: something really is there.
+      await delay(30);
+      const second = await callRpc(handlers, RPC_CLICK, { ref, expect: "Continue" });
+      assert.equal(second.ok, false, JSON.stringify(second));
+      assert.equal(second.reason, "control_ui_obscured");
+      assert.equal(clicks, 1, "only the first, pre-confirmation click landed");
+      assert.ok(revoked.length > 0);
+      void h;
+    } finally {
+      restore();
+    }
+  });
+
+  test("failing to reach the top layer where it exists revokes", async () => {
+    // A page can remove the popover attribute, which made showPopover throw.
+    // The previous version read that as "no top layer here" and relaxed --
+    // turning off the only check that sees a pointer-events:none scrim. An
+    // anomaly is not a licence to check less.
+    dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
+    const bar = makeVisibleBar();
+    const { room, handlers } = makeFakeRoom();
+    const h = mount(room, {
+      enabled: true,
+      denylist: [],
+      allowedOrigins: [ORIGIN],
+      getControlBar: () => bar,
+      reassertControlBar: () => "failed",
+    });
+    await flushMicrotasks();
+    const ref = refNamed(await readListing(handlers), "Continue");
+    const res = await callRpc(handlers, RPC_CLICK, { ref, expect: "Continue" });
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, "control_ui_detached");
+    void h;
   });
 
   test("outside the top layer, a covered report does not revoke", async () => {

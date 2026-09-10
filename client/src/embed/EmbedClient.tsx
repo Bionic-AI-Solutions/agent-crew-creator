@@ -55,31 +55,53 @@ function PageActions({ config }: { config?: EmbedConfig }) {
   const getControlBar = useCallback(() => barRef.current, []);
 
   /**
-   * Put the bar in the top layer, and say whether that worked.
+   * Put the bar in the top layer, and say what state it is actually in.
    *
    * The top layer paints above every element in the page, whatever its
    * z-index or stacking context, so a page cannot cover the bar with ordinary
    * content at all. Three review rounds were spent trying to DETECT covering
    * -- a scan, then a stacking comparison, then a paint probe -- and each was
-   * defeated by something the previous one had not modelled: a transparent
-   * portal root, an SVG fill, a pseudo-element, a scrim in a closed shadow
-   * root, or simply enough decoy nodes to exhaust the budget. Verified in
-   * Chromium: every one of those fails against a top-layer bar, including the
-   * closed shadow root that was documented as a permanent limit.
+   * defeated by something the previous one had not modelled. Verified in
+   * Chromium: all of those fail against a top-layer bar, including the scrim
+   * in a closed shadow root that was twice documented as a permanent limit.
    *
-   * Only another top-layer element opened after ours can cover it, and that
-   * is both detectable and recoverable -- see the observer in usePageActions.
+   * Three states, not a boolean, because "not in the top layer" has two very
+   * different causes. A browser without the popover API is a fact of life and
+   * the checks fall back. Failing to get there on a browser that HAS it means
+   * something is interfering, and that must fail closed -- the previous
+   * version returned false for both, and a page could reach it with one line:
+   *   wrapper.shadowRoot.querySelector('[popover]').removeAttribute('popover')
+   * which made showPopover throw, which turned off the only detector that
+   * sees a pointer-events:none scrim. The bar stayed painted, so nothing else
+   * noticed, and React never rewrote the attribute because its vdom still
+   * believed it was there.
+   *
+   * `force` does a real re-assertion. showPopover() on an already-open
+   * popover is a silent no-op -- measured -- so the guard that skipped it
+   * when already open meant a page modal opened after ours left us
+   * underneath forever. hide-then-show moves us back to the top of the
+   * top-layer stack, which is the whole recovery.
    */
-  const showInTopLayer = useCallback((): boolean => {
-    const el = barRef.current as (HTMLDivElement & { showPopover?: () => void }) | null;
-    if (!el || typeof el.showPopover !== "function") return false;
-    try {
-      if (!el.matches(":popover-open")) el.showPopover();
-      return true;
-    } catch {
-      return false;
-    }
-  }, []);
+  const showInTopLayer = useCallback(
+    (force = false): "top-layer" | "unsupported" | "failed" => {
+      const el = barRef.current as
+        | (HTMLDivElement & { showPopover?: () => void; hidePopover?: () => void })
+        | null;
+      if (!el) return "failed";
+      if (typeof el.showPopover !== "function") return "unsupported";
+      try {
+        // Put back what the page may have taken away.
+        if (el.getAttribute("popover") !== "manual") el.setAttribute("popover", "manual");
+        const open = el.matches(":popover-open");
+        if (force && open) el.hidePopover?.();
+        if (force || !open) el.showPopover();
+        return el.matches(":popover-open") ? "top-layer" : "failed";
+      } catch {
+        return "failed";
+      }
+    },
+    [],
+  );
 
   // Reverts to guidance whenever the permission goes away, so a token change
   // or a reconnect cannot leave control quietly enabled.

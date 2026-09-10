@@ -19,7 +19,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { useRoomContext } from "@livekit/components-react";
 import { capturePage, resolveRef, listedName } from "./domReader";
 import { evaluateAction, evaluateTyping, visibleText, type GateContext } from "./domGate";
-import { controlUiVisibility } from "./controlVisibility";
+import { controlUiVisibility, type TopLayerState } from "./controlVisibility";
 
 export const RPC_READ_PAGE = "bionic.read_page";
 export const RPC_CLICK = "bionic.click";
@@ -94,13 +94,14 @@ export interface PageActionsOptions {
   /** The control bar, so we can verify the user can still see and stop this. */
   getControlBar: () => Element | null;
   /**
-   * Put the bar back in the top layer, and say whether it is there.
+   * Put the bar back in the top layer, and say what state it ended up in.
    *
-   * Called before acting on a report that something is covering it: the only
-   * thing that can cover a top-layer element is another one opened later, and
-   * re-showing ours puts it back on top. A report that survives that is real.
+   * Called before judging: the only thing that can cover a top-layer element
+   * is another one opened later, and re-showing ours puts it back on top.
+   * `force` does a real hide-then-show; without it, showPopover on an
+   * already-open popover is a no-op.
    */
-  reassertControlBar?: () => boolean;
+  reassertControlBar?: (force?: boolean) => TopLayerState;
   /** Called when an action is refused, so the widget can show the user. */
   onRefusal?: (detail: string, confirmable?: ConfirmRequest) => void;
   /** Called when the agent acts, so the widget can show what happened. */
@@ -208,6 +209,13 @@ export function usePageActions(options: PageActionsOptions) {
     // pointer-events:none scrim is not detected. That is stated in
     // controlVisibility.ts rather than papered over.
     let occluded: boolean | null = null;
+    // When that reading was taken, and when we last re-asserted. A reading
+    // from before a re-assertion describes a world that no longer exists:
+    // the observer is asynchronous (delay: 150), so a synchronous judge
+    // microseconds after re-asserting still sees the old answer. Acting on it
+    // meant the FIRST report always revoked and the recovery never mattered.
+    let occludedAt = 0;
+    let reassertedAt = 0;
     let observer: IntersectionObserver | null = null;
     const observeBar = () => {
       const target = latest.current.getControlBar();
@@ -226,6 +234,7 @@ export function usePageActions(options: PageActionsOptions) {
                 entry.isIntersecting && typeof entry.isVisible === "boolean"
                   ? !entry.isVisible
                   : null;
+              occludedAt = Date.now();
             }
           },
           // delay >= 100 is required for trackVisibility.
@@ -238,6 +247,19 @@ export function usePageActions(options: PageActionsOptions) {
       }
     };
     observeBar();
+
+    /**
+     * Is the bar covered by something that survived being re-asserted over?
+     *
+     * Three conditions, and each earns its place. The observer must say
+     * covered; we must have re-asserted at least once, or this is the first
+     * report and re-asserting is the answer to it rather than revoking; and
+     * the reading must post-date that re-assertion, because the observer is
+     * asynchronous and a reading from before it describes a world that no
+     * longer exists.
+     */
+    const isOccludedNow = () =>
+      occluded === true && reassertedAt > 0 && occludedAt > reassertedAt;
 
     const ctx = (): GateContext => ({
       denylist: latest.current.denylist,
@@ -265,13 +287,22 @@ export function usePageActions(options: PageActionsOptions) {
      * "the Stop button is gone" is to stop.
      */
     const controlIsVisible = (): { ok: true } | { ok: false; reason: string; detail: string } => {
-      // Re-assert first, then judge. If a page modal opened over the bar,
-      // putting ours back on top is the fix, not a reason to stop -- and if
-      // the report survives it, something really is there.
-      const inTopLayer = latest.current.reassertControlBar?.() ?? false;
+      // Re-assert first, then judge. If a page modal opened over the bar --
+      // or merely opened anywhere, since the browser reports our bar as not
+      // visible whenever any other top-layer element exists -- putting ours
+      // back on top is the fix, not a reason to stop.
+      // Re-assert first, then judge. A first report is never acted on: the
+      // browser reports our bar as not visible whenever ANY other top-layer
+      // element exists -- a cookie dialog in the corner will do it, overlap
+      // or not -- and re-asserting puts us back on top, after which it
+      // reports visible again. Only a report the observer makes AFTER a
+      // re-assertion describes a cover that survived it.
+      const actionable = isOccludedNow();
+      const topLayer = latest.current.reassertControlBar?.(occluded === true) ?? "unsupported";
+      if (occluded === true) reassertedAt = Date.now();
       const verdict = controlUiVisibility(latest.current.getControlBar(), window, {
-        occluded,
-        inTopLayer,
+        occluded: actionable ? true : null,
+        topLayer,
       });
       if (verdict.visible) return { ok: true };
       latest.current.onControlRevoked?.(verdict.detail);
@@ -483,10 +514,12 @@ export function usePageActions(options: PageActionsOptions) {
       // because the overlay scan cost 37ms at 4x CPU throttle and ran every
       // second; reading the observer's flag costs nothing, so the heartbeat
       // and the action path can be the same thing again.
-      const inTopLayer = latest.current.reassertControlBar?.() ?? false;
+      const actionable = isOccludedNow();
+      const topLayer = latest.current.reassertControlBar?.(occluded === true) ?? "unsupported";
+      if (occluded === true) reassertedAt = Date.now();
       const verdict = controlUiVisibility(latest.current.getControlBar(), window, {
-        occluded,
-        inTopLayer,
+        occluded: actionable ? true : null,
+        topLayer,
       });
       if (!verdict.visible) latest.current.onControlRevoked?.(verdict.detail);
     }, VISIBILITY_POLL_MS);

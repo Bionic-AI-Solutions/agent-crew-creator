@@ -300,7 +300,7 @@ describe("controlUiVisibility", () => {
     // "other top-layer elements", so a report that survived re-assertion is
     // a real modal over the Stop button. Nothing left to corroborate against.
     const { bar, win } = build();
-    const v = controlUiVisibility(bar, win, { occluded: true, inTopLayer: true });
+    const v = controlUiVisibility(bar, win, { occluded: true, topLayer: "top-layer" });
     assert.equal(v.visible, false);
     assert.equal(v.reason, "control_ui_obscured");
   });
@@ -314,7 +314,7 @@ describe("controlUiVisibility", () => {
     // sound way to act on it, so it is left alone rather than guessed at.
     const { bar, win } = build();
     assert.equal(
-      controlUiVisibility(bar, win, { occluded: true, inTopLayer: false }).visible,
+      controlUiVisibility(bar, win, { occluded: true, topLayer: "unsupported" }).visible,
       true,
     );
     assert.equal(controlUiVisibility(bar, win, { occluded: true }).visible, true);
@@ -332,14 +332,14 @@ describe("controlUiVisibility", () => {
     ]) {
       const { bar, win } = build({ styles });
       assert.equal(
-        controlUiVisibility(bar, win, { inTopLayer: true }).visible,
+        controlUiVisibility(bar, win, { topLayer: "top-layer" }).visible,
         true,
         JSON.stringify(styles),
       );
       // ...and still caught when the top layer is unavailable.
       const fallback = build({ styles });
       assert.equal(
-        controlUiVisibility(fallback.bar, fallback.win, { inTopLayer: false }).visible,
+        controlUiVisibility(fallback.bar, fallback.win, { topLayer: "unsupported" }).visible,
         false,
         JSON.stringify(styles),
       );
@@ -351,10 +351,10 @@ describe("controlUiVisibility", () => {
     // inherits. All three reach it, and all three are caught by checks that
     // do not care about the top layer.
     const gone = build({ rect: { width: 0, height: 0, right: 0, bottom: 0 } });
-    assert.equal(controlUiVisibility(gone.bar, gone.win, { inTopLayer: true }).visible, false);
+    assert.equal(controlUiVisibility(gone.bar, gone.win, { topLayer: "top-layer" }).visible, false);
 
     const invisible = build({ styles: { bar: { visibility: "hidden" } } });
-    const v = controlUiVisibility(invisible.bar, invisible.win, { inTopLayer: true });
+    const v = controlUiVisibility(invisible.bar, invisible.win, { topLayer: "top-layer" });
     assert.equal(v.visible, false);
     assert.equal(v.reason, "control_ui_hidden");
   });
