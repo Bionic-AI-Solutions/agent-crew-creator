@@ -14,6 +14,8 @@ import {
   MessageSquare,
   Camera,
   MonitorUp,
+  MousePointerClick,
+  ScanText,
   User,
   Eye,
   AlertTriangle,
@@ -67,6 +69,8 @@ export default function EmbedSection({ agentId, appId, deployed, avatarEnabled }
   const [newVideo, setNewVideo] = useState(false);
   const [newScreenShare, setNewScreenShare] = useState(false);
   const [newAvatar, setNewAvatar] = useState(avatarEnabled);
+  const [newDomRead, setNewDomRead] = useState(false);
+  const [newDomControl, setNewDomControl] = useState(false);
   const [newOrigins, setNewOrigins] = useState("");
   const [expandedToken, setExpandedToken] = useState<number | null>(null);
 
@@ -103,6 +107,12 @@ export default function EmbedSection({ agentId, appId, deployed, avatarEnabled }
       allowVideo: newVideo,
       allowScreenShare: newScreenShare,
       allowAvatar: newAvatar,
+      // The server re-derives both against mode and origins; sending the
+      // already-coherent values keeps the form honest about what it asked
+      // for rather than relying on being corrected.
+      allowDomRead: newMode === "popup" && newDomRead,
+      allowDomControl:
+        newMode === "popup" && newDomRead && newDomControl && origins.length > 0,
       allowedOrigins: origins,
     });
   };
@@ -133,6 +143,8 @@ export default function EmbedSection({ agentId, appId, deployed, avatarEnabled }
     allowChat: boolean;
     allowVideo: boolean;
     allowScreenShare: boolean;
+    allowDomRead: boolean;
+    allowDomControl: boolean;
     allowAvatar: boolean;
   }) => (
     <div className="flex gap-1">
@@ -140,6 +152,8 @@ export default function EmbedSection({ agentId, appId, deployed, avatarEnabled }
       {t.allowChat && <span title="Chat"><MessageSquare className="h-3.5 w-3.5 text-muted-foreground" /></span>}
       {t.allowVideo && <span title="Camera"><Camera className="h-3.5 w-3.5 text-muted-foreground" /></span>}
       {t.allowScreenShare && <span title="Screen Share"><MonitorUp className="h-3.5 w-3.5 text-muted-foreground" /></span>}
+      {t.allowDomRead && <span title="Reads the page (DOM)"><ScanText className="h-3.5 w-3.5 text-muted-foreground" /></span>}
+      {t.allowDomControl && <span title="Controls the page (click and type)"><MousePointerClick className="h-3.5 w-3.5 text-amber-500" /></span>}
       {t.allowAvatar && <span title="Avatar"><User className="h-3.5 w-3.5 text-muted-foreground" /></span>}
     </div>
   );
@@ -184,9 +198,48 @@ export default function EmbedSection({ agentId, appId, deployed, avatarEnabled }
                   <ToggleChip label="Chat" active={newChat} onChange={setNewChat} />
                   {newChat && <ToggleChip label="Transcription" active={newTranscription} onChange={setNewTranscription} />}
                   <ToggleChip label="Camera" active={newVideo} onChange={setNewVideo} />
-                  <ToggleChip label="Screen Share" active={newScreenShare} onChange={setNewScreenShare} />
+                  <ToggleChip
+                    label="Screen Share"
+                    active={newScreenShare}
+                    onChange={(on) => {
+                      setNewScreenShare(on);
+                      // Sharing a screen and reading the page answer different
+                      // questions, but wanting one almost always means wanting
+                      // the other, so this follows along by default and can be
+                      // unticked. Screen share can also be a native window,
+                      // where there is no page to read -- which is why they are
+                      // still two switches.
+                      if (on && newMode === "popup") setNewDomRead(true);
+                    }}
+                  />
                   {avatarEnabled && <ToggleChip label="Avatar" active={newAvatar} onChange={setNewAvatar} />}
+                  {newMode === "popup" && (
+                    <ToggleChip
+                      label="Read Page"
+                      active={newDomRead}
+                      onChange={(on) => {
+                        setNewDomRead(on);
+                        if (!on) setNewDomControl(false);
+                      }}
+                    />
+                  )}
+                  {newMode === "popup" && newDomRead && (
+                    <ToggleChip label="Control Page" active={newDomControl} onChange={setNewDomControl} />
+                  )}
                 </div>
+                {newMode === "iframe" && (
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    Page reading and control are popup-only — an iframe embed is
+                    a separate document and cannot reach the host page.
+                  </p>
+                )}
+                {newDomControl && (
+                  <p className="mt-1 text-[10px] text-amber-600">
+                    Control needs at least one allowed origin below. A token with
+                    no origin list works anywhere it is pasted, which is not
+                    somewhere to hand a click-and-type capability.
+                  </p>
+                )}
               </div>
 
               {(newVideo || newScreenShare) && (

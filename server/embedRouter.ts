@@ -16,6 +16,33 @@ import { embedTokens, agentConfigs } from "../drizzle/platformSchema.js";
 
 const log = createLogger("EmbedRouter");
 
+/**
+ * Resolve the browser capabilities a token may actually carry.
+ *
+ * The widget enforces all of this again at runtime -- this is the cheaper,
+ * earlier copy, so an impossible token cannot be stored in the first place
+ * and then puzzle someone later.
+ *
+ * - iframe embeds are a separate document from the host page and can reach
+ *   nothing through it, so neither capability means anything there.
+ * - control requires read: every action names a ref from the current listing.
+ * - control requires an explicit origin allowlist. A token with no allowlist
+ *   runs anywhere it is pasted, and "anywhere" is not somewhere to hand a
+ *   click-and-type capability.
+ */
+export function domCapabilities(input: {
+  mode: string;
+  allowedOrigins: string[] | null | undefined;
+  allowDomRead?: boolean;
+  allowDomControl?: boolean;
+}): { allowDomRead: boolean; allowDomControl: boolean } {
+  if (input.mode !== "popup") return { allowDomRead: false, allowDomControl: false };
+  const allowDomRead = input.allowDomRead ?? false;
+  const allowDomControl =
+    (input.allowDomControl ?? false) && allowDomRead && (input.allowedOrigins?.length ?? 0) > 0;
+  return { allowDomRead, allowDomControl };
+}
+
 function generateToken(): string {
   return randomBytes(32).toString("hex"); // 64 hex chars
 }
@@ -67,6 +94,8 @@ export const embedRouter = router({
           allowScreenShare: embedTokens.allowScreenShare,
           allowAvatar: embedTokens.allowAvatar,
           showTranscription: embedTokens.showTranscription,
+          allowDomRead: embedTokens.allowDomRead,
+          allowDomControl: embedTokens.allowDomControl,
           allowedOrigins: embedTokens.allowedOrigins,
           agentId: agentConfigs.id,
           agentName: agentConfigs.name,
@@ -90,6 +119,8 @@ export const embedRouter = router({
         allowVideo: z.boolean().optional(),
         allowScreenShare: z.boolean().optional(),
         allowAvatar: z.boolean().optional(),
+        allowDomRead: z.boolean().optional(),
+        allowDomControl: z.boolean().optional(),
         showTranscription: z.boolean().optional(),
         theme: z.enum(["light", "dark"]).optional(),
         mode: z.enum(["popup", "iframe"]).optional(),
@@ -121,6 +152,12 @@ export const embedRouter = router({
           allowVideo: input.allowVideo ?? false,
           allowScreenShare: input.allowScreenShare ?? false,
           allowAvatar: input.allowAvatar ?? false,
+          ...domCapabilities({
+            mode: input.mode ?? "popup",
+            allowedOrigins: input.allowedOrigins ?? [],
+            allowDomRead: input.allowDomRead,
+            allowDomControl: input.allowDomControl,
+          }),
           showTranscription: input.showTranscription ?? true,
           theme: input.theme ?? "light",
           mode: input.mode ?? "popup",
@@ -149,6 +186,8 @@ export const embedRouter = router({
         allowVideo: z.boolean().optional(),
         allowScreenShare: z.boolean().optional(),
         allowAvatar: z.boolean().optional(),
+        allowDomRead: z.boolean().optional(),
+        allowDomControl: z.boolean().optional(),
         showTranscription: z.boolean().optional(),
         theme: z.enum(["light", "dark"]).optional(),
         mode: z.enum(["popup", "iframe"]).optional(),
@@ -175,6 +214,31 @@ export const embedRouter = router({
 
       if (Object.keys(cleanUpdates).length === 0) {
         return existing;
+      }
+
+      // Re-resolve the browser capabilities against what the token will BE,
+      // not what was sent. Switching a token to iframe, or clearing its
+      // origin allowlist, has to revoke control in the same write -- otherwise
+      // a token keeps a capability whose precondition it no longer meets, and
+      // nothing would ever revisit it.
+      if (
+        "allowDomRead" in cleanUpdates ||
+        "allowDomControl" in cleanUpdates ||
+        "mode" in cleanUpdates ||
+        "allowedOrigins" in cleanUpdates
+      ) {
+        Object.assign(
+          cleanUpdates,
+          domCapabilities({
+            mode: (cleanUpdates.mode as string) ?? existing.mode,
+            allowedOrigins:
+              (cleanUpdates.allowedOrigins as string[]) ?? existing.allowedOrigins,
+            allowDomRead:
+              (cleanUpdates.allowDomRead as boolean) ?? existing.allowDomRead,
+            allowDomControl:
+              (cleanUpdates.allowDomControl as boolean) ?? existing.allowDomControl,
+          }),
+        );
       }
 
       const [updated] = await ctx.db

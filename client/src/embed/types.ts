@@ -7,6 +7,23 @@ export interface EmbedConfig {
   allowScreenShare: boolean;
   allowAvatar: boolean;
   showTranscription: boolean;
+  /**
+   * May the agent read the structure of the page this widget is embedded in?
+   * Popup mode only -- an iframe embed is a different document. Already the
+   * AND of the agent's capability and the token's permission by the time it
+   * reaches here.
+   */
+  allowDomRead: boolean;
+  /** May the agent click and type on that page? Implies allowDomRead. */
+  allowDomControl: boolean;
+  /**
+   * Accessible names the widget must refuse to activate, lower-cased.
+   *
+   * Enforced here rather than in the agent's prompt: a prompt can be argued
+   * out of a rule by the page it is reading, and the page is exactly the
+   * thing we do not trust.
+   */
+  domActionDenylist: string[];
   theme: string;
   agentHasAvatar: boolean;
   /** Display name for the agent's speech; its participant has no name set. */

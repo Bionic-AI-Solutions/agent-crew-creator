@@ -385,6 +385,12 @@ interface Props {
   avatarImageUrl: string;
   visionEnabled: boolean;
   setVisionEnabled: (v: boolean) => void;
+  domReadEnabled: boolean;
+  setDomReadEnabled: (v: boolean) => void;
+  domControlEnabled: boolean;
+  setDomControlEnabled: (v: boolean) => void;
+  domActionDenylist: string;
+  setDomActionDenylist: (v: string) => void;
   backgroundAudioEnabled: boolean;
   setBackgroundAudioEnabled: (v: boolean) => void;
   busyAudioEnabled: boolean;
@@ -671,6 +677,107 @@ export default function LiveKitSection(props: Props) {
           <p className="text-[10px] text-muted-foreground ml-6">
             Allow the agent to see the user's camera feed and respond to visual input.
           </p>
+
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="dom-read-toggle"
+              checked={props.domReadEnabled}
+              onCheckedChange={(v) => {
+                const on = v === true;
+                props.setDomReadEnabled(on);
+                // Acting names a control from the current page listing, so
+                // control without reading has nothing to address. Turning
+                // read off takes control with it rather than leaving a
+                // checkbox ticked that the server will ignore.
+                if (!on) props.setDomControlEnabled(false);
+              }}
+            />
+            <Label htmlFor="dom-read-toggle" className="text-xs cursor-pointer">
+              Read the page (DOM)
+            </Label>
+          </div>
+          <p className="text-[10px] text-muted-foreground ml-6">
+            The agent reads the controls on the page it is embedded in — their
+            names, roles and whether they are visible — so it can name them
+            exactly and check that a step actually worked. Vision answers what
+            the page <em>looks</em> like; this answers what is <em>on</em> it.
+            Popup embeds only.
+          </p>
+          {props.domReadEnabled && props.llmProvider !== "gpu-ai" && (
+            <p className="text-[10px] text-amber-600 ml-6">
+              Costs roughly a second per turn on this LLM. The page listing
+              rides on the user's turn, which stops the agent from starting its
+              reply early — it waits for the listing rather than answering
+              without having seen the page. Worth it where the agent is guiding
+              someone through a screen; not worth it for a purely
+              conversational agent.
+            </p>
+          )}
+          {props.domReadEnabled && props.llmProvider === "gpu-ai" && (
+            <p className="text-[10px] text-muted-foreground ml-6">
+              No latency cost on this LLM: replying early is already disabled
+              for gpu-ai, so there is nothing for the page listing to delay.
+            </p>
+          )}
+
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="dom-control-toggle"
+              checked={props.domControlEnabled}
+              disabled={!props.domReadEnabled}
+              onCheckedChange={(v) => props.setDomControlEnabled(v === true)}
+            />
+            <Label
+              htmlFor="dom-control-toggle"
+              className={
+                "text-xs cursor-pointer" +
+                (props.domReadEnabled ? "" : " text-muted-foreground")
+              }
+            >
+              Control the page (click and type)
+            </Label>
+          </div>
+          <p className="text-[10px] text-muted-foreground ml-6">
+            {props.domReadEnabled
+              ? "The agent performs the steps itself. Named controls below are refused by the widget and handed back to the user, and that refusal is code, not prompt wording. Each embed token must also permit it and list its allowed origins."
+              : "Requires “Read the page”. An action names a control from the current page listing."}
+          </p>
+
+          {props.domControlEnabled && props.domReadEnabled && (
+            <div className="ml-6 space-y-1">
+              <Label htmlFor="dom-denylist" className="text-xs">
+                Never activate these controls
+              </Label>
+              <Input
+                id="dom-denylist"
+                value={props.domActionDenylist}
+                onChange={(e) => props.setDomActionDenylist(e.target.value)}
+                // 100 terms of 60 characters, matching the server. Refused
+                // there either way; stopping here explains itself sooner.
+                maxLength={6100}
+                placeholder="send, delete, pay, submit, transfer"
+                className="h-8 text-xs"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Comma separated, matched against a control's accessible name,
+                case-insensitively and on whole words. The agent asks the user
+                instead of pressing these.
+                {" "}
+                <strong>Which names belong here depends on whose page it is.</strong>{" "}
+                On a page the visitor does not own, “send” must be on the list.
+                On your own support form, submitting is the job — take it off,
+                and leave the ones that spend money or destroy data.
+                {props.domActionDenylist.trim() === "" && (
+                  <>
+                    {" "}
+                    <span className="text-amber-600">
+                      Empty means nothing is refused.
+                    </span>
+                  </>
+                )}
+              </p>
+            </div>
+          )}
 
           <div className="flex items-center gap-2">
             <Checkbox

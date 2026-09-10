@@ -27,6 +27,9 @@ import { desc } from "drizzle-orm";
 // lowercase alphanumeric segments joined by single hyphens, starting AND ending
 // with an alphanumeric. This rejects empty, whitespace, and all-dash names
 // (e.g. "-", "--", " ") that would otherwise produce a blank/auto-dispatch agent.
+/** Longest denylist term kept; longer ones are truncated, never refused. */
+const MAX_DENYLIST_TERM_CHARS = 60;
+
 const AGENT_NAME_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const AGENT_NAME_MSG =
   "Agent name must be lowercase letters/numbers separated by single hyphens (e.g. 'physics-tutor').";
@@ -314,6 +317,33 @@ export const agentRouter = router({
         ttsLanguage: z.string().nullable().optional(),
         systemPrompt: z.string().nullable().optional(),
         visionEnabled: z.boolean().optional(),
+        domReadEnabled: z.boolean().optional(),
+        domControlEnabled: z.boolean().optional(),
+        // Trimmed and de-duplicated rather than rejected: an operator typing
+        // a list should not be told off for a trailing comma. Empty entries
+        // would match every element, so they are dropped.
+        domActionDenylist: z
+          .array(z.string())
+          .max(100)
+          .optional()
+          // Bounded by truncation, not rejection. A term is interpolated into
+          // the agent's system prompt and resent on every call for the life of
+          // the agent, so one pasted blob with no commas in it costs forever
+          // -- but rejecting it made every agent that already had one
+          // unsavable, failing the whole update and taking unrelated edits
+          // with it. A cap that bricks the form is a worse bug than the one it
+          // was added to prevent.
+          .transform((v) =>
+            v === undefined
+              ? undefined
+              : [
+                  ...new Set(
+                    v
+                      .map((s) => s.trim().toLowerCase().slice(0, MAX_DENYLIST_TERM_CHARS))
+                      .filter(Boolean),
+                  ),
+                ],
+          ),
         avatarEnabled: z.boolean().optional(),
         avatarProvider: z.string().nullable().optional(),
         avatarReferenceImage: z.string().nullable().optional(),

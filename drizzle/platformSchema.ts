@@ -75,6 +75,26 @@ export const provisioningJobs = pgTable(
 
 // ── Agent Configs ───────────────────────────────────────────────
 
+/**
+ * Actions refused by default when an agent is given control of a page.
+ *
+ * From docs/feature/playground/DOM Integration.md. Deliberately about
+ * consequence rather than category: each of these either sends something to
+ * another person, spends money, or destroys data, and none of them can be
+ * undone by clicking again.
+ */
+export const DEFAULT_DOM_ACTION_DENYLIST: string[] = [
+  "send",
+  "delete",
+  "pay",
+  "submit",
+  "transfer",
+  "confirm",
+  "publish",
+  "buy",
+  "remove",
+];
+
 export const agentConfigs = pgTable(
   "agent_configs",
   {
@@ -111,6 +131,30 @@ export const agentConfigs = pgTable(
     // Whether a screen change may start a turn on its own, rather than the
     // agent only looking when the user speaks.
     visionProactive: boolean("vision_proactive").default(false).notNull(),
+    // Browser awareness. Vision answers "what does this look like"; the DOM
+    // answers "what controls exist and what are they called". They are
+    // separate capabilities because each is the only useful one somewhere:
+    // vision alone for a canvas app or a PDF, DOM alone for a text-heavy page
+    // where frames are just vision tokens. The builder couples them by
+    // default so the ordinary case stays a single choice.
+    domReadEnabled: boolean("dom_read_enabled").default(false).notNull(),
+    // Whether the agent may ACT on the page, not merely read it. Gated
+    // separately: reading is passive, acting is not, and the irreversible
+    // action gate lives in the widget rather than the prompt.
+    domControlEnabled: boolean("dom_control_enabled").default(false).notNull(),
+    // Accessible names the agent may never activate on its own.
+    //
+    // Per agent, not a constant, because the right list depends entirely on
+    // whose page it is. On someone else's webmail, Send is the thing you must
+    // never press. On a customer's own support desk, submitting the form IS
+    // the job, and a hard-coded list would make the agent useless there.
+    //
+    // Matched case-insensitively on word boundaries by the widget, which is
+    // where the gate lives -- a denylist enforced in the prompt is a
+    // suggestion, and the failure mode is a prompt-injected Send.
+    domActionDenylist: json("dom_action_denylist")
+      .$type<string[]>()
+      .default(DEFAULT_DOM_ACTION_DENYLIST),
     avatarEnabled: boolean("avatar_enabled").default(false).notNull(),
     // flashhead (default) | bithuman (legacy) — engine selector
     avatarProvider: varchar("avatar_provider", { length: 30 }).default("flashhead"),
@@ -361,6 +405,12 @@ export const embedTokens = pgTable(
     allowScreenShare: boolean("allow_screen_share").default(false).notNull(),
     allowAvatar: boolean("allow_avatar").default(false).notNull(),
     showTranscription: boolean("show_transcription").default(true).notNull(),
+    // Per-deployment gates for the agent's browser capabilities. An agent may
+    // be capable of reading or driving a page; these decide whether this
+    // particular embed is allowed to let it. Only meaningful in popup mode --
+    // an iframe embed is a different document and can reach nothing.
+    allowDomRead: boolean("allow_dom_read").default(false).notNull(),
+    allowDomControl: boolean("allow_dom_control").default(false).notNull(),
     // Appearance
     theme: varchar("theme", { length: 20 }).default("light").notNull(),
     mode: varchar("mode", { length: 20 }).default("popup").notNull(), // popup | iframe

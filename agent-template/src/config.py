@@ -99,6 +99,19 @@ class Settings(BaseSettings):
     # Vision (feed camera/screen frames to the primary LLM)
     vision_enabled: bool = False
 
+    # Browser awareness. The widget publishes a listing of the controls on the
+    # page it is embedded in; the agent attaches it to the user's turn.
+    # Complementary to vision, not a substitute: vision says what the page
+    # looks like, this says what is on it and what each thing is called.
+    dom_read_enabled: bool = False
+    # Whether the agent may act on that page. Every refusal is enforced in the
+    # widget; this only decides whether the tools exist and what the persona
+    # is told. A tool that is never registered cannot be talked into running.
+    dom_control_enabled: bool = False
+    # JSON array of accessible names the widget will refuse to activate. Held
+    # here only so the agent can explain itself; the widget is the authority.
+    dom_action_denylist: str = "[]"
+
     # Background audio
     background_audio_enabled: bool = False
     busy_audio_enabled: bool = False

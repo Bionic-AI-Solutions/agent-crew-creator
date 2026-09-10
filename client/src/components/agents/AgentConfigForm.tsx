@@ -16,6 +16,9 @@ interface Props {
   agentId: number;
 }
 
+/** Mirrors MAX_DENYLIST_TERM_CHARS in server/agentRouter.ts. */
+const MAX_DENYLIST_TERM_CHARS = 60;
+
 export default function AgentConfigForm({ agentId }: Props) {
   const { setSelectedAgentId } = useAppContext();
   const utils = trpc.useUtils();
@@ -35,6 +38,11 @@ export default function AgentConfigForm({ agentId }: Props) {
   const [avatarReferenceImage, setAvatarReferenceImage] = useState("");
   const [avatarName, setAvatarName] = useState("");
   const [visionEnabled, setVisionEnabled] = useState(false);
+  const [domReadEnabled, setDomReadEnabled] = useState(false);
+  const [domControlEnabled, setDomControlEnabled] = useState(false);
+  // Held as the raw comma-separated string the operator typed, so a trailing
+  // comma mid-edit does not make entries appear and vanish under the cursor.
+  const [domActionDenylist, setDomActionDenylist] = useState("");
   const [backgroundAudioEnabled, setBackgroundAudioEnabled] = useState(false);
   const [busyAudioEnabled, setBusyAudioEnabled] = useState(false);
   const [lettaAgentName, setLettaAgentName] = useState("");
@@ -61,6 +69,9 @@ export default function AgentConfigForm({ agentId }: Props) {
       setAvatarReferenceImage((agent as any).avatarReferenceImage || "");
       setAvatarName((agent as any).avatarName || "");
       setVisionEnabled(agent.visionEnabled);
+      setDomReadEnabled(Boolean((agent as any).domReadEnabled));
+      setDomControlEnabled(Boolean((agent as any).domControlEnabled));
+      setDomActionDenylist(((agent as any).domActionDenylist ?? []).join(", "));
       setBackgroundAudioEnabled(agent.backgroundAudioEnabled);
       setBusyAudioEnabled((agent as any).busyAudioEnabled ?? false);
       setLettaAgentName(agent.lettaAgentName || "");
@@ -71,7 +82,12 @@ export default function AgentConfigForm({ agentId }: Props) {
 
   const updateMutation = trpc.agentsCrud.update.useMutation({
     onSuccess: () => {
-      toast.success("Agent saved");
+      toast.success(
+        denylistWasTrimmed
+          ? "Agent saved — denylist terms were tidied to what is enforced"
+          : "Agent saved",
+      );
+      setDomActionDenylist(denylistTerms.join(", "));
       utils.agentsCrud.getById.invalidate({ id: agentId });
     },
     onError: (err) => toast.error(err.message),
@@ -96,6 +112,29 @@ export default function AgentConfigForm({ agentId }: Props) {
     onError: (err) => toast.error(err.message),
   });
 
+  // Parsed once, and the field is rewritten from the result on save.
+  //
+  // The server truncates a term over 60 characters rather than refusing it,
+  // so without echoing that back the operator kept seeing their original text
+  // above an "Agent saved" toast while a shorter term was what actually got
+  // enforced. For a field whose entire job is to block dangerous actions,
+  // believing a phrase is protecting something when only its first 60
+  // characters are is the wrong thing to be wrong about.
+  const denylistTerms = [
+    // De-duplicated here as well as on the server. Without it the echo put
+    // back what the operator typed rather than what was stored, so "delete,
+    // delete" stayed on screen while one entry was saved -- and the field
+    // then shrank without explanation the next time the form loaded, looking
+    // like data loss.
+    ...new Set(
+      domActionDenylist
+        .split(",")
+        .map((s) => s.trim().toLowerCase().slice(0, MAX_DENYLIST_TERM_CHARS))
+        .filter(Boolean),
+    ),
+  ];
+  const denylistWasTrimmed = denylistTerms.join(", ") !== domActionDenylist.trim();
+
   const handleDeploy = () => {
     // Save all fields first, then deploy (which auto-provisions Letta if needed)
     updateMutation.mutate(
@@ -114,6 +153,10 @@ export default function AgentConfigForm({ agentId }: Props) {
         avatarReferenceImage: avatarReferenceImage || null,
         avatarName: avatarName || null,
         visionEnabled,
+        domReadEnabled,
+        // Never persist a combination the server would reject anyway.
+        domControlEnabled: domControlEnabled && domReadEnabled,
+        domActionDenylist: denylistTerms,
         backgroundAudioEnabled,
         busyAudioEnabled,
         lettaAgentName: lettaAgentName || null,
@@ -183,6 +226,12 @@ export default function AgentConfigForm({ agentId }: Props) {
             avatarImageUrl={(agent as any)?.avatarImageUrl || ""}
             visionEnabled={visionEnabled}
             setVisionEnabled={setVisionEnabled}
+            domReadEnabled={domReadEnabled}
+            setDomReadEnabled={setDomReadEnabled}
+            domControlEnabled={domControlEnabled}
+            setDomControlEnabled={setDomControlEnabled}
+            domActionDenylist={domActionDenylist}
+            setDomActionDenylist={setDomActionDenylist}
             backgroundAudioEnabled={backgroundAudioEnabled}
             setBackgroundAudioEnabled={setBackgroundAudioEnabled}
             busyAudioEnabled={busyAudioEnabled}

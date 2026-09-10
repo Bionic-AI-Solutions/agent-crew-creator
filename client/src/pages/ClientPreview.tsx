@@ -46,6 +46,8 @@ type EmbedRow = {
   allowVideo: boolean;
   allowScreenShare: boolean;
   allowAvatar: boolean;
+  allowDomRead: boolean;
+  allowDomControl: boolean;
   showTranscription: boolean;
   allowedOrigins: string[] | null;
   agentId: number;
@@ -191,6 +193,8 @@ function CapabilityChips({ row }: { row: EmbedRow }) {
     ["chat", row.allowChat],
     ["cam", row.allowVideo],
     ["screen", row.allowScreenShare],
+    ["dom read", row.allowDomRead],
+    ["dom control", row.allowDomControl],
     ["avatar", row.allowAvatar && row.agentAvatarEnabled],
     ["transcript", row.showTranscription],
   ];
