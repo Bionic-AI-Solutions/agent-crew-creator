@@ -54,7 +54,8 @@ export function TranscriptPanel({ config, platformOrigin, onSendMessage }: Trans
       ts: m.timestamp,
       text: m.message,
       identity: m.from?.identity,
-      name: m.from?.name || m.from?.identity,
+      // No identity fallback: a raw dispatch id is not a speaker name.
+      name: m.from?.name || undefined,
     }));
     const spoken = transcriptions.map((t) => {
       // useTranscriptions() carries every participant's speech, not just the
@@ -73,7 +74,7 @@ export function TranscriptPanel({ config, platformOrigin, onSendMessage }: Trans
         ts: t.streamInfo.timestamp,
         text: t.text,
         identity,
-        name: p?.name || identity,
+        name: p?.name || undefined,
       };
     });
     const results = summaries.map((t) => ({
@@ -118,7 +119,7 @@ export function TranscriptPanel({ config, platformOrigin, onSendMessage }: Trans
         <div className="bionic-transcript-messages">
           {messages.map((msg) => {
             const isLocal = msg.identity === room.localParticipant.identity;
-            const name = isLocal ? "You" : msg.name || "Agent";
+            const name = isLocal ? "You" : msg.name || config.agentName || "Agent";
             return (
               <ChatMessage
                 key={`${msg.kind}:${msg.id}`}
