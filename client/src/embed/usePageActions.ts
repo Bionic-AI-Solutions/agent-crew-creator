@@ -93,6 +93,14 @@ export interface PageActionsOptions {
   allowedOrigins: string[];
   /** The control bar, so we can verify the user can still see and stop this. */
   getControlBar: () => Element | null;
+  /**
+   * Put the bar back in the top layer, and say whether it is there.
+   *
+   * Called before acting on a report that something is covering it: the only
+   * thing that can cover a top-layer element is another one opened later, and
+   * re-showing ours puts it back on top. A report that survives that is real.
+   */
+  reassertControlBar?: () => boolean;
   /** Called when an action is refused, so the widget can show the user. */
   onRefusal?: (detail: string, confirmable?: ConfirmRequest) => void;
   /** Called when the agent acts, so the widget can show what happened. */
@@ -257,8 +265,13 @@ export function usePageActions(options: PageActionsOptions) {
      * "the Stop button is gone" is to stop.
      */
     const controlIsVisible = (): { ok: true } | { ok: false; reason: string; detail: string } => {
+      // Re-assert first, then judge. If a page modal opened over the bar,
+      // putting ours back on top is the fix, not a reason to stop -- and if
+      // the report survives it, something really is there.
+      const inTopLayer = latest.current.reassertControlBar?.() ?? false;
       const verdict = controlUiVisibility(latest.current.getControlBar(), window, {
         occluded,
+        inTopLayer,
       });
       if (verdict.visible) return { ok: true };
       latest.current.onControlRevoked?.(verdict.detail);
@@ -470,8 +483,10 @@ export function usePageActions(options: PageActionsOptions) {
       // because the overlay scan cost 37ms at 4x CPU throttle and ran every
       // second; reading the observer's flag costs nothing, so the heartbeat
       // and the action path can be the same thing again.
+      const inTopLayer = latest.current.reassertControlBar?.() ?? false;
       const verdict = controlUiVisibility(latest.current.getControlBar(), window, {
         occluded,
+        inTopLayer,
       });
       if (!verdict.visible) latest.current.onControlRevoked?.(verdict.detail);
     }, VISIBILITY_POLL_MS);

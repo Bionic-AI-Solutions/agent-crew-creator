@@ -119,6 +119,7 @@ interface HarnessProps {
   denylist: string[];
   allowedOrigins: string[];
   getControlBar: () => Element | null;
+  reassertControlBar?: () => boolean;
   onRefusal?: (d: string, c?: ConfirmRequest) => void;
   onAction?: (s: string) => void;
   onControlRevoked?: (d: string) => void;
@@ -132,6 +133,7 @@ function Harness(props: HarnessProps) {
     denylist: props.denylist,
     allowedOrigins: props.allowedOrigins,
     getControlBar: props.getControlBar,
+    reassertControlBar: props.reassertControlBar,
     onRefusal: props.onRefusal,
     onAction: props.onAction,
     onControlRevoked: props.onControlRevoked,
@@ -348,7 +350,7 @@ describe("usePageActions — the user can always see and stop it", () => {
     };
   }
 
-  async function clickThrough(bar: HTMLElement) {
+  async function clickThrough(bar: HTMLElement, inTopLayer = true) {
     const { room, handlers } = makeFakeRoom();
     let clicked = false;
     dom.window.document.getElementById("go")!.addEventListener("click", () => {
@@ -360,6 +362,11 @@ describe("usePageActions — the user can always see and stop it", () => {
       denylist: [],
       allowedOrigins: [ORIGIN],
       getControlBar: () => bar,
+      // jsdom has no popover support, so the top layer is reported directly.
+      // It matters: outside the top layer the observer's answer is not acted
+      // on at all, because there it cannot be told apart from a transparent
+      // portal root.
+      reassertControlBar: () => inTopLayer,
       onControlRevoked: (d) => revoked.push(d),
     });
     await flushMicrotasks();
@@ -370,28 +377,35 @@ describe("usePageActions — the user can always see and stop it", () => {
   }
 
   test("a click is refused when the browser reports the bar covered", async () => {
-    // Hit testing skips a pointer-events:none scrim, so the hook asks the
-    // browser through IntersectionObserver v2 and feeds the answer in. The
-    // answer is corroborated, so something opaque has to actually be there.
+    // In the top layer the only thing that can be over the bar is another
+    // top-layer element, so a report that survives re-assertion is real.
     dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
     const bar = makeVisibleBar();
-    const veil = dom.window.document.createElement("div");
-    veil.id = "veil";
-    veil.style.cssText = "background: rgb(255,255,255)";
-    dom.window.document.body.appendChild(veil);
-    (veil as any).getBoundingClientRect = () => ({
-      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
-    });
     const restore = installObserver(2, false);
     try {
       const { res, clicked, revoked } = await clickThrough(bar);
       assert.equal(res.ok, false);
       assert.equal(res.reason, "control_ui_obscured");
-      assert.equal(clicked, false, "nothing may be pressed behind a scrim");
+      assert.equal(clicked, false, "nothing may be pressed behind a modal");
       assert.ok(revoked.length > 0, "control must be revoked");
     } finally {
       restore();
-      veil.remove();
+    }
+  });
+
+  test("outside the top layer, a covered report does not revoke", async () => {
+    // Where the top layer is unavailable the observer cannot be told apart
+    // from a transparent portal root, so acting on it would revoke control on
+    // ordinary pages. It is left alone instead.
+    dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
+    const bar = makeVisibleBar();
+    const restore = installObserver(2, false);
+    try {
+      const { res, clicked } = await clickThrough(bar, false);
+      assert.equal(res.ok, true, JSON.stringify(res));
+      assert.equal(clicked, true);
+    } finally {
+      restore();
     }
   });
 

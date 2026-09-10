@@ -295,76 +295,68 @@ describe("controlUiVisibility", () => {
     return veil;
   }
 
-  test("the browser reporting covered revokes only when something opaque is there", () => {
-    // The observer's answer is a trigger, not a verdict: `isVisible` goes
-    // false when ANYTHING composites above the bar, including a fully
-    // transparent portal root that renders nothing.
-    const clear = build();
-    assert.equal(
-      controlUiVisibility(clear.bar, clear.win, { occluded: true }).visible,
-      true,
-      "nothing opaque over it -- the observer was noticing a transparent layer",
-    );
-
-    const covered = build({
-      styles: { veil: { backgroundColor: "rgb(255, 255, 255)" } },
-    });
-    coverStopEnd(covered.doc);
-    const v = controlUiVisibility(covered.bar, covered.win, { occluded: true });
-    assert.equal(v.visible, false);
-    assert.equal(v.reason, "control_ui_obscured");
-  });
-
-  test("an opaque layer is ignored while the browser says nothing covers us", () => {
-    // Corroboration never runs on its own. A background video overlapping the
-    // bar's rect but painting behind it is exactly this case, and it is why
-    // the probe is not allowed to decide anything by itself.
-    const { bar, doc, win } = build({
-      styles: { veil: { backgroundColor: "rgb(255, 255, 255)" } },
-    });
-    coverStopEnd(doc);
-    assert.equal(controlUiVisibility(bar, win, { occluded: false }).visible, true);
-    assert.equal(controlUiVisibility(bar, win, { occluded: null }).visible, true);
-  });
-
-  test("the widget's own bar is not mistaken for something covering it", () => {
-    // The probe descends into open shadow roots, and ours holds the bar --
-    // opaque and directly over the sample point. contains() does not cross a
-    // shadow boundary, so without outermostHost the probe concluded the bar
-    // was covered by the bar, on every page.
+  test("in the top layer, a covered report is acted on directly", () => {
+    // The set of things that can paint above a top-layer element is just
+    // "other top-layer elements", so a report that survived re-assertion is
+    // a real modal over the Stop button. Nothing left to corroborate against.
     const { bar, win } = build();
-    assert.equal(controlUiVisibility(bar, win, { occluded: true }).visible, true);
-  });
-
-  test("a scrim inside another component's open shadow root is corroborated", () => {
-    const { bar, doc, win } = build({
-      styles: { veil: { backgroundColor: "rgb(255, 255, 255)" } },
-    });
-    const holder = doc.createElement("div");
-    doc.body.appendChild(holder);
-    const veil = doc.createElement("div");
-    veil.id = "veil";
-    holder.attachShadow({ mode: "open" }).appendChild(veil);
-    (veil as any).getBoundingClientRect = () => ({
-      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
-    });
-    const v = controlUiVisibility(bar, win, { occluded: true });
+    const v = controlUiVisibility(bar, win, { occluded: true, inTopLayer: true });
     assert.equal(v.visible, false);
     assert.equal(v.reason, "control_ui_obscured");
   });
 
-  test("a layer covering only the near end leaves control alone", () => {
-    // Stop sits at the far end, and the promise is that you can stop it --
-    // not that every pixel of the banner is pristine. A 180x40 notification
-    // at the top left leaves Stop pressable.
-    const { bar, doc, win } = build({
-      styles: { veil: { backgroundColor: "rgb(51, 51, 51)" } },
-    });
-    const veil = coverStopEnd(doc);
-    (veil as any).getBoundingClientRect = () => ({
-      width: 180, height: 40, top: 0, left: 0, bottom: 40, right: 180,
-    });
+  test("outside the top layer, a covered report is not acted on", () => {
+    // `isVisible` is a paint-order answer: it goes true for a fully
+    // transparent portal root, which every third-party widget mounts. Three
+    // rounds of trying to tell those from real scrims -- by scanning, by
+    // stacking level, by probing what each candidate paints -- were each
+    // defeated by something not modelled. Without the top layer there is no
+    // sound way to act on it, so it is left alone rather than guessed at.
+    const { bar, win } = build();
+    assert.equal(
+      controlUiVisibility(bar, win, { occluded: true, inTopLayer: false }).visible,
+      true,
+    );
     assert.equal(controlUiVisibility(bar, win, { occluded: true }).visible, true);
+  });
+
+  test("ancestor compositing effects are ignored for a top-layer bar", () => {
+    // Verified in Chromium: with the bar shown as a popover, none of these
+    // reach it -- it renders untouched. Applying the checks there would
+    // revoke control on pages doing nothing to us at all.
+    for (const styles of [
+      { wrapper: { filter: "opacity(0)" } },
+      { wrapper: { maskImage: "linear-gradient(transparent, transparent)" } },
+      { wrapper: { clipPath: "inset(100%)" } },
+      { wrapper: { opacity: "0" } },
+    ]) {
+      const { bar, win } = build({ styles });
+      assert.equal(
+        controlUiVisibility(bar, win, { inTopLayer: true }).visible,
+        true,
+        JSON.stringify(styles),
+      );
+      // ...and still caught when the top layer is unavailable.
+      const fallback = build({ styles });
+      assert.equal(
+        controlUiVisibility(fallback.bar, fallback.win, { inTopLayer: false }).visible,
+        false,
+        JSON.stringify(styles),
+      );
+    }
+  });
+
+  test("what still reaches a top-layer bar is still caught", () => {
+    // display:none and content-visibility:hidden zero its box; visibility
+    // inherits. All three reach it, and all three are caught by checks that
+    // do not care about the top layer.
+    const gone = build({ rect: { width: 0, height: 0, right: 0, bottom: 0 } });
+    assert.equal(controlUiVisibility(gone.bar, gone.win, { inTopLayer: true }).visible, false);
+
+    const invisible = build({ styles: { bar: { visibility: "hidden" } } });
+    const v = controlUiVisibility(invisible.bar, invisible.win, { inTopLayer: true });
+    assert.equal(v.visible, false);
+    assert.equal(v.reason, "control_ui_hidden");
   });
 
   test("the browser reporting the bar visible allows control", () => {

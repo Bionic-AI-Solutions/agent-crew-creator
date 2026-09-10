@@ -54,6 +54,33 @@ function PageActions({ config }: { config?: EmbedConfig }) {
   const barRef = useRef<HTMLDivElement | null>(null);
   const getControlBar = useCallback(() => barRef.current, []);
 
+  /**
+   * Put the bar in the top layer, and say whether that worked.
+   *
+   * The top layer paints above every element in the page, whatever its
+   * z-index or stacking context, so a page cannot cover the bar with ordinary
+   * content at all. Three review rounds were spent trying to DETECT covering
+   * -- a scan, then a stacking comparison, then a paint probe -- and each was
+   * defeated by something the previous one had not modelled: a transparent
+   * portal root, an SVG fill, a pseudo-element, a scrim in a closed shadow
+   * root, or simply enough decoy nodes to exhaust the budget. Verified in
+   * Chromium: every one of those fails against a top-layer bar, including the
+   * closed shadow root that was documented as a permanent limit.
+   *
+   * Only another top-layer element opened after ours can cover it, and that
+   * is both detectable and recoverable -- see the observer in usePageActions.
+   */
+  const showInTopLayer = useCallback((): boolean => {
+    const el = barRef.current as (HTMLDivElement & { showPopover?: () => void }) | null;
+    if (!el || typeof el.showPopover !== "function") return false;
+    try {
+      if (!el.matches(":popover-open")) el.showPopover();
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
   // Reverts to guidance whenever the permission goes away, so a token change
   // or a reconnect cannot leave control quietly enabled.
   useEffect(() => {
@@ -73,6 +100,7 @@ function PageActions({ config }: { config?: EmbedConfig }) {
     denylist,
     allowedOrigins,
     getControlBar,
+    reassertControlBar: showInTopLayer,
     onRefusal: (detail, confirmable) => {
       setLastEvent(`Asked you first: ${detail}`);
       if (confirmable) setPendingConfirm(confirmable);
@@ -91,11 +119,21 @@ function PageActions({ config }: { config?: EmbedConfig }) {
     },
   });
 
+  // Shown as soon as the bar exists, and again whenever its contents change
+  // size, so it is in the top layer before anything can be pressed.
+  useEffect(() => {
+    if (!permitted) return;
+    showInTopLayer();
+  }, [permitted, controlOn, pendingConfirm, showInTopLayer]);
+
   if (!permitted) return null;
 
   return (
     <div
       ref={barRef}
+      // "manual" so nothing else can light-dismiss it -- an Escape keypress
+      // meant for the page must not take the Stop button away.
+      popover="manual"
       className={`bionic-control-bar ${controlOn ? "bionic-control-on" : ""}`}
     >
       <span className="bionic-control-dot" aria-hidden="true" />

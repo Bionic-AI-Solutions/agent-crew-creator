@@ -707,9 +707,25 @@
  * panel is closed. The stop button has to be reachable at the moment
  * somebody wants it, which is never the moment they want to go hunting.
  */
+/*
+ * Lives in the top layer (see EmbedClient's PageActions, which calls
+ * showPopover on it). Nothing in the page's normal DOM can paint over the top
+ * layer, whatever its z-index or stacking context -- which is what finally
+ * ended the arms race over detecting scrims. The popover UA styles have to be
+ * cleared, though: a popover defaults to a bordered, padded, centred box.
+ */
 .bionic-control-bar {
   position: fixed;
   top: 0; left: 0; right: 0;
+  bottom: auto;
+  width: auto;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  overflow: visible;
+  /* Kept for the browsers where the top layer is unavailable and the bar is
+     an ordinary fixed element. */
   z-index: 2147483647;
   display: flex;
   align-items: center;
