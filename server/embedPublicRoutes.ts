@@ -275,6 +275,9 @@ export function registerEmbedRoutes(app: Express): void {
           allowDomRead: tokenRow.allowDomRead && agent.domReadEnabled,
           allowDomControl:
             tokenRow.allowDomControl && agent.domControlEnabled && agent.domReadEnabled,
+          // The widget is where the gate actually runs, so it needs the list
+          // itself, not a promise that the agent was told about it.
+          domActionDenylist: agent.domActionDenylist ?? [],
           allowAvatar: tokenRow.allowAvatar,
           showTranscription: tokenRow.showTranscription,
           theme: tokenRow.theme,

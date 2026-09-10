@@ -37,6 +37,9 @@ export default function AgentConfigForm({ agentId }: Props) {
   const [visionEnabled, setVisionEnabled] = useState(false);
   const [domReadEnabled, setDomReadEnabled] = useState(false);
   const [domControlEnabled, setDomControlEnabled] = useState(false);
+  // Held as the raw comma-separated string the operator typed, so a trailing
+  // comma mid-edit does not make entries appear and vanish under the cursor.
+  const [domActionDenylist, setDomActionDenylist] = useState("");
   const [backgroundAudioEnabled, setBackgroundAudioEnabled] = useState(false);
   const [busyAudioEnabled, setBusyAudioEnabled] = useState(false);
   const [lettaAgentName, setLettaAgentName] = useState("");
@@ -65,6 +68,7 @@ export default function AgentConfigForm({ agentId }: Props) {
       setVisionEnabled(agent.visionEnabled);
       setDomReadEnabled(Boolean((agent as any).domReadEnabled));
       setDomControlEnabled(Boolean((agent as any).domControlEnabled));
+      setDomActionDenylist(((agent as any).domActionDenylist ?? []).join(", "));
       setBackgroundAudioEnabled(agent.backgroundAudioEnabled);
       setBusyAudioEnabled((agent as any).busyAudioEnabled ?? false);
       setLettaAgentName(agent.lettaAgentName || "");
@@ -121,6 +125,10 @@ export default function AgentConfigForm({ agentId }: Props) {
         domReadEnabled,
         // Never persist a combination the server would reject anyway.
         domControlEnabled: domControlEnabled && domReadEnabled,
+        domActionDenylist: domActionDenylist
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
         backgroundAudioEnabled,
         busyAudioEnabled,
         lettaAgentName: lettaAgentName || null,
@@ -194,6 +202,8 @@ export default function AgentConfigForm({ agentId }: Props) {
             setDomReadEnabled={setDomReadEnabled}
             domControlEnabled={domControlEnabled}
             setDomControlEnabled={setDomControlEnabled}
+            domActionDenylist={domActionDenylist}
+            setDomActionDenylist={setDomActionDenylist}
             backgroundAudioEnabled={backgroundAudioEnabled}
             setBackgroundAudioEnabled={setBackgroundAudioEnabled}
             busyAudioEnabled={busyAudioEnabled}

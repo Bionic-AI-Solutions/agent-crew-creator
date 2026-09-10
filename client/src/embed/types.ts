@@ -16,6 +16,14 @@ export interface EmbedConfig {
   allowDomRead: boolean;
   /** May the agent click and type on that page? Implies allowDomRead. */
   allowDomControl: boolean;
+  /**
+   * Accessible names the widget must refuse to activate, lower-cased.
+   *
+   * Enforced here rather than in the agent's prompt: a prompt can be argued
+   * out of a rule by the page it is reading, and the page is exactly the
+   * thing we do not trust.
+   */
+  domActionDenylist: string[];
   theme: string;
   agentHasAvatar: boolean;
   /** Display name for the agent's speech; its participant has no name set. */

@@ -275,6 +275,9 @@ export async function deployAgent(
     DOM_CONTROL_ENABLED: String(
       Boolean(agent.domControlEnabled) && Boolean(agent.domReadEnabled),
     ),
+    // The worker only tells the model what it must not do; the widget is what
+    // actually refuses. Both read the same list so they cannot disagree.
+    DOM_ACTION_DENYLIST: JSON.stringify(agent.domActionDenylist ?? []),
     AVATAR_ENABLED: String(agent.avatarEnabled),
     // FlashHead is the default avatar engine; bithuman kept as legacy.
     // Per-agent avatar config comes from agent.avatarProvider /

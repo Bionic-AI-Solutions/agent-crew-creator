@@ -16,3 +16,14 @@ ALTER TABLE "agent_configs" ADD COLUMN IF NOT EXISTS "dom_control_enabled" boole
 
 ALTER TABLE "embed_tokens" ADD COLUMN IF NOT EXISTS "allow_dom_read" boolean DEFAULT false NOT NULL;
 ALTER TABLE "embed_tokens" ADD COLUMN IF NOT EXISTS "allow_dom_control" boolean DEFAULT false NOT NULL;
+
+-- The irreversible-action denylist is per agent, not a constant.
+--
+-- Which names are dangerous depends on whose page it is: on someone else's
+-- webmail Send must never be pressed, while on a customer's own support desk
+-- submitting the form is the entire job. A single hard-coded list makes the
+-- agent either unsafe in the first case or useless in the second.
+--
+-- Seeded with the list from the spec.
+ALTER TABLE "agent_configs" ADD COLUMN IF NOT EXISTS "dom_action_denylist" json
+  DEFAULT '["send","delete","pay","submit","transfer","confirm","publish","buy","remove"]'::json;

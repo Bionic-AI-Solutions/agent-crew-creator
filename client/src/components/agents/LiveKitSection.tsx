@@ -389,6 +389,8 @@ interface Props {
   setDomReadEnabled: (v: boolean) => void;
   domControlEnabled: boolean;
   setDomControlEnabled: (v: boolean) => void;
+  domActionDenylist: string;
+  setDomActionDenylist: (v: string) => void;
   backgroundAudioEnabled: boolean;
   setBackgroundAudioEnabled: (v: boolean) => void;
   busyAudioEnabled: boolean;
@@ -721,9 +723,42 @@ export default function LiveKitSection(props: Props) {
           </div>
           <p className="text-[10px] text-muted-foreground ml-6">
             {props.domReadEnabled
-              ? "The agent performs the steps itself. Irreversible controls — Send, Delete, Pay, Submit, Transfer — are refused by the widget and handed back to the user, and that refusal is code, not prompt wording. Each embed token must also permit it and list its allowed origins."
+              ? "The agent performs the steps itself. Named controls below are refused by the widget and handed back to the user, and that refusal is code, not prompt wording. Each embed token must also permit it and list its allowed origins."
               : "Requires “Read the page”. An action names a control from the current page listing."}
           </p>
+
+          {props.domControlEnabled && props.domReadEnabled && (
+            <div className="ml-6 space-y-1">
+              <Label htmlFor="dom-denylist" className="text-xs">
+                Never activate these controls
+              </Label>
+              <Input
+                id="dom-denylist"
+                value={props.domActionDenylist}
+                onChange={(e) => props.setDomActionDenylist(e.target.value)}
+                placeholder="send, delete, pay, submit, transfer"
+                className="h-8 text-xs"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Comma separated, matched against a control's accessible name,
+                case-insensitively and on whole words. The agent asks the user
+                instead of pressing these.
+                {" "}
+                <strong>Which names belong here depends on whose page it is.</strong>{" "}
+                On a page the visitor does not own, “send” must be on the list.
+                On your own support form, submitting is the job — take it off,
+                and leave the ones that spend money or destroy data.
+                {props.domActionDenylist.trim() === "" && (
+                  <>
+                    {" "}
+                    <span className="text-amber-600">
+                      Empty means nothing is refused.
+                    </span>
+                  </>
+                )}
+              </p>
+            </div>
+          )}
 
           <div className="flex items-center gap-2">
             <Checkbox

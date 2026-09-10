@@ -316,6 +316,18 @@ export const agentRouter = router({
         visionEnabled: z.boolean().optional(),
         domReadEnabled: z.boolean().optional(),
         domControlEnabled: z.boolean().optional(),
+        // Trimmed and de-duplicated rather than rejected: an operator typing
+        // a list should not be told off for a trailing comma. Empty entries
+        // would match every element, so they are dropped.
+        domActionDenylist: z
+          .array(z.string())
+          .max(100)
+          .optional()
+          .transform((v) =>
+            v === undefined
+              ? undefined
+              : [...new Set(v.map((s) => s.trim().toLowerCase()).filter(Boolean))],
+          ),
         avatarEnabled: z.boolean().optional(),
         avatarProvider: z.string().nullable().optional(),
         avatarReferenceImage: z.string().nullable().optional(),
