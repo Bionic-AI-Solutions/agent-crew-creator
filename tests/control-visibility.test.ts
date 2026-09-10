@@ -284,11 +284,87 @@ describe("controlUiVisibility", () => {
   // in particular that its "no" is not taken at face value, because it
   // refuses to certify visibility through effects it cannot reason about.
 
-  test("the browser reporting the bar covered revokes control", () => {
+  /** Puts an opaque layer over the Stop end of the bar. */
+  function coverStopEnd(doc: Document, id = "veil") {
+    const veil = doc.createElement("div");
+    veil.id = id;
+    doc.body.appendChild(veil);
+    (veil as any).getBoundingClientRect = () => ({
+      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
+    });
+    return veil;
+  }
+
+  test("the browser reporting covered revokes only when something opaque is there", () => {
+    // The observer's answer is a trigger, not a verdict: `isVisible` goes
+    // false when ANYTHING composites above the bar, including a fully
+    // transparent portal root that renders nothing.
+    const clear = build();
+    assert.equal(
+      controlUiVisibility(clear.bar, clear.win, { occluded: true }).visible,
+      true,
+      "nothing opaque over it -- the observer was noticing a transparent layer",
+    );
+
+    const covered = build({
+      styles: { veil: { backgroundColor: "rgb(255, 255, 255)" } },
+    });
+    coverStopEnd(covered.doc);
+    const v = controlUiVisibility(covered.bar, covered.win, { occluded: true });
+    assert.equal(v.visible, false);
+    assert.equal(v.reason, "control_ui_obscured");
+  });
+
+  test("an opaque layer is ignored while the browser says nothing covers us", () => {
+    // Corroboration never runs on its own. A background video overlapping the
+    // bar's rect but painting behind it is exactly this case, and it is why
+    // the probe is not allowed to decide anything by itself.
+    const { bar, doc, win } = build({
+      styles: { veil: { backgroundColor: "rgb(255, 255, 255)" } },
+    });
+    coverStopEnd(doc);
+    assert.equal(controlUiVisibility(bar, win, { occluded: false }).visible, true);
+    assert.equal(controlUiVisibility(bar, win, { occluded: null }).visible, true);
+  });
+
+  test("the widget's own bar is not mistaken for something covering it", () => {
+    // The probe descends into open shadow roots, and ours holds the bar --
+    // opaque and directly over the sample point. contains() does not cross a
+    // shadow boundary, so without outermostHost the probe concluded the bar
+    // was covered by the bar, on every page.
     const { bar, win } = build();
+    assert.equal(controlUiVisibility(bar, win, { occluded: true }).visible, true);
+  });
+
+  test("a scrim inside another component's open shadow root is corroborated", () => {
+    const { bar, doc, win } = build({
+      styles: { veil: { backgroundColor: "rgb(255, 255, 255)" } },
+    });
+    const holder = doc.createElement("div");
+    doc.body.appendChild(holder);
+    const veil = doc.createElement("div");
+    veil.id = "veil";
+    holder.attachShadow({ mode: "open" }).appendChild(veil);
+    (veil as any).getBoundingClientRect = () => ({
+      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
+    });
     const v = controlUiVisibility(bar, win, { occluded: true });
     assert.equal(v.visible, false);
     assert.equal(v.reason, "control_ui_obscured");
+  });
+
+  test("a layer covering only the near end leaves control alone", () => {
+    // Stop sits at the far end, and the promise is that you can stop it --
+    // not that every pixel of the banner is pristine. A 180x40 notification
+    // at the top left leaves Stop pressable.
+    const { bar, doc, win } = build({
+      styles: { veil: { backgroundColor: "rgb(51, 51, 51)" } },
+    });
+    const veil = coverStopEnd(doc);
+    (veil as any).getBoundingClientRect = () => ({
+      width: 180, height: 40, top: 0, left: 0, bottom: 40, right: 180,
+    });
+    assert.equal(controlUiVisibility(bar, win, { occluded: true }).visible, true);
   });
 
   test("the browser reporting the bar visible allows control", () => {
@@ -304,27 +380,6 @@ describe("controlUiVisibility", () => {
     const { bar, win } = build();
     assert.equal(controlUiVisibility(bar, win, { occluded: null }).visible, true);
     assert.equal(controlUiVisibility(bar, win, {}).visible, true);
-  });
-
-  test("a benign ancestor filter makes the browser's 'covered' untrustworthy", () => {
-    // Measured: with `filter: drop-shadow(...)` on an ancestor the observer
-    // answers isVisible=false while the bar renders perfectly. Same for the
-    // `filter: invert(1)` a dark-mode userstyle applies. Acting on that would
-    // revoke control on ordinary pages, so it is set aside -- the filter
-    // itself is judged on its own terms by filterHides.
-    for (const filter of ["drop-shadow(0 1px 2px black)", "invert(1)", "saturate(1.4)"]) {
-      const { bar, win } = build({ styles: { wrapper: { filter } } });
-      assert.equal(
-        controlUiVisibility(bar, win, { occluded: true }).visible,
-        true,
-        filter,
-      );
-    }
-  });
-
-  test("a translucent ancestor also makes it untrustworthy", () => {
-    const { bar, win } = build({ styles: { wrapper: { opacity: "0.95" } } });
-    assert.equal(controlUiVisibility(bar, win, { occluded: true }).visible, true);
   });
 
   test("a hiding filter still revokes, whatever the browser says", () => {

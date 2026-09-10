@@ -313,76 +313,131 @@ describe("usePageActions — the user can always see and stop it", () => {
     h.unmount();
   });
 
-  test("a click is refused when the browser reports the bar covered", async () => {
-    // Hit testing skips a pointer-events:none scrim, so the hook asks the
-    // browser through IntersectionObserver v2 and feeds the answer into the
-    // visibility check. jsdom has no such observer, so one is installed that
-    // reports the bar covered -- which is exactly the shape the hook consumes.
-    dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
-    const bar = makeVisibleBar();
-    // The hook resolves a bare `IntersectionObserver`, which is globalThis's,
-    // not dom.window's.
-    const previous = (globalThis as any).IntersectionObserver;
+  /**
+   * Install an IntersectionObserver of a given generation.
+   *
+   * `version` 2 reports `isVisible`; version 1 does NOT -- and that is the
+   * shape Firefox and Safari actually ship, which is the case worth pinning.
+   */
+  function installObserver(version: 1 | 2, isVisible = true) {
+    const previousObserver = (globalThis as any).IntersectionObserver;
+    const previousEntry = (globalThis as any).IntersectionObserverEntry;
+
+    class FakeEntry {}
+    if (version === 2) (FakeEntry.prototype as any).isVisible = true;
+
+    (globalThis as any).IntersectionObserverEntry = FakeEntry;
     (globalThis as any).IntersectionObserver = class {
       constructor(private cb: (entries: unknown[]) => void, _opts?: unknown) {}
       observe() {
-        this.cb([{ isIntersecting: true, isVisible: false }]);
+        this.cb([
+          version === 2
+            ? { isIntersecting: true, isVisible }
+            : // A v1 entry simply has no isVisible. Unknown dictionary
+              // members are ignored per WebIDL, so nothing throws here
+              // either -- which is exactly why this needed detecting.
+              { isIntersecting: true },
+        ]);
       }
       disconnect() {}
       unobserve() {}
     };
+    return () => {
+      (globalThis as any).IntersectionObserver = previousObserver;
+      (globalThis as any).IntersectionObserverEntry = previousEntry;
+    };
+  }
 
+  async function clickThrough(bar: HTMLElement) {
+    const { room, handlers } = makeFakeRoom();
+    let clicked = false;
+    dom.window.document.getElementById("go")!.addEventListener("click", () => {
+      clicked = true;
+    });
+    const revoked: string[] = [];
+    const h = mount(room, {
+      enabled: true,
+      denylist: [],
+      allowedOrigins: [ORIGIN],
+      getControlBar: () => bar,
+      onControlRevoked: (d) => revoked.push(d),
+    });
+    await flushMicrotasks();
+    const ref = refNamed(await readListing(handlers), "Continue");
+    const res = await callRpc(handlers, RPC_CLICK, { ref, expect: "Continue" });
+    void h;
+    return { res, clicked, revoked };
+  }
+
+  test("a click is refused when the browser reports the bar covered", async () => {
+    // Hit testing skips a pointer-events:none scrim, so the hook asks the
+    // browser through IntersectionObserver v2 and feeds the answer in. The
+    // answer is corroborated, so something opaque has to actually be there.
+    dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
+    const bar = makeVisibleBar();
+    const veil = dom.window.document.createElement("div");
+    veil.id = "veil";
+    veil.style.cssText = "background: rgb(255,255,255)";
+    dom.window.document.body.appendChild(veil);
+    (veil as any).getBoundingClientRect = () => ({
+      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
+    });
+    const restore = installObserver(2, false);
     try {
-      const { room, handlers } = makeFakeRoom();
-      let clicked = false;
-      dom.window.document.getElementById("go")!.addEventListener("click", () => {
-        clicked = true;
-      });
-      const revoked: string[] = [];
-      const h = mount(room, {
-        enabled: true,
-        denylist: [],
-        allowedOrigins: [ORIGIN],
-        getControlBar: () => bar,
-        onControlRevoked: (d) => revoked.push(d),
-      });
-      await flushMicrotasks();
-
-      const ref = refNamed(await readListing(handlers), "Continue");
-      const res = await callRpc(handlers, RPC_CLICK, { ref, expect: "Continue" });
-
+      const { res, clicked, revoked } = await clickThrough(bar);
       assert.equal(res.ok, false);
       assert.equal(res.reason, "control_ui_obscured");
       assert.equal(clicked, false, "nothing may be pressed behind a scrim");
       assert.ok(revoked.length > 0, "control must be revoked");
-      void h;
     } finally {
-      (globalThis as any).IntersectionObserver = previous;
+      restore();
+      veil.remove();
     }
   });
 
-  test("a missing IntersectionObserver does not revoke control", async () => {
-    // v2 is Chromium-only. Where it is absent the hook must still work --
-    // "we cannot tell" is not "we are hidden", and treating it as such would
-    // make control unusable on Firefox and Safari.
+  test("a v1 IntersectionObserver does not revoke control", async () => {
+    // THE case that ships on Firefox and Safari. They have v1; WebIDL says an
+    // unknown dictionary member is ignored, so { trackVisibility: true }
+    // constructs without throwing and entries simply lack isVisible.
+    // `!undefined` is true, so reading it as a verdict said "covered" on a
+    // pristine page and revoked control on every page in those browsers, one
+    // second after the user pressed "Let it act".
+    dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
+    const bar = makeVisibleBar();
+
+    // A full-bleed opaque background that overlaps the bar's rect while
+    // painting BEHIND it -- a hero image or background video, entirely
+    // ordinary. It matters here: corroboration alone cannot tell behind from
+    // in front, so if a v1 entry were read as "covered", corroboration would
+    // find this and revoke. Without it the bug hides, because a page with
+    // nothing opaque on it survives either way.
+    const backdrop = dom.window.document.createElement("div");
+    backdrop.id = "backdrop";
+    backdrop.style.cssText = "background: rgb(20,20,20)";
+    dom.window.document.body.appendChild(backdrop);
+    (backdrop as any).getBoundingClientRect = () => ({
+      width: 1024, height: 768, top: 0, left: 0, bottom: 768, right: 1024,
+    });
+
+    const restore = installObserver(1);
+    try {
+      const { res, clicked } = await clickThrough(bar);
+      assert.equal(res.ok, true, JSON.stringify(res));
+      assert.equal(clicked, true);
+    } finally {
+      restore();
+      backdrop.remove();
+    }
+  });
+
+  test("no IntersectionObserver at all does not revoke control", async () => {
     dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
     const bar = makeVisibleBar();
     const previous = (globalThis as any).IntersectionObserver;
     delete (globalThis as any).IntersectionObserver;
-
     try {
-      const { room, handlers } = makeFakeRoom();
-      const h = mount(room, {
-        enabled: true,
-        denylist: [],
-        allowedOrigins: [ORIGIN],
-        getControlBar: () => bar,
-      });
-      await flushMicrotasks();
-      const ref = refNamed(await readListing(handlers), "Continue");
-      const res = await callRpc(handlers, RPC_CLICK, { ref, expect: "Continue" });
+      const { res } = await clickThrough(bar);
       assert.equal(res.ok, true, JSON.stringify(res));
-      void h;
     } finally {
       (globalThis as any).IntersectionObserver = previous;
     }

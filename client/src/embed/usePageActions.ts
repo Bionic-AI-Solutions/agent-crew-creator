@@ -52,6 +52,33 @@ type VisibilityObserverCtor = new (
   options?: VisibilityObserverInit,
 ) => IntersectionObserver;
 
+/**
+ * Does this browser implement IntersectionObserver **v2**?
+ *
+ * Not answerable by try/catch around the constructor, which is what this used
+ * to do. Firefox and Safari ship v1, and WebIDL says an unknown dictionary
+ * member is ignored -- so `{ trackVisibility: true, delay: 150 }` constructs
+ * happily there, nothing throws, and every entry simply has no `isVisible`.
+ * `!undefined` is `true`, so the old code decided the bar was covered on a
+ * pristine page and revoked control on every page in those browsers, one
+ * second after the user pressed "Let it act". The exact opposite of what this
+ * file documented.
+ *
+ * The presence of the property on the entry prototype is the real question,
+ * so that is what is asked.
+ */
+function supportsVisibilityObserver(): boolean {
+  try {
+    return (
+      typeof IntersectionObserver !== "undefined" &&
+      typeof IntersectionObserverEntry !== "undefined" &&
+      "isVisible" in IntersectionObserverEntry.prototype
+    );
+  } catch {
+    return false;
+  }
+}
+
 export interface ConfirmRequest {
   /** Opaque key to hand back to `confirm()` if the user agrees. */
   key: string;
@@ -176,16 +203,21 @@ export function usePageActions(options: PageActionsOptions) {
     let observer: IntersectionObserver | null = null;
     const observeBar = () => {
       const target = latest.current.getControlBar();
-      if (!target) return;
+      if (!target || !supportsVisibilityObserver()) return;
       try {
         const Observer = IntersectionObserver as unknown as VisibilityObserverCtor;
         observer = new Observer(
           (entries: VisibilityObserverEntry[]) => {
             for (const entry of entries) {
-              // isVisible is only meaningful when the entry actually
-              // intersects; a bar scrolled out of a scroller reports false
-              // for a reason the rect check already covers.
-              occluded = entry.isIntersecting ? !entry.isVisible : null;
+              // Three states, and the difference matters. `isVisible` is only
+              // meaningful when the entry actually intersects -- a bar
+              // scrolled out of a scroller reports false for a reason the
+              // rect check already covers -- and only when the browser
+              // actually populated it. Anything else is "we do not know".
+              occluded =
+                entry.isIntersecting && typeof entry.isVisible === "boolean"
+                  ? !entry.isVisible
+                  : null;
             }
           },
           // delay >= 100 is required for trackVisibility.
@@ -193,7 +225,6 @@ export function usePageActions(options: PageActionsOptions) {
         );
         observer.observe(target);
       } catch {
-        // Not supported here (only Chromium implements v2 today).
         observer = null;
         occluded = null;
       }

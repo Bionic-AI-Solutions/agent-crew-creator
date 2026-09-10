@@ -33,17 +33,27 @@
  *    is being covered -- it is the clickjacking-protection primitive, and
  *    this is that question. The caller supplies its answer as `occluded`.
  *
- * Measured against rendered pixels, the browser's answer was right in all
- * eighteen cases tried, including every one that defeated the scan and every
- * innocent page the scan wrongly revoked -- and including a scrim inside a
- * CLOSED shadow root, which an earlier version of this file documented as a
- * permanent limit because nothing in the page can traverse one. The browser
- * does not need to.
+ * The observer is a TRIGGER, not a verdict. `isVisible` is a paint-order
+ * answer: it goes false when anything composites above the bar, opaque or
+ * not. A `position: fixed; inset: 0; pointer-events: none` portal root with
+ * no background -- what every third-party chat, consent and analytics widget
+ * mounts -- makes it say "covered" while the bar renders pixel-for-pixel
+ * unchanged. So a claim of covered is corroborated by opaqueCoverAt before
+ * control is taken away.
  *
  * Fails closed on its own checks: if one cannot be performed, the answer is
  * "not visible". It does NOT fail closed on the observer, which is the one
  * place a missing answer means "we do not know" rather than "we are hidden" --
  * see the note on controlUiVisibility.
+ *
+ * THE KNOWN LIMIT, named rather than implied: an opaque scrim inside a CLOSED
+ * shadow root. The observer notices it, but nothing can traverse a closed
+ * root to corroborate -- that is what closed means -- so it is allowed
+ * through. This is a deliberate trade, not an oversight: the alternative is
+ * acting on the observer alone, which revokes control on every page carrying
+ * a transparent portal root, and those are everywhere while a closed-root
+ * scrim needs script on the host page to construct (attachShadow is not
+ * something CSS can do), which is the residual risk below.
  *
  * WHAT THIS DOES NOT DO, stated plainly because the docstring used to claim
  * more than the code delivered:
@@ -52,6 +62,11 @@
  * Firefox, Safari -- part 2 is simply unavailable, and a `pointer-events:
  * none` scrim over the bar will not be detected. Part 1 still runs, so
  * everything that hides the bar by styling it is still caught everywhere.
+ * Detecting that absence needs care: those browsers ship v1, and WebIDL says
+ * an unknown dictionary member is ignored, so `{ trackVisibility: true }`
+ * constructs there without throwing and every entry simply lacks `isVisible`.
+ * Reading `!entry.isVisible` off such an entry yields `true` -- "covered" --
+ * on a pristine page. See supportsVisibilityObserver in usePageActions.ts.
  *
  * That residual gap is bounded by who the host page belongs to. Control only
  * runs on origins the token owner explicitly allowlisted (see
@@ -64,6 +79,9 @@
  * collision, a loading backdrop, a modal scrim -- while the agent keeps
  * acting and the user has no way to stop it.
  */
+
+/** How many elements the corroboration probe will look at. Only paid on suspicion. */
+const MAX_PROBE_ELEMENTS = 4000;
 
 /** Smaller than this and the bar is not something a user can find or press. */
 const MIN_WIDTH = 40;
@@ -196,33 +214,118 @@ function hidingEffect(style: {
  * have backgrounds and sit behind us, not over us.
  */
 /**
- * Could an ancestor's own painting explain a "not visible" that is not
- * occlusion?
+ * Is something actually painting opaque pixels over the bar?
  *
- * IntersectionObserver v2 refuses to certify visibility through effects it
- * cannot reason about cheaply -- any filter, any translucency. Those are
- * exactly the cases the checks above have already judged properly (a
- * `drop-shadow` is fine, `opacity(0)` is not), so when one is present the
- * observer is not adding information and its answer is set aside rather than
- * acted on. Without this, `html { filter: invert(1) }` -- an ordinary
- * dark-mode userstyle -- would revoke control on a page showing the bar
- * perfectly.
+ * IntersectionObserver v2 answers a PAINT-ORDER question: `isVisible` is
+ * false when anything at all is composited above the target, whether or not
+ * it renders a single visible pixel. That is not the question the user cares
+ * about. Measured: a `position: fixed; inset: 0; pointer-events: none`
+ * container with no background -- the idiom every third-party chat, consent
+ * and analytics widget uses for its portal root -- makes it answer "covered"
+ * while the bar, the dot, the text and the Stop button are all pixel-for-pixel
+ * unchanged. So is a 1x1 transparent div. Acting on that answer alone revoked
+ * control, permanently and within a second, on any page carrying one.
+ *
+ * The observer is therefore a TRIGGER, not a verdict. It is very good at
+ * noticing that the stacking above us changed -- it fired in 10ms on a
+ * stationary bar, which no polling of ours would match -- and this decides
+ * whether what it noticed actually hides anything.
+ *
+ * This is a much smaller thing than the scan it replaces. It does not have to
+ * work out paint order, because the observer has already established that
+ * something paints above; it only has to find whether that something is
+ * opaque. And it is paid only on suspicion, so the 37ms-per-second cost that
+ * made the old scan untenable does not come back.
+ *
+ * It also replaces an escape hatch that was worse than the problem: the
+ * previous version discarded the observer's answer whenever any ancestor had
+ * a filter or opacity below 1, to work around its conservatism. A page could
+ * write `filter: saturate(1.001)` or `opacity: 0.999` on body -- visually
+ * free -- and switch occlusion detection off entirely, and an innocent
+ * `drop-shadow` on body did it by accident.
  */
-function effectsMayHideFromObserver(bar: Element, win: VisibilityWindow): boolean {
-  for (const el of ancestorChain(bar)) {
+function opaqueCoverAt(win: VisibilityWindow, host: Element, x: number, y: number): boolean {
+  // Descends into open shadow roots: querySelectorAll does not cross a shadow
+  // boundary, and design-system modals put their backdrop inside one as a
+  // matter of course. A CLOSED root cannot be traversed by anyone -- see the
+  // module header, where that limit is named.
+  const candidates: Element[] = [];
+  const collect = (root: { querySelectorAll?(sel: string): ArrayLike<Element> }) => {
+    let list: ArrayLike<Element> | undefined;
+    try {
+      list = root.querySelectorAll?.("*");
+    } catch {
+      return;
+    }
+    if (!list) return;
+    for (let i = list.length - 1; i >= 0 && candidates.length < MAX_PROBE_ELEMENTS; i--) {
+      const el = list[i];
+      candidates.push(el);
+      const nested = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+      if (nested) collect(nested);
+    }
+  };
+  collect(win.document);
+
+  for (const el of candidates) {
+    // Ours, including everything inside our own shadow root -- which
+    // contains the bar itself, opaque and directly over the sample point.
+    // contains() does not cross a shadow boundary, so outermostHost is what
+    // answers "is this part of the widget"; without it the probe found the
+    // bar and concluded the bar was covered by the bar.
+    if (el === host || outermostHost(el) === host) continue;
+    if (el.contains?.(host) || host.contains?.(el)) continue;
+
+    let rect: DOMRect;
+    try {
+      rect = el.getBoundingClientRect();
+    } catch {
+      continue;
+    }
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) continue;
+
     let style: ReturnType<VisibilityWindow["getComputedStyle"]>;
     try {
       style = win.getComputedStyle(el);
     } catch {
-      return true;
+      continue;
     }
-    if (!style) return true;
-    if ((style.filter ?? "none") !== "none") return true;
-    if ((style.backdropFilter ?? "none") !== "none") return true;
+    if (!style) continue;
+    if (style.display === "none" || style.visibility === "hidden") continue;
     const opacity = parseFloat(style.opacity);
-    if (Number.isFinite(opacity) && opacity < 1) return true;
+    if (Number.isFinite(opacity) && opacity < 0.3) continue;
+    if (paintsOpaquely(el, style)) return true;
   }
   return false;
+}
+
+/** Tags that render their own pixels rather than just a background. */
+const REPLACED_ELEMENTS = new Set([
+  "iframe", "frame", "object", "embed", "video", "canvas", "img",
+]);
+
+/** Does this element paint something a person would see? */
+function paintsOpaquely(
+  el: Element,
+  style: { backgroundColor?: string; backgroundImage?: string; backdropFilter?: string },
+): boolean {
+  if (REPLACED_ELEMENTS.has(el.tagName.toLowerCase())) return true;
+  const colour = style.backgroundColor;
+  if (colour) {
+    const m = /rgba?\(([^)]+)\)/.exec(colour);
+    if (m) {
+      const parts = m[1].split(",").map((p) => parseFloat(p));
+      const alpha = parts.length >= 4 ? parts[3] : 1;
+      if (Number.isFinite(alpha) && alpha > 0.3) return true;
+    } else if (colour !== "transparent") {
+      return true;
+    }
+  }
+  const image = style.backgroundImage ?? "none";
+  if (image !== "none" && image !== "") return true;
+  const backdrop = style.backdropFilter ?? "none";
+  return backdrop !== "none" && backdrop !== "";
 }
 
 export function outermostHost(bar: Element): Element {
@@ -415,9 +518,16 @@ export function controlUiVisibility(
   // The hit test above cannot see a `pointer-events: none` layer, so every
   // point it called reachable is checked again for one.
   // The hit test above cannot see a `pointer-events: none` layer, so the
-  // browser is asked directly. Only its "no" is acted on, and only when the
-  // ancestor chain offers no benign explanation for it -- see the note above.
-  if (opts.occluded === true && !effectsMayHideFromObserver(bar, win)) {
+  // browser is asked. Its answer is a trigger, not a verdict -- see
+  // opaqueCoverAt -- so a claim of "covered" is corroborated before acting.
+  //
+  // What counts as covered: the Stop end of the bar. Stop is what has to stay
+  // reachable -- the promise is that you can stop it, not that every pixel of
+  // the banner is pristine -- and a toast clipping the near end is not a
+  // reason to take control away. Measured: a 180x40 notification at the top
+  // left leaves Stop untouched and pressable.
+  const stopSide = onScreen[onScreen.length - 1];
+  if (opts.occluded === true && stopSide && opaqueCoverAt(win, host, stopSide[0], stopSide[1])) {
     return hidden("control_ui_obscured", "something on the page is covering the control bar");
   }
 
