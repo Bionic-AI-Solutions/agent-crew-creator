@@ -2386,6 +2386,11 @@ def _is_page_block(item: str) -> bool:
     return re.search(r"^ref_\d+ ", stripped, re.MULTILINE) is not None
 
 
+# Long enough that an ordinary turn is never cut, small enough that a long
+# session cannot grow the summary without bound.
+SUMMARY_TURN_CHARS = 4000
+
+
 def _conversation_for_summary(session) -> list[str]:
     """The conversation as text, for a summary that leaves this process.
 
@@ -2404,11 +2409,13 @@ def _conversation_for_summary(session) -> list[str]:
             role = getattr(msg, "role", "unknown")
             if role not in ("user", "assistant"):
                 continue
-            # No limit here. The 300-character cap belongs to the delegation
-            # path, where five turns ride along as context; a summary that is
-            # about to be written up and emailed should not be silently cut
-            # mid-sentence, which is what reusing the default did.
-            text = _spoken_text(msg, limit=None)
+            # Generous, not unlimited. The 300-character cap belongs to the
+            # delegation path, where five turns ride along as context, and
+            # reusing it here cut an emailed summary mid-sentence. Removing
+            # the cap entirely went too far the other way: the turn COUNT is
+            # capped but a turn is not, so a long session could POST an
+            # arbitrarily large body to Letta and into an email.
+            text = _spoken_text(msg, limit=SUMMARY_TURN_CHARS)
             if text:
                 messages.append(f"{role}: {text}")
     except Exception as exc:

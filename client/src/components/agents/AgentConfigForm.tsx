@@ -120,10 +120,19 @@ export default function AgentConfigForm({ agentId }: Props) {
   // enforced. For a field whose entire job is to block dangerous actions,
   // believing a phrase is protecting something when only its first 60
   // characters are is the wrong thing to be wrong about.
-  const denylistTerms = domActionDenylist
-    .split(",")
-    .map((s) => s.trim().toLowerCase().slice(0, MAX_DENYLIST_TERM_CHARS))
-    .filter(Boolean);
+  const denylistTerms = [
+    // De-duplicated here as well as on the server. Without it the echo put
+    // back what the operator typed rather than what was stored, so "delete,
+    // delete" stayed on screen while one entry was saved -- and the field
+    // then shrank without explanation the next time the form loaded, looking
+    // like data loss.
+    ...new Set(
+      domActionDenylist
+        .split(",")
+        .map((s) => s.trim().toLowerCase().slice(0, MAX_DENYLIST_TERM_CHARS))
+        .filter(Boolean),
+    ),
+  ];
   const denylistWasTrimmed = denylistTerms.join(", ") !== domActionDenylist.trim();
 
   const handleDeploy = () => {
