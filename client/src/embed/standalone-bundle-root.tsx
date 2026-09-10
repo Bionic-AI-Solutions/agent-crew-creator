@@ -64,6 +64,34 @@ if (iframeConfig && iframeConfig.mode === "iframe") {
     // Create wrapper + Shadow DOM for CSS isolation
     const wrapper = document.createElement("div");
     wrapper.setAttribute("id", "bionic-embed-wrapper");
+
+    // Shadow DOM keeps the page's CSS out of the widget. It does nothing to
+    // keep the page's CSS off the WRAPPER, which is an ordinary element in
+    // the host's light DOM with a guessable id -- and one
+    // `#bionic-embed-wrapper { display: none !important }` hid the control
+    // banner, and the Stop button with it, while the agent kept clicking.
+    //
+    // These are set inline and !important because that is the only
+    // declaration that outranks an author stylesheet's own !important, so an
+    // ID collision or a careless reset can no longer hide the widget by
+    // accident. It is not a security boundary -- a determined page has other
+    // ways, and controlVisibility.ts is what actually revokes control when
+    // any of them work -- it is the cheap layer that stops the common case
+    // from ever getting that far.
+    for (const [prop, value] of [
+      ["display", "block"],
+      ["visibility", "visible"],
+      ["opacity", "1"],
+      ["position", "static"],
+      ["pointer-events", "auto"],
+      ["transform", "none"],
+      ["filter", "none"],
+      ["clip-path", "none"],
+      ["content-visibility", "visible"],
+    ] as const) {
+      wrapper.style.setProperty(prop, value, "important");
+    }
+
     document.body.appendChild(wrapper);
 
     const shadowRoot = wrapper.attachShadow({ mode: "open" });

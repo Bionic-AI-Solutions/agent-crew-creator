@@ -13,35 +13,14 @@ import { randomBytes } from "crypto";
 import { router, protectedProcedure, appScopedProcedure, assertAppMembership } from "./_core/trpc.js";
 import { createLogger } from "./_core/logger.js";
 import { embedTokens, agentConfigs } from "../drizzle/platformSchema.js";
+import { domCapabilities } from "./domCapabilities.js";
+
+// Re-exported because this router was its original home and callers still
+// reach for it here; the policy itself now lives in domCapabilities.ts.
+export { domCapabilities };
 
 const log = createLogger("EmbedRouter");
 
-/**
- * Resolve the browser capabilities a token may actually carry.
- *
- * The widget enforces all of this again at runtime -- this is the cheaper,
- * earlier copy, so an impossible token cannot be stored in the first place
- * and then puzzle someone later.
- *
- * - iframe embeds are a separate document from the host page and can reach
- *   nothing through it, so neither capability means anything there.
- * - control requires read: every action names a ref from the current listing.
- * - control requires an explicit origin allowlist. A token with no allowlist
- *   runs anywhere it is pasted, and "anywhere" is not somewhere to hand a
- *   click-and-type capability.
- */
-export function domCapabilities(input: {
-  mode: string;
-  allowedOrigins: string[] | null | undefined;
-  allowDomRead?: boolean;
-  allowDomControl?: boolean;
-}): { allowDomRead: boolean; allowDomControl: boolean } {
-  if (input.mode !== "popup") return { allowDomRead: false, allowDomControl: false };
-  const allowDomRead = input.allowDomRead ?? false;
-  const allowDomControl =
-    (input.allowDomControl ?? false) && allowDomRead && (input.allowedOrigins?.length ?? 0) > 0;
-  return { allowDomRead, allowDomControl };
-}
 
 function generateToken(): string {
   return randomBytes(32).toString("hex"); // 64 hex chars

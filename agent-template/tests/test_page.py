@@ -915,5 +915,103 @@ def test_the_result_is_bounded_like_the_listing_is():
     assert len(out) <= 2000 + 80   # header line plus the bounded block
 
 
+def test_a_non_list_elements_field_does_not_raise():
+    # The reply is written by our own browser code, so this should not happen
+    # -- but this function is the last thing between a wire payload and the
+    # model's context, and "should not happen" is not a guarantee it can
+    # offer. A dict here used to raise TypeError straight past _page_rpc's
+    # except and lose the whole turn.
+    for bad in [{"a": 1}, "elements", 7, True]:
+        out = summarise_action_result(action_reply(elements=bad))
+        assert "NOTHING CHANGED" in out or "The page changed" in out
+
+
+def test_a_moved_ref_comes_back_with_the_page_to_recover_from():
+    # The one refusal the agent can act on by itself. Without the listing it
+    # knows only that it was wrong, with nothing to be right from -- which is
+    # how a retry loop on a stale ref starts.
+    out = summarise_action_result(json.dumps({
+        "ok": False,
+        "reason": "ref_moved",
+        "detail": 'ref_1 is now "Unsubscribe", not "Details".',
+        "url": "https://e/x",
+        "elements": [
+            {"ref": "ref_1", "role": "button", "name": "Unsubscribe", "visible": True},
+        ],
+    }))
+    assert "REFUSED" in out
+    assert "ref_moved" in out
+    assert 'ref_1 button "Unsubscribe"' in out
+
+
+def test_a_refusal_with_no_listing_still_never_implies_success():
+    out = summarise_action_result(json.dumps({
+        "ok": False, "reason": "ref_moved", "detail": "gone", "elements": [],
+    }))
+    assert "REFUSED" in out
+    assert "NOTHING CHANGED" not in out
+    assert "The page changed" not in out
+
+
+# ── who we act for ─────────────────────────────────────────────
+#
+# The participant we send page RPCs to. Getting this wrong sends every click
+# to something that cannot act on anything, and it fails silently.
+
+class _FakeParticipant:
+    def __init__(self, identity):
+        self.identity = identity
+
+
+class _FakeRoom:
+    def __init__(self, identities):
+        self.remote_participants = {i: _FakeParticipant(i) for i in identities}
+
+
+class _FakeRoomIO:
+    def __init__(self, room):
+        self.room = room
+
+
+class _FakeSession:
+    def __init__(self, room):
+        self.room_io = _FakeRoomIO(room)
+
+
+class _FakeContext:
+    def __init__(self, identities):
+        self.session = _FakeSession(_FakeRoom(identities))
+
+
+def _actor(identities):
+    from agent.main_agent import MainAgent
+
+    # Unbound call on a bare instance: _page_actor_identity reads only the
+    # context, so constructing a real agent (models, plugins, a room) would
+    # add everything that can fail except the thing being tested.
+    return MainAgent._page_actor_identity(
+        object.__new__(MainAgent), _FakeContext(identities)
+    )
+
+
+def test_the_avatar_is_never_mistaken_for_the_visitor():
+    # The avatar joins as f"{agent_name}-avatar", which has no "agent-"
+    # prefix. Selecting "the first participant that is not an agent-" picked
+    # it whenever it happened to come first, and the avatar registers no page
+    # RPC handlers -- so every click silently went nowhere.
+    assert _actor(["jarvis-navigator-avatar", "embed-vis-abc"]) == "embed-vis-abc"
+    assert _actor(["embed-vis-abc", "jarvis-navigator-avatar"]) == "embed-vis-abc"
+
+
+def test_an_anonymous_visitor_is_found_too():
+    assert _actor(["agent-AJ_tAdF", "embed-9f2c"]) == "embed-9f2c"
+
+
+def test_no_visitor_means_no_one_to_act_for():
+    # Better to report that than to act on the wrong participant.
+    assert _actor(["agent-AJ_tAdF", "jarvis-navigator-avatar"]) is None
+    assert _actor([]) is None
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

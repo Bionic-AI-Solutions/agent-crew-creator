@@ -18,6 +18,7 @@ import { AccessToken } from "livekit-server-sdk";
 import { RoomAgentDispatch, RoomConfiguration } from "@livekit/protocol";
 import { randomUUID } from "crypto";
 import { isEmbedOriginAllowed } from "./embedOrigin.js";
+import { domCapabilities } from "./domCapabilities.js";
 import { createLogger } from "./_core/logger.js";
 import { getDb } from "./db.js";
 import { embedTokens, agentConfigs, apps } from "../drizzle/platformSchema.js";
@@ -272,9 +273,30 @@ export function registerEmbedRoutes(app: Express): void {
           agentName: agentDisplayName(agent.name),
           // Both layers must agree: the agent has to be capable of it and the
           // token has to permit it. The widget treats these as the final word.
-          allowDomRead: tokenRow.allowDomRead && agent.domReadEnabled,
-          allowDomControl:
-            tokenRow.allowDomControl && agent.domControlEnabled && agent.domReadEnabled,
+          //
+          // The token's own flags go back through domCapabilities rather than
+          // being read straight off the row. That function holds the two
+          // invariants a stored boolean cannot carry on its own -- DOM is
+          // popup-only, and control needs a non-empty origin allowlist -- and
+          // it was only ever applied on create and update. A row that reached
+          // the table any other way (a direct write, a migration default, a
+          // future admin path) would have been served as-is, which is how an
+          // iframe embed ends up permitted to click. Re-deriving here makes
+          // the invariant a property of what we serve, not of how the row was
+          // written.
+          ...(() => {
+            const tokenCaps = domCapabilities({
+              mode: tokenRow.mode,
+              allowedOrigins: tokenRow.allowedOrigins as string[] | null,
+              allowDomRead: tokenRow.allowDomRead,
+              allowDomControl: tokenRow.allowDomControl,
+            });
+            return {
+              allowDomRead: tokenCaps.allowDomRead && agent.domReadEnabled,
+              allowDomControl:
+                tokenCaps.allowDomControl && agent.domControlEnabled && agent.domReadEnabled,
+            };
+          })(),
           // The widget is where the gate actually runs, so it needs the list
           // itself, not a promise that the agent was told about it.
           domActionDenylist: agent.domActionDenylist ?? [],

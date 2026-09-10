@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePagePublisher } from "./usePagePublisher";
-import { usePageActions } from "./usePageActions";
+import { usePageActions, type ConfirmRequest } from "./usePageActions";
 import ReactDOM from "react-dom/client";
 import { Room, RoomEvent } from "livekit-client";
 import { RoomAudioRenderer, RoomContext, StartAudio } from "@livekit/components-react";
@@ -45,7 +45,14 @@ function PagePublisher({ enabled }: { enabled: boolean }) {
 function PageActions({ config }: { config?: EmbedConfig }) {
   const [controlOn, setControlOn] = useState(false);
   const [lastEvent, setLastEvent] = useState<string | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<ConfirmRequest | null>(null);
   const permitted = !!config?.allowDomControl;
+
+  // The bar itself, so the action path can verify the user can still see it.
+  // Passed as a getter rather than the node: the hook reads it at the moment
+  // it matters, not at the moment it was wired up.
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const getControlBar = useCallback(() => barRef.current, []);
 
   // Reverts to guidance whenever the permission goes away, so a token change
   // or a reconnect cannot leave control quietly enabled.
@@ -53,30 +60,89 @@ function PageActions({ config }: { config?: EmbedConfig }) {
     if (!permitted) setControlOn(false);
   }, [permitted]);
 
-  usePageActions({
+  // A stable array. As a fresh literal it re-registered all four RPC methods
+  // after every single action, since each action re-renders this component.
+  const allowedOrigins = useMemo(() => [window.location.origin], []);
+  const denylist = useMemo(
+    () => config?.domActionDenylist ?? [],
+    [config?.domActionDenylist],
+  );
+
+  const { confirm } = usePageActions({
     enabled: permitted && controlOn,
-    denylist: config?.domActionDenylist ?? [],
-    allowedOrigins: [window.location.origin],
-    onRefusal: (detail) => setLastEvent(`Asked you first: ${detail}`),
-    onAction: (summary) => setLastEvent(`Agent ${summary}`),
+    denylist,
+    allowedOrigins,
+    getControlBar,
+    onRefusal: (detail, confirmable) => {
+      setLastEvent(`Asked you first: ${detail}`);
+      if (confirmable) setPendingConfirm(confirmable);
+    },
+    onAction: (summary) => {
+      setLastEvent(`Agent ${summary}`);
+      setPendingConfirm(null);
+    },
+    // The agent may only act while the user can see that it can. If the bar
+    // stops being visible -- hidden by the page's CSS, covered, detached --
+    // control goes off rather than continuing invisibly.
+    onControlRevoked: (detail) => {
+      setControlOn(false);
+      setPendingConfirm(null);
+      setLastEvent(`Control stopped: ${detail}`);
+    },
   });
 
   if (!permitted) return null;
 
   return (
-    <div className={`bionic-control-bar ${controlOn ? "bionic-control-on" : ""}`}>
+    <div
+      ref={barRef}
+      className={`bionic-control-bar ${controlOn ? "bionic-control-on" : ""}`}
+    >
       <span className="bionic-control-dot" aria-hidden="true" />
       <span className="bionic-control-text">
         {controlOn
           ? lastEvent ?? "The agent can act on this page"
-          : "The agent can see this page but not touch it"}
+          : lastEvent ?? "The agent can see this page but not touch it"}
       </span>
+      {/*
+        The agent is told to ask before anything irreversible, and the gate
+        refuses those outright until someone says yes. Without a way to say
+        yes, the user agreeing out loud changed nothing and the agent was
+        refused again -- so the approval it was told to wait for lives here.
+        One press, for the one control named, and it is spent.
+      */}
+      {controlOn && pendingConfirm && (
+        <>
+          <button
+            type="button"
+            className="bionic-control-btn"
+            onClick={() => {
+              confirm(pendingConfirm.key);
+              setLastEvent(`Allowed once: "${pendingConfirm.name}"`);
+              setPendingConfirm(null);
+            }}
+          >
+            Allow once
+          </button>
+          <button
+            type="button"
+            className="bionic-control-btn"
+            onClick={() => {
+              setPendingConfirm(null);
+              setLastEvent(`Refused "${pendingConfirm.name}"`);
+            }}
+          >
+            No
+          </button>
+        </>
+      )}
       <button
         type="button"
         className="bionic-control-btn"
         onClick={() => {
           setControlOn((on) => !on);
           setLastEvent(null);
+          setPendingConfirm(null);
         }}
       >
         {controlOn ? "Stop" : "Let it act"}

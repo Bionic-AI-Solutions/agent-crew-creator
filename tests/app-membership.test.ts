@@ -1,7 +1,15 @@
 /**
  * Unit tests for assertAppMembership.
  *
- * Run with: npx tsx --test tests/app-membership.test.ts
+ * Run with: npx tsx --test --test-force-exit tests/app-membership.test.ts
+ *
+ * --test-force-exit is required, not cosmetic. Importing
+ * server/_core/trpc.js pulls in auth.js, which opens sockets at module load
+ * (the Keycloak JWKS client). Nothing here can close them, so node:test
+ * finishes every test and then waits forever on the open handles: the file
+ * HANGS rather than failing, and a run that sweeps the directory hangs with
+ * it. The seven assertions below have been passing the whole time and
+ * nobody could see them.
  *
  * Uses node:test (no new deps). Mocks ctx.db with a fake Drizzle query
  * builder so we can exercise admin bypass, member allow, non-member deny,

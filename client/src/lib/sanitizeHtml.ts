@@ -22,7 +22,13 @@ const ALLOWED_URI_REGEXP = /^(?:https?:|mailto:|#)/i;
 type Purifier = ReturnType<typeof createDOMPurify>;
 
 function buildPurifier(win: Window | unknown): Purifier {
-  const p = createDOMPurify(win as Window);
+  // Cast to whatever createDOMPurify actually accepts rather than to Window.
+  // DOMPurify's types ask for a "WindowLike" -- a window that also carries
+  // DocumentFragment, HTMLTemplateElement, Node, Element, NodeFilter,
+  // NamedNodeMap, HTMLFormElement and DOMParser -- and the lib's own Window
+  // type no longer satisfies it, so the old `as Window` failed to compile.
+  // Deriving the type from the function keeps this correct if it shifts again.
+  const p = createDOMPurify(win as Parameters<typeof createDOMPurify>[0]);
   // Trusted, fixed decoration applied after attribute sanitization: open links
   // in a new tab safely and lazy-load images.
   p.addHook("afterSanitizeAttributes", (node: Element) => {

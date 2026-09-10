@@ -13,11 +13,22 @@ import {
   providerRequiresKey,
   STT_PROVIDERS,
   LLM_PROVIDERS,
-  LLM_MODELS,
   TTS_PROVIDERS,
-  TTS_VOICES,
   TTS_LANGUAGES,
 } from "../shared/providerOptions.ts";
+
+// LLM_MODELS and TTS_VOICES used to be imported here, and two tests asserted
+// on their contents. d0a0b80 deleted both tables on purpose: they were a
+// second, hand-maintained copy of the gateway's catalogue, and the drift
+// between the copies was itself the bug (7 gpu-ai voices listed against 191
+// served). The models and voices are fetched live now, so there is nothing
+// static left to assert -- and a test that pins a list which is supposed to
+// come from the server would just recreate the thing that was removed.
+//
+// The import was never updated, so this whole FILE has failed to load since
+// that commit, taking the four checks below down with it. They are about
+// which providers need an API key and which languages Sarvam accepts, none
+// of which the refactor touched.
 
 test("keyless providers do not require a key (no key UI, no throw)", () => {
   assert.equal(providerRequiresKey(LLM_PROVIDERS, "letta"), false);
@@ -38,24 +49,6 @@ test("cloud providers still require a key", () => {
 
 test("unknown provider is treated as keyless (safe default)", () => {
   assert.equal(providerRequiresKey(LLM_PROVIDERS, "does-not-exist"), false);
-});
-
-test("gemini LLM provider exposes gemini-2.5-flash as its only model", () => {
-  const gemini = LLM_MODELS["gemini"];
-  assert.ok(gemini, "LLM_MODELS.gemini must exist");
-  assert.deepEqual(
-    gemini.map((m) => m.value),
-    ["gemini-2.5-flash"],
-  );
-});
-
-test("sarvam TTS provider exposes exactly the 7 bulbul:v2-compatible speaker presets, anushka first", () => {
-  const sarvam = TTS_VOICES["sarvam"];
-  assert.ok(sarvam, "TTS_VOICES.sarvam must exist");
-  assert.deepEqual(
-    sarvam.map((v) => v.value),
-    ["anushka", "abhilash", "manisha", "vidya", "arya", "karun", "hitesh"],
-  );
 });
 
 // Regression test: every Sarvam TTS call used to hardcode target_language_code
