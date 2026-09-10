@@ -116,7 +116,19 @@ function PageActions({ config }: { config?: EmbedConfig }) {
           <button
             type="button"
             className="bionic-control-btn"
-            onClick={() => {
+            onClick={(event) => {
+              // Only a real press counts. The widget mounts in an open shadow
+              // root inside the host page's own document, so any script on
+              // that page can find this button and .click() it the moment it
+              // appears -- approving, with no human involved, the one thing
+              // the agent was told to stop and ask about. isTrusted is false
+              // for every synthetic click and cannot be forged from script.
+              //
+              // This is a correctness guard, not a security boundary: a page
+              // running script can already press the real "Delete" button
+              // itself, so it gains nothing here. What it stops is an
+              // approval that nobody gave being recorded as one.
+              if (!event.isTrusted) return;
               confirm(pendingConfirm.key);
               setLastEvent(`Allowed once: "${pendingConfirm.name}"`);
               setPendingConfirm(null);

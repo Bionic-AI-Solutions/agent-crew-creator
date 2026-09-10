@@ -261,7 +261,14 @@ def test_page_rules_forbid_naming_a_control_that_is_not_listed(monkeypatch):
     monkeypatch.setattr(settings, "dom_control_enabled", False)
     rules = page_rules()
     assert "absent from the current [PAGE]" in rules
-    assert "Never reuse a ref from an earlier turn" in rules
+    # P4 used to promise that every capture renumbers refs. It no longer does:
+    # a ref names one control and stays with it, which is what stops a click
+    # landing on whatever moved into that position. The rule has to describe
+    # the behaviour the browser actually implements, or the agent reasons from
+    # a guarantee that is not there.
+    assert "keeps naming it" in rules
+    assert "newest [PAGE]" in rules
+    assert "renumbers them" not in rules
 
 
 # ── the page is hostile input ───────────────────────────────────

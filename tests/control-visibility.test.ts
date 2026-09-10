@@ -14,7 +14,11 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
-import { controlUiVisibility, outermostHost } from "../client/src/embed/controlVisibility.ts";
+import {
+  controlUiVisibility,
+  outermostHost,
+  filterHides,
+} from "../client/src/embed/controlVisibility.ts";
 
 const VIEWPORT = { innerWidth: 1024, innerHeight: 768 };
 
@@ -26,6 +30,10 @@ const GOOD_STYLE = {
   visibility: "visible",
   opacity: "1",
   pointerEvents: "auto",
+  filter: "none",
+  position: "fixed",
+  backgroundColor: "rgb(255, 255, 255)",
+  backdropFilter: "none",
 };
 
 interface Scenario {
@@ -63,6 +71,7 @@ function build(scenario: Scenario = {}) {
     }),
     document: {
       elementFromPoint: scenario.hitTest ?? (() => wrapper),
+      querySelectorAll: (sel: string) => doc.querySelectorAll(sel),
     },
   };
 
@@ -173,6 +182,75 @@ describe("controlUiVisibility", () => {
       },
     });
     assert.equal(controlUiVisibility(bar, win).visible, false);
+  });
+
+  test("a filter on the document element revokes control", () => {
+    // `html { filter: opacity(0) }` renders the whole page blank while every
+    // element's own computed filter stays "none" and no rect changes.
+    // Confirmed in Chromium; the wrapper's inline reset cannot undo it.
+    // The styles map is keyed by element id and documentElement has none, so
+    // it is given one; getComputedStyle is consulted at call time, after this.
+    const { bar, win, doc } = build({
+      styles: { "root-html": { filter: "opacity(0)" } },
+    });
+    doc.documentElement.id = "root-html";
+    const v = controlUiVisibility(bar, win);
+    assert.equal(v.visible, false);
+    assert.equal(v.reason, "control_ui_filtered");
+  });
+
+  test("an opaque pointer-events:none layer over the bar revokes control", () => {
+    // elementFromPoint AND elementsFromPoint both skip pointer-events:none
+    // (verified in Chromium), so hit testing reports a clean hit on the bar
+    // underneath a layer the user plainly sees.
+    const { bar, doc, wrapper, win } = build({
+      styles: { veil: { pointerEvents: "none", backgroundColor: "rgb(255, 255, 255)" } },
+    });
+    const veil = doc.createElement("div");
+    veil.id = "veil";
+    doc.body.appendChild(veil);
+    (veil as any).getBoundingClientRect = () => ({
+      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
+    });
+    void wrapper;
+    const v = controlUiVisibility(bar, win);
+    assert.equal(v.visible, false);
+    assert.equal(v.reason, "control_ui_obscured");
+  });
+
+  test("a transparent pointer-events:none layer does not revoke control", () => {
+    // The false-positive direction: invisible click-through shims are
+    // extremely common and must not break the feature.
+    const { bar, doc, win } = build({
+      styles: {
+        veil: {
+          pointerEvents: "none",
+          backgroundColor: "rgba(0, 0, 0, 0)",
+          backdropFilter: "none",
+        },
+      },
+    });
+    const veil = doc.createElement("div");
+    veil.id = "veil";
+    doc.body.appendChild(veil);
+    (veil as any).getBoundingClientRect = () => ({
+      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
+    });
+    assert.equal(controlUiVisibility(bar, win).visible, true);
+  });
+
+  test("filterHides only flags filters that actually hide", () => {
+    // Rejecting every non-none filter would revoke control on the many pages
+    // that put a drop-shadow or a dark-mode invert on a container.
+    for (const hiding of ["opacity(0)", "opacity(0%)", "opacity(.2)", "brightness(0)", "blur(12px)"]) {
+      assert.equal(filterHides(hiding), true, hiding);
+    }
+    for (const harmless of [
+      undefined, "none", "drop-shadow(0 1px 2px black)", "invert(1)",
+      "saturate(1.5)", "hue-rotate(90deg)", "opacity(0.9)", "blur(2px)",
+    ]) {
+      assert.equal(filterHides(harmless), false, String(harmless));
+    }
   });
 
   test("outermostHost climbs out of the shadow root to the light-DOM wrapper", () => {

@@ -189,6 +189,29 @@ function mount(room: any, props: Omit<HarnessProps, "room">) {
 // Teardown runs after every test via afterEach, below.
 afterEach(unmountAll);
 
+/**
+ * Read the page the way the agent does, and hand back its listing.
+ *
+ * Refs identify an element rather than a position now, so they only exist
+ * once something has captured the page. That is exactly the agent's own
+ * sequence -- read, then act -- and it means these tests stop hardcoding
+ * "ref_1" and use the ref the listing actually gave them.
+ */
+async function readListing(handlers: Map<string, (d: any) => Promise<string>>) {
+  const page = await callRpc(handlers, RPC_READ_PAGE, {});
+  return page.elements as Array<{ ref: string; name: string; role: string }>;
+}
+
+/** The ref the listing gave for the control with this name. */
+function refNamed(
+  elements: Array<{ ref: string; name: string }>,
+  name: string,
+): string {
+  const hit = elements.find((e) => e.name === name);
+  assert.ok(hit, `listing has no control named ${JSON.stringify(name)}`);
+  return hit!.ref;
+}
+
 /** Invoke one registered RPC method the way the agent would. */
 async function callRpc(
   handlers: Map<string, (d: any) => Promise<string>>,
@@ -306,28 +329,22 @@ describe("usePageActions — the user can always see and stop it", () => {
     });
     await flushMicrotasks();
 
-    const res = await callRpc(handlers, RPC_CLICK, { ref: "ref_1", expect: "Continue" });
-    assert.equal(res.ok, true);
+    const ref = refNamed(await readListing(handlers), "Continue");
+    const res = await callRpc(handlers, RPC_CLICK, { ref, expect: "Continue" });
+    assert.equal(res.ok, true, JSON.stringify(res));
     assert.equal(clicked, true);
     h.unmount();
   });
 });
 
 describe("usePageActions — a ref must still be what the agent named", () => {
-  test("a ref that now points at a different control is refused, not clicked", async () => {
+  test("inserting a control above the target does not move the target's ref", async () => {
+    // This used to click the intruder: refs were positional and resolved by
+    // re-walking the DOM, so anything inserted above shifted the ref down
+    // onto its neighbour.
     dom.window.document.body.innerHTML = '<button id="a">Details</button>';
     const bar = makeVisibleBar();
     const { room, handlers } = makeFakeRoom();
-
-    // The page reorders: something else is now first in the listing.
-    const intruder = dom.window.document.createElement("button");
-    intruder.textContent = "Unsubscribe from everything";
-    dom.window.document.body.insertBefore(intruder, dom.window.document.getElementById("a"));
-    let intruderClicked = false;
-    intruder.addEventListener("click", () => {
-      intruderClicked = true;
-    });
-
     const h = mount(room, {
       enabled: true,
       denylist: [],
@@ -336,14 +353,131 @@ describe("usePageActions — a ref must still be what the agent named", () => {
     });
     await flushMicrotasks();
 
-    // The agent still believes ref_1 is "Details".
-    const res = await callRpc(handlers, RPC_CLICK, { ref: "ref_1", expect: "Details" });
+    const ref = refNamed(await readListing(handlers), "Details");
+
+    let detailsClicked = false;
+    dom.window.document.getElementById("a")!.addEventListener("click", () => {
+      detailsClicked = true;
+    });
+    const intruder = dom.window.document.createElement("button");
+    intruder.textContent = "Unsubscribe from everything";
+    let intruderClicked = false;
+    intruder.addEventListener("click", () => {
+      intruderClicked = true;
+    });
+    dom.window.document.body.insertBefore(
+      intruder,
+      dom.window.document.getElementById("a"),
+    );
+
+    const res = await callRpc(handlers, RPC_CLICK, { ref, expect: "Details" });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(detailsClicked, true, "the named control must be the one pressed");
+    assert.equal(intruderClicked, false, "the intruder must never be pressed");
+    void h;
+  });
+
+  test("two controls with the same name are told apart", async () => {
+    // The case an expected-name check alone cannot catch, and the one real UI
+    // is full of: a table where every row has its own "Edit".
+    dom.window.document.body.innerHTML =
+      '<div id="rows">' +
+      '<div><button data-row="A" aria-label="Edit">Edit</button></div>' +
+      '<div><button data-row="B" aria-label="Edit">Edit</button></div>' +
+      "</div>";
+    const bar = makeVisibleBar();
+    const { room, handlers } = makeFakeRoom();
+    const h = mount(room, {
+      enabled: true,
+      denylist: [],
+      allowedOrigins: [ORIGIN],
+      getControlBar: () => bar,
+    });
+    await flushMicrotasks();
+
+    const listing = await readListing(handlers);
+    const firstEdit = listing.filter((e) => e.name === "Edit")[0].ref;
+
+    const pressed: string[] = [];
+    for (const el of Array.from(dom.window.document.querySelectorAll("[data-row]"))) {
+      el.addEventListener("click", () =>
+        pressed.push(el.getAttribute("data-row")!),
+      );
+    }
+
+    // Row B moves above row A. Both are still called "Edit".
+    const rows = dom.window.document.getElementById("rows")!;
+    rows.insertBefore(rows.children[1], rows.children[0]);
+
+    const res = await callRpc(handlers, RPC_CLICK, { ref: firstEdit, expect: "Edit" });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.deepEqual(pressed, ["A"], "must press row A's Edit, not whichever is now first");
+    void h;
+  });
+
+  test("a ref whose control is gone is refused, not silently retargeted", async () => {
+    dom.window.document.body.innerHTML = '<button id="a">Details</button>';
+    const bar = makeVisibleBar();
+    const { room, handlers } = makeFakeRoom();
+    const h = mount(room, {
+      enabled: true,
+      denylist: [],
+      allowedOrigins: [ORIGIN],
+      getControlBar: () => bar,
+    });
+    await flushMicrotasks();
+
+    const ref = refNamed(await readListing(handlers), "Details");
+
+    // The control is replaced by a different one in the same place. Only that
+    // button is swapped -- resetting body.innerHTML would take the control bar
+    // with it and revoke control before the ref was ever consulted.
+    const old = dom.window.document.getElementById("a")!;
+    const replacement = dom.window.document.createElement("button");
+    replacement.id = "b";
+    replacement.textContent = "Unsubscribe";
+    old.parentNode!.replaceChild(replacement, old);
+    let replacementClicked = false;
+    dom.window.document.getElementById("b")!.addEventListener("click", () => {
+      replacementClicked = true;
+    });
+
+    const res = await callRpc(handlers, RPC_CLICK, { ref, expect: "Details" });
     assert.equal(res.ok, false);
-    assert.equal(res.reason, "ref_moved");
-    assert.equal(intruderClicked, false, "the wrong control must not be pressed");
+    assert.equal(res.reason, "ref_not_found");
+    assert.equal(replacementClicked, false);
     // The refusal carries the current listing so the agent can recover.
     assert.ok(Array.isArray(res.elements) && res.elements.length > 0);
-    h.unmount();
+    void h;
+  });
+
+  test("a control renamed since the listing is refused", async () => {
+    // The other half of the identity check: the element is the same node, but
+    // it no longer says what the agent was told it says.
+    dom.window.document.body.innerHTML = '<button id="a">Save draft</button>';
+    const bar = makeVisibleBar();
+    const { room, handlers } = makeFakeRoom();
+    const h = mount(room, {
+      enabled: true,
+      denylist: [],
+      allowedOrigins: [ORIGIN],
+      getControlBar: () => bar,
+    });
+    await flushMicrotasks();
+
+    const ref = refNamed(await readListing(handlers), "Save draft");
+    const button = dom.window.document.getElementById("a")!;
+    let clicked = false;
+    button.addEventListener("click", () => {
+      clicked = true;
+    });
+    button.textContent = "Publish to everyone";
+
+    const res = await callRpc(handlers, RPC_CLICK, { ref, expect: "Save draft" });
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, "ref_moved");
+    assert.equal(clicked, false);
+    void h;
   });
 
   test("an omitted expect is refused rather than trusted", async () => {
@@ -362,8 +496,10 @@ describe("usePageActions — a ref must still be what the agent named", () => {
     });
     await flushMicrotasks();
 
-    const res = await callRpc(handlers, RPC_CLICK, { ref: "ref_1" });
+    const ref = refNamed(await readListing(handlers), "Details");
+    const res = await callRpc(handlers, RPC_CLICK, { ref });
     assert.equal(res.ok, false);
+    assert.equal(res.reason, "ref_moved");
     assert.equal(clicked, false);
     h.unmount();
   });
@@ -385,8 +521,9 @@ describe("usePageActions — typing", () => {
     });
     await flushMicrotasks();
 
+    const ref = refNamed(await readListing(handlers), "Message body");
     const res = await callRpc(handlers, RPC_TYPE_TEXT, {
-      ref: "ref_1",
+      ref,
       text: "hello there",
       expect: "Message body",
     });
@@ -407,8 +544,9 @@ describe("usePageActions — typing", () => {
     });
     await flushMicrotasks();
 
+    const ref = refNamed(await readListing(handlers), "Search");
     const res = await callRpc(handlers, RPC_TYPE_TEXT, {
-      ref: "ref_1",
+      ref,
       text: "kettles",
       expect: "Search",
     });
@@ -442,10 +580,8 @@ describe("usePageActions — asking the user first", () => {
     });
     await flushMicrotasks();
 
-    const res = await callRpc(handlers, RPC_CLICK, {
-      ref: "ref_1",
-      expect: "Delete account",
-    });
+    const ref = refNamed(await readListing(handlers), "Delete account");
+    const res = await callRpc(handlers, RPC_CLICK, { ref, expect: "Delete account" });
     assert.equal(res.ok, false);
     assert.equal(res.reason, "awaiting_user_confirmation");
     assert.equal(clicked, false);
@@ -480,10 +616,8 @@ describe("usePageActions — asking the user first", () => {
     });
     await flushMicrotasks();
 
-    const first = await callRpc(handlers, RPC_CLICK, {
-      ref: "ref_1",
-      expect: "Delete account",
-    });
+    const ref = refNamed(await readListing(handlers), "Delete account");
+    const first = await callRpc(handlers, RPC_CLICK, { ref, expect: "Delete account" });
     assert.equal(first.ok, false);
     assert.equal(clicks, 0);
 
@@ -491,18 +625,12 @@ describe("usePageActions — asking the user first", () => {
     assert.ok(api, "hook should expose confirm()");
     api!.confirm(offered[0].key);
 
-    const second = await callRpc(handlers, RPC_CLICK, {
-      ref: "ref_1",
-      expect: "Delete account",
-    });
+    const second = await callRpc(handlers, RPC_CLICK, { ref, expect: "Delete account" });
     assert.equal(second.ok, true, "the approved click must go through");
     assert.equal(clicks, 1);
 
     // And the approval is spent -- it was for one press, not for the session.
-    const third = await callRpc(handlers, RPC_CLICK, {
-      ref: "ref_1",
-      expect: "Delete account",
-    });
+    const third = await callRpc(handlers, RPC_CLICK, { ref, expect: "Delete account" });
     assert.equal(third.ok, false, "a second press must be asked about again");
     assert.equal(clicks, 1);
     h.unmount();

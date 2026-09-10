@@ -16,13 +16,35 @@
  * on top, `pointer-events: none`, moving it past the viewport edge, or simply
  * removing the element. Enumerating them is a losing game.
  *
- * So this does not enumerate attacks. It checks the property control actually
- * depends on -- this element is on screen, opaque, and the thing the user's
- * cursor would land on -- and the caller revokes control when it stops being
- * true. Anything that hides the bar by any means fails one of these checks,
- * including means nobody has thought of.
+ * So this checks the property control actually depends on -- this element is
+ * on screen, opaque, unfiltered, and the thing the user's cursor would land
+ * on -- and the caller revokes control when it stops being true.
  *
  * Fails closed: if a check cannot be performed, the answer is "not visible".
+ *
+ * WHAT THIS DOES NOT DO, stated plainly because the docstring used to claim
+ * more than the code delivers:
+ *
+ * This is not proof against a host page that is actively trying to defeat it.
+ * The page owns the document; it can restyle, cover or remove anything in it,
+ * and short of sampling pixels -- which a page cannot do to itself -- no
+ * in-page check can be exhaustive. Two rounds of review found two ways past
+ * an earlier version of this file (an ancestor `filter`, and an opaque
+ * `pointer-events: none` layer that hit testing skips); both are closed
+ * below, and the honest expectation is that a third exists.
+ *
+ * That is a bounded problem rather than an open one, because of who the host
+ * page belongs to. Control only runs on origins the token owner explicitly
+ * allowlisted (see domCapabilities), so the page doing the hiding is the
+ * operator's own -- and an operator who can run script on their own site can
+ * already click every button on it without involving an agent. Defeating this
+ * check gains such a page nothing it did not already have.
+ *
+ * What these checks are really for is the case that is both likely and
+ * genuinely harmful: a bar hidden BY ACCIDENT -- a CSS reset, an id
+ * collision, a loading backdrop, a modal scrim -- while the agent keeps
+ * acting and the user has no way to stop it. That is the failure this
+ * prevents, and it prevents it well.
  */
 
 /** Smaller than this and the bar is not something a user can find or press. */
@@ -56,10 +78,127 @@ export interface VisibilityWindow {
     visibility: string;
     opacity: string;
     pointerEvents: string;
+    filter?: string;
+    position?: string;
+    backgroundColor?: string;
+    backdropFilter?: string;
   };
   document: {
     elementFromPoint(x: number, y: number): Element | null;
+    querySelectorAll?(selector: string): ArrayLike<Element>;
   };
+}
+
+/** How many elements the overlay scan will look at before giving up. */
+const MAX_OVERLAY_SCAN = 4000;
+
+/**
+ * Does this `filter` value hide what it is applied to?
+ *
+ * `filter` is the gap that a per-element style check cannot see and the
+ * wrapper's own inline reset cannot close: it is a compositing effect that
+ * does not inherit, and no descendant can undo an ancestor's. One line --
+ * `html { filter: opacity(0) }`, which does not even name the widget --
+ * renders the entire page blank while every element's own computed filter
+ * stays "none" and every rect is unchanged. Confirmed in Chromium.
+ *
+ * Only the filters that actually hide count. Rejecting every non-"none"
+ * filter would revoke control on the many pages that put a drop-shadow or a
+ * dark-mode invert on a container, which is a broken feature, not a safe one.
+ */
+export function filterHides(value: string | undefined): boolean {
+  if (!value || value === "none") return false;
+  const lowered = value.toLowerCase();
+  for (const [fn, limit] of [
+    ["opacity", MIN_OPACITY],
+    ["brightness", 0.3],
+  ] as const) {
+    const m = new RegExp(`${fn}\\(\\s*([0-9.]+)(%?)\\s*\\)`).exec(lowered);
+    if (m) {
+      const raw = parseFloat(m[1]);
+      if (Number.isFinite(raw)) {
+        const scaled = m[2] === "%" ? raw / 100 : raw;
+        if (scaled < limit) return true;
+      }
+    }
+  }
+  // Enough blur and the text is not readable, whatever the opacity says.
+  const blur = /blur\(\s*([0-9.]+)px\s*\)/.exec(lowered);
+  if (blur && parseFloat(blur[1]) >= 8) return true;
+  return false;
+}
+
+/** A colour that paints over what is behind it. */
+function isOpaquePaint(colour: string | undefined): boolean {
+  if (!colour) return false;
+  const m = /rgba?\(([^)]+)\)/.exec(colour);
+  if (!m) return colour !== "transparent";
+  const parts = m[1].split(",").map((p) => parseFloat(p));
+  const alpha = parts.length >= 4 ? parts[3] : 1;
+  return Number.isFinite(alpha) && alpha > 0.3;
+}
+
+/**
+ * Something painted over the bar that hit testing cannot see.
+ *
+ * `document.elementFromPoint` -- and `elementsFromPoint` too, confirmed in
+ * Chromium -- skips anything with `pointer-events: none`. So an opaque
+ * `pointer-events: none` layer over the bar reports a clean hit on the bar
+ * underneath it while a person sees only the layer. That is not an exotic
+ * attack: fade transitions, scroll-lock shims and loading backdrops are all
+ * built exactly like that, and when one covers the bar the user genuinely
+ * cannot press Stop.
+ *
+ * There is no cheap exact answer -- the page cannot be screenshotted from
+ * inside itself -- so this is a bounded, deliberately conservative scan:
+ * positioned elements that cover the sample point, are opaque, and are not
+ * part of our own tree. Ancestors are excluded because body and html legally
+ * have backgrounds and sit behind us, not over us.
+ */
+function opaqueOverlayAt(
+  win: VisibilityWindow,
+  host: Element,
+  bar: Element,
+  x: number,
+  y: number,
+): boolean {
+  const all = win.document.querySelectorAll?.("*");
+  if (!all) return false;
+  const limit = Math.min(all.length, MAX_OVERLAY_SCAN);
+  for (let i = 0; i < limit; i++) {
+    const el = all[i];
+    if (el === host || el === bar) continue;
+    // Ours, or something we sit inside: not painted over us.
+    if (el.contains?.(host) || host.contains?.(el)) continue;
+
+    let rect: DOMRect;
+    try {
+      rect = el.getBoundingClientRect();
+    } catch {
+      continue;
+    }
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) continue;
+
+    let style: ReturnType<VisibilityWindow["getComputedStyle"]>;
+    try {
+      style = win.getComputedStyle(el);
+    } catch {
+      continue;
+    }
+    // Anything that accepts pointer events would have been reported by the
+    // hit test already; this scan exists only for what the hit test skips.
+    if (style.pointerEvents !== "none") continue;
+    if (style.display === "none" || style.visibility === "hidden") continue;
+    const position = style.position ?? "static";
+    if (position !== "fixed" && position !== "absolute" && position !== "sticky") continue;
+    const opacity = parseFloat(style.opacity);
+    if (Number.isFinite(opacity) && opacity < 0.3) continue;
+    if (isOpaquePaint(style.backgroundColor) || (style.backdropFilter ?? "none") !== "none") {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -189,6 +328,12 @@ export function controlUiVisibility(
     if (Number.isFinite(opacity) && opacity < MIN_OPACITY) {
       return hidden("control_ui_transparent", "the control bar has been made transparent");
     }
+    // Checked on the whole chain, including documentElement: a filter on an
+    // ancestor is not visible on the element's own computed style and cannot
+    // be undone from below.
+    if (filterHides(style.filter)) {
+      return hidden("control_ui_filtered", "the control bar has been filtered out of view");
+    }
     // Only the bar itself needs to be clickable; `pointer-events: none` on an
     // ancestor is routinely re-enabled by a descendant, and the hit test
     // below is what actually settles reachability.
@@ -207,12 +352,20 @@ export function controlUiVisibility(
     [rect.left + rect.width * 0.5, y],
     [rect.left + rect.width * 0.85, y],
   ];
-  const reachable = points.filter(
-    ([x, py]) =>
-      x >= 0 && x < win.innerWidth && py >= 0 && py < win.innerHeight && pointHitsUs(win, host, x, py),
+  const onScreen = points.filter(
+    ([x, py]) => x >= 0 && x < win.innerWidth && py >= 0 && py < win.innerHeight,
   );
+  const reachable = onScreen.filter(([x, py]) => pointHitsUs(win, host, x, py));
   if (reachable.length === 0) {
     return hidden("control_ui_obscured", "something on the page is covering the control bar");
+  }
+
+  // The hit test above cannot see a `pointer-events: none` layer, so every
+  // point it called reachable is checked again for one.
+  for (const [x, py] of reachable) {
+    if (opaqueOverlayAt(win, host, bar, x, py)) {
+      return hidden("control_ui_obscured", "something on the page is covering the control bar");
+    }
   }
 
   return VISIBLE;

@@ -238,12 +238,70 @@ function isInViewport(el: Element, win: Window): boolean {
 }
 
 /**
+ * Which element each ref names, so a ref identifies a control rather than a
+ * position in a list.
+ *
+ * Refs used to be assigned by position on every capture and resolved by
+ * re-walking the DOM at act time, which meant `ref_3` was only ever "whatever
+ * is third right now". Between the listing the agent read and the click it
+ * sent -- a toast appearing, a table row loading, any ordinary re-render --
+ * the same ref became a different control, and the agent pressed it
+ * confidently. Adding an expected-name check caught most of that, but not the
+ * case that matters most in real UI: a table of rows each with its own
+ * "Edit", where the name matches perfectly and the row is wrong.
+ *
+ * So a ref now sticks to its element. An element that was ref_3 keeps ref_3
+ * for as long as it is on the page, whatever moves around it, and a ref whose
+ * element is gone resolves to nothing rather than to its replacement. Refs
+ * are not renumbered, so they are not contiguous -- that is the point.
+ *
+ * Per document, because a same-origin iframe is a different page with its own
+ * numbering. WeakRef/WeakMap throughout: nothing here keeps a removed element
+ * alive.
+ */
+interface RefRegistry {
+  byElement: WeakMap<Element, string>;
+  byRef: Map<string, WeakRef<Element>>;
+  next: number;
+  /** Refs mean nothing across a navigation; this is how we notice one. */
+  url: string;
+}
+
+const registries = new WeakMap<Document, RefRegistry>();
+
+function registryFor(doc: Document, url: string): RefRegistry {
+  let reg = registries.get(doc);
+  if (!reg || reg.url !== url) {
+    reg = { byElement: new WeakMap(), byRef: new Map(), next: 1, url };
+    registries.set(doc, reg);
+  }
+  return reg;
+}
+
+/**
+ * The ref this element already has, or the next unused one.
+ *
+ * The byRef check is not redundant: a registry rebuilt by a navigation, or a
+ * ref whose WeakRef has been collected, must not hand the same string to two
+ * different elements.
+ */
+function refFor(reg: RefRegistry, el: Element): string {
+  const existing = reg.byElement.get(el);
+  if (existing && reg.byRef.get(existing)?.deref() === el) return existing;
+  const ref = `ref_${reg.next++}`;
+  reg.byElement.set(el, ref);
+  reg.byRef.set(ref, new WeakRef(el));
+  return ref;
+}
+
+/**
  * Capture the current page as a listing the agent can name controls from.
  *
- * Refs are stable only within one capture. Every capture renumbers, so the
- * agent must act on the newest listing and never on a remembered ref -- a
- * ref that survived a re-render would point at whatever now sits in that
- * position, which is how an agent clicks the wrong thing confidently.
+ * A ref names one control and keeps naming it -- see RefRegistry above. The
+ * agent should still act on the newest listing, because a control can be
+ * removed, renamed or scrolled out of view between captures; what it can no
+ * longer do is act on the WRONG control by using a ref that outlived the
+ * arrangement it was numbered in.
  */
 export function capturePage(doc: Document, win: Window = doc.defaultView!): PageListing {
   const seen: { el: Element; visible: boolean }[] = [];
@@ -261,8 +319,9 @@ export function capturePage(doc: Document, win: Window = doc.defaultView!): Page
   ];
   const kept = ordered.slice(0, MAX_ELEMENTS);
 
-  const elements: PageElement[] = kept.map((entry, index) => ({
-    ref: `ref_${index + 1}`,
+  const reg = registryFor(doc, win.location?.href ?? "");
+  const elements: PageElement[] = kept.map((entry) => ({
+    ref: refFor(reg, entry.el),
     role: elementRole(entry.el),
     // A password field is listed so the agent knows the box exists, and named
     // empty so nothing about its content can leave the browser. The value is
@@ -294,20 +353,20 @@ export function resolveRef(
   doc: Document,
   win: Window = doc.defaultView!,
 ): Element | null {
-  const match = /^ref_(\d+)$/.exec(ref);
-  if (!match) return null;
-  const index = Number(match[1]) - 1;
-  if (index < 0) return null;
+  if (!/^ref_\d+$/.test(ref)) return null;
 
-  const seen: { el: Element; visible: boolean }[] = [];
-  for (const el of Array.from(doc.querySelectorAll(INTERACTIVE_SELECTOR))) {
-    if (!isRendered(el, win)) continue;
-    seen.push({ el, visible: isInViewport(el, win) });
-  }
-  const ordered = [
-    ...seen.filter((e) => e.visible),
-    ...seen.filter((e) => !e.visible),
-  ].slice(0, MAX_ELEMENTS);
+  // Resolved by identity, never by re-walking the DOM to that position. The
+  // whole point of the registry is that "the element this ref named" and
+  // "whatever is in that slot now" are different questions, and only the
+  // first one is safe to act on.
+  const reg = registries.get(doc);
+  if (!reg || reg.url !== (win.location?.href ?? "")) return null;
 
-  return ordered[index]?.el ?? null;
+  const el = reg.byRef.get(ref)?.deref();
+  if (!el) return null;
+  // Gone from the page, or hidden since: either way it is not something to
+  // act on, and the caller asks for a fresh listing instead.
+  if (!el.isConnected || el.ownerDocument !== doc) return null;
+  if (!isRendered(el, win)) return null;
+  return el;
 }

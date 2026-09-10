@@ -2,8 +2,9 @@
  * Tests for the page reader.
  *
  * Two rules here are not preferences: a password field's contents must never
- * leave the browser, and refs must renumber on every capture so the agent
- * cannot act on a remembered one. Both are pinned below.
+ * leave the browser, and a ref must name one control and keep naming it, so
+ * that a ref the agent acts on can never resolve to a different control than
+ * the one it read about. Both are pinned below.
  *
  * Run: npx tsx --test tests/dom-reader.test.ts
  */
@@ -253,19 +254,38 @@ describe("capturePage", () => {
     assert.equal(page.elements[1].visible, false);
   });
 
-  test("renumbers on every capture, so a remembered ref cannot be trusted", () => {
-    // The agent must act on the newest listing. If refs were stable across
-    // captures, one held from a previous turn would silently point at
-    // whatever now occupies that position.
+  test("a control keeps its ref when something is inserted above it", () => {
+    // Refs used to be assigned by position on every capture, so inserting
+    // anything above a control silently moved that control's ref onto its new
+    // neighbour. A ref names a control now, and keeps naming it.
     document.body.innerHTML = "<button>Second</button>";
     const before = capturePage(document, window);
-    assert.equal(before.elements[0].ref, "ref_1");
+    const secondRef = before.elements[0].ref;
     assert.equal(before.elements[0].name, "Second");
 
     document.body.innerHTML = "<button>First</button><button>Second</button>";
+    // innerHTML replaces the nodes, so this is genuinely a new "Second".
+    const rebuilt = capturePage(document, window);
+    assert.notEqual(
+      rebuilt.elements.find((e) => e.name === "Second")!.ref,
+      secondRef,
+      "a replaced element is a different control and must not inherit the ref",
+    );
+
+    // Now insert above WITHOUT replacing the existing node, which is what a
+    // real page does when a banner or a row appears.
+    const kept = capturePage(document, window);
+    const keptSecond = kept.elements.find((e) => e.name === "Second")!;
+    const banner = document.createElement("button");
+    banner.textContent = "Dismiss";
+    document.body.insertBefore(banner, document.body.firstChild);
+
     const after = capturePage(document, window);
-    assert.equal(after.elements[0].name, "First");
-    assert.equal(after.elements[1].name, "Second");
+    assert.equal(
+      after.elements.find((e) => e.name === "Second")!.ref,
+      keptSecond.ref,
+      "the untouched control must keep its ref",
+    );
   });
 });
 
@@ -274,6 +294,41 @@ describe("resolveRef", () => {
     document.body.innerHTML = "<button>A</button><button>B</button>";
     const page = capturePage(document, window);
     assert.equal(resolveRef(page.elements[1].ref, document, window)?.textContent, "B");
+  });
+
+  test("never falls back to position when a ref was not issued", () => {
+    // The dangerous path, and the one the other tests cannot see: if
+    // resolution ever falls back to walking the DOM to the Nth element, every
+    // guarantee above collapses back to "whatever is in that slot now". A
+    // document nothing has captured has issued no refs at all, so the only
+    // correct answer for any ref is null -- even though there is plainly an
+    // element in that position.
+    const fresh = new JSDOM(
+      "<!doctype html><html><body><button>First</button><button>Second</button></body></html>",
+      { url: "https://mail.example.com/inbox" },
+    );
+    (fresh.window.Element.prototype as any).getBoundingClientRect = () => ({
+      width: 100, height: 20, top: 10, left: 10, bottom: 30, right: 110,
+    });
+    const freshDoc = fresh.window.document;
+    const freshWin = fresh.window as unknown as Window;
+
+    assert.equal(freshDoc.querySelectorAll("button").length, 2, "the elements exist");
+    for (const ref of ["ref_1", "ref_2"]) {
+      assert.equal(
+        resolveRef(ref, freshDoc, freshWin),
+        null,
+        `${ref} was never issued for this document and must not resolve`,
+      );
+    }
+
+    // After a capture the refs it issued do resolve, so this is about
+    // identity and not about resolution being broken.
+    const page = capturePage(freshDoc, freshWin);
+    assert.equal(
+      resolveRef(page.elements[0].ref, freshDoc, freshWin)?.textContent,
+      "First",
+    );
   });
 
   test("returns null for a ref the page no longer has", () => {
@@ -288,14 +343,65 @@ describe("resolveRef", () => {
     }
   });
 
-  test("resolves against the page as it is NOW, not as it was", () => {
-    // The honest failure mode: after the page changes, a stale ref points at
-    // whatever is there now — which is exactly why the agent is told to
-    // re-read and never reuse a ref across turns.
+  test("a ref whose element is gone resolves to nothing, not to its replacement", () => {
+    // This used to resolve to "Replaced" -- the ref survived and pointed at
+    // whatever had taken that position. That is how an agent presses the
+    // wrong thing while believing it pressed the right one.
     document.body.innerHTML = "<button>Original</button>";
     const page = capturePage(document, window);
     document.body.innerHTML = "<button>Replaced</button>";
-    assert.equal(resolveRef(page.elements[0].ref, document, window)?.textContent, "Replaced");
+    assert.equal(resolveRef(page.elements[0].ref, document, window), null);
+  });
+
+  test("a reorder among identically-named controls does not move a ref", () => {
+    // The case an expected-name check cannot catch, and the one real UI is
+    // full of: a list of rows that each have their own "Edit".
+    document.body.innerHTML =
+      '<div id="rows">' +
+      '<div><span>Row A</span><button data-row="A">Edit</button></div>' +
+      '<div><span>Row B</span><button data-row="B">Edit</button></div>' +
+      "</div>";
+    const page = capturePage(document, window);
+    const firstEditRef = page.elements[0].ref;
+    assert.equal(
+      resolveRef(firstEditRef, document, window)?.getAttribute("data-row"),
+      "A",
+    );
+
+    // Row B is moved above row A -- the nodes are the same, their order is not.
+    const rows = document.getElementById("rows")!;
+    rows.insertBefore(rows.children[1], rows.children[0]);
+    capturePage(document, window);
+
+    assert.equal(
+      resolveRef(firstEditRef, document, window)?.getAttribute("data-row"),
+      "A",
+      "the ref must still name row A's Edit, not whichever Edit is now first",
+    );
+  });
+
+  test("a ref from a previous page does not resolve after navigation", () => {
+    document.body.innerHTML = "<button>Old page</button>";
+    const page = capturePage(document, window);
+    const ref = page.elements[0].ref;
+    assert.ok(resolveRef(ref, document, window));
+
+    // jsdom will not navigate and its location.href is not configurable, so
+    // the window is handed to resolveRef reporting a different URL -- which
+    // is the only thing about a navigation this function reads.
+    const elsewhere = new Proxy(window, {
+      get(target, prop, receiver) {
+        if (prop === "location") return { href: "https://example.com/somewhere-else" };
+        const value = Reflect.get(target, prop, receiver);
+        // getComputedStyle and friends refuse to run with a Proxy as `this`.
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as Window;
+
+    assert.equal(resolveRef(ref, document, elsewhere), null);
+    // And the original page still resolves, so this is about the URL and not
+    // about having broken resolution generally.
+    assert.ok(resolveRef(ref, document, window));
   });
 });
 

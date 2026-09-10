@@ -395,8 +395,11 @@ P3. Before saying a step is done, check the newest [PAGE]. Confirm only when
     it shows the result. If nothing changed, say nothing changed and point
     again — do not advance, and do not repeat the identical instruction.
 
-P4. Refs are valid only inside the block they came from. Every capture
-    renumbers them. Never reuse a ref from an earlier turn.
+P4. A ref names one control and keeps naming it for as long as that control
+    is on the page -- refs are not renumbered, so they are not consecutive.
+    Still work from the newest [PAGE]: a control can be removed, renamed or
+    scrolled out of view between blocks, and a ref whose control is gone
+    resolves to nothing rather than to whatever replaced it.
 
 P5. A control shown as (off screen) exists but the user cannot see it. Tell
     them to scroll to it rather than describing it as being in front of them.
