@@ -60,13 +60,22 @@ const { usePagePublisher, PAGE_TOPIC } = await import(
   "../client/src/embed/usePagePublisher.ts"
 );
 
+/** Mirrors MIN_INTERVAL_MS in usePagePublisher.ts. */
+const MIN_INTERVAL = 1200;
+
 function flushMicrotasks() {
   return delay(0);
 }
 
-function makeFakeRoom(state: string = "connected") {
+function makeFakeRoom(state: string = "connected", holdSends = false) {
   const listeners = new Map<string, Set<(...args: any[]) => void>>();
-  const sendText = mock.fn(async (_text: string, _opts: any) => {});
+  // When holdSends is set, every send stays pending until released. That is
+  // the state the `missed` retry exists for: a mutation arriving while the
+  // previous send is still draining the data channel.
+  const pending: Array<() => void> = [];
+  const sendText = mock.fn((_text: string, _opts: any) =>
+    holdSends ? new Promise<void>((resolve) => pending.push(resolve)) : Promise.resolve(),
+  );
   return {
     room: {
       state,
@@ -85,6 +94,10 @@ function makeFakeRoom(state: string = "connected") {
       },
     } as any,
     sendText,
+    releaseSends() {
+      const waiting = pending.splice(0);
+      waiting.forEach((resolve) => resolve());
+    },
   };
 }
 
@@ -225,5 +238,72 @@ describe("usePagePublisher", () => {
     await flushMicrotasks();
 
     assert.equal(sendText.mock.callCount(), 0, "an unmounted publisher must never call sendText");
+  });
+
+  test("retries a capture that arrived while a send was still in flight", async () => {
+    // Without the `missed` retry this update is dropped with nothing queued,
+    // and on a page that then goes quiet the agent keeps describing the state
+    // before the change until the listing ages out two minutes later.
+    const { room, sendText, releaseSends } = makeFakeRoom("connected", true);
+    const handle = mount(room, true);
+    await flushMicrotasks();
+    await delay(50);
+    assert.equal(sendText.mock.callCount(), 1, "first publish should be in flight");
+
+    // A real change lands while that send is still pending.
+    const extra = dom.window.document.createElement("button");
+    extra.textContent = "Escalate to manager";
+    dom.window.document.body.appendChild(extra);
+    await delay(MIN_INTERVAL + 200);
+    assert.equal(sendText.mock.callCount(), 1, "must not start a second send mid-flight");
+
+    releaseSends();
+    await delay(MIN_INTERVAL + 300);
+    assert.equal(
+      sendText.mock.callCount(),
+      2,
+      "the capture missed during the send must be retried once it lands",
+    );
+
+    handle.unmount();
+  });
+
+  test("two triggers in quick succession still produce one publish", async () => {
+    // jsdom batches synchronous DOM edits into a single MutationObserver
+    // callback, so mutations alone never exercise the debounce. A click and a
+    // mutation are two independent calls into schedule(), which is what a
+    // real form submit looks like.
+    //
+    // Honest limit: this pins the OUTCOME (one publish), not the `pending`
+    // guard that produces it. Removing that guard is invisible here, because
+    // the second capture computes an identical signature and is skipped
+    // before it reaches sendText -- the guard's real job is avoiding a
+    // redundant capturePage walk on a busy page, which is CPU this suite
+    // cannot observe. Mutation-tested and confirmed: deleting `pending ||`
+    // leaves all of these passing.
+    const { room, sendText } = makeFakeRoom("connected");
+    const handle = mount(room, true);
+    await flushMicrotasks();
+    await delay(MIN_INTERVAL + 200);
+    const baseline = sendText.mock.callCount();
+
+    const button = dom.window.document.createElement("button");
+    button.textContent = "Save draft";
+    dom.window.document.body.appendChild(button);
+    button.click();
+    dom.window.document.body.appendChild(
+      Object.assign(dom.window.document.createElement("button"), {
+        textContent: "Attach file",
+      }),
+    );
+    await delay(MIN_INTERVAL + 300);
+
+    assert.equal(
+      sendText.mock.callCount() - baseline,
+      1,
+      "a click plus a mutation must coalesce into a single publish",
+    );
+
+    handle.unmount();
   });
 });

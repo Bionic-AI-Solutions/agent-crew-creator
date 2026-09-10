@@ -703,7 +703,7 @@ export default function LiveKitSection(props: Props) {
             the page <em>looks</em> like; this answers what is <em>on</em> it.
             Popup embeds only.
           </p>
-          {props.domReadEnabled && props.llmProvider !== "gpu-ai" && (
+          {props.domReadEnabled && props.llmProvider?.toLowerCase() !== "gpu-ai" && (
             <p className="text-[10px] text-amber-600 ml-6">
               Costs roughly a second per turn on this LLM. The page listing
               rides on the user's turn, which stops the agent from starting its
@@ -713,7 +713,7 @@ export default function LiveKitSection(props: Props) {
               conversational agent.
             </p>
           )}
-          {props.domReadEnabled && props.llmProvider === "gpu-ai" && (
+          {props.domReadEnabled && props.llmProvider?.toLowerCase() === "gpu-ai" && (
             <p className="text-[10px] text-muted-foreground ml-6">
               No latency cost on this LLM: replying early is already disabled
               for gpu-ai, so there is nothing for the page listing to delay.

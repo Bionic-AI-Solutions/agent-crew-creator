@@ -776,5 +776,66 @@ def test_the_summary_survives_a_broken_context():
     assert _conversation_for_summary(Broken()) == []
 
 
+# ── typed turns ────────────────────────────────────────────────
+
+def test_a_typed_turn_carries_the_listing_too():
+    """Typed input does not go through on_user_turn_completed.
+
+    The SDK's default callback calls generate_reply(user_input=...) directly,
+    and the hook lives on the audio path behind end-of-utterance detection --
+    so a user who TYPED "what is on this page?" got no listing, while the
+    same question spoken worked. Found by driving the deployed build, not by
+    reading the code.
+    """
+    import asyncio
+    from agent.page import PageHolder
+
+    holder = PageHolder()
+    holder.update(listing_payload(), now=100.0)
+
+    sent = {}
+
+    class Sess:
+        def _claim_user_turn(self):
+            class _Ctx:
+                async def __aenter__(self_inner):
+                    return None
+
+                async def __aexit__(self_inner, *a):
+                    return False
+
+            return _Ctx()
+
+        async def interrupt(self):
+            pass
+
+        def generate_reply(self, user_input=None):
+            sent["text"] = user_input
+
+    # The callback closes over `agent`, so exercise it the way the entrypoint
+    # builds it rather than importing something that does not exist alone.
+    class Agent:
+        _page = holder
+
+    agent = Agent()
+
+    async def _text_turn(sess, ev):
+        text = ev.text
+        block = agent._page.block_for_turn(now=100.0) if agent._page else None
+        if block:
+            text = f"{block}\n{ev.text}"
+        async with sess._claim_user_turn():
+            await sess.interrupt()
+            sess.generate_reply(user_input=text)
+
+    class Ev:
+        text = "what is on this page?"
+
+    asyncio.run(_text_turn(Sess(), Ev()))
+    assert sent["text"].startswith("[PAGE]")
+    assert sent["text"].endswith("what is on this page?")
+    assert "Save draft" in sent["text"]
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

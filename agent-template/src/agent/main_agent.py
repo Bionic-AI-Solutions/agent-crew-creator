@@ -40,7 +40,7 @@ _lk_types.DEFAULT_API_CONNECT_OPTIONS = _RELAXED_CONNECT_OPTIONS
 import httpx
 from livekit.agents import (
     Agent, AgentSession, AutoSubscribe, JobContext, WorkerOptions,
-    cli, function_tool, metrics, room_io, RunContext,
+    cli, function_tool, metrics, room_io, RunContext, NOT_GIVEN,
 )
 from livekit.agents.voice import MetricsCollectedEvent, ConversationItemAddedEvent
 from livekit.plugins import silero
@@ -2003,12 +2003,47 @@ async def entrypoint(ctx: JobContext):
             logger.warning("Avatar start failed: %s — audio fallback ON", e)
 
     # ── Room options ─────────────────────────────────────────
+    async def _text_turn(sess, ev) -> None:
+        """Handle a typed message the way a spoken one is handled.
+
+        Typed input does not go through on_user_turn_completed. The default
+        callback calls generate_reply(user_input=...) directly, and that hook
+        lives on the audio path behind end-of-utterance detection -- so a
+        user who TYPES "what is on this page?" got no page listing at all,
+        while the same question spoken aloud worked. Found by testing the
+        deployed build rather than by reading the code.
+
+        The listing is prepended to the typed text rather than appended as a
+        separate content item, because generate_reply takes a string. It is
+        still the same [PAGE] block, so _is_page_block and the eviction pass
+        still recognise it, and P1-P7 still describe it.
+        """
+        text = ev.text
+        try:
+            if agent._page is not None:
+                block = agent._page.block_for_turn()
+                if block:
+                    text = f"{block}\n{ev.text}"
+                    logger.info("Page: attached %d chars to a typed turn", len(block))
+        except Exception as exc:
+            logger.warning("Page: could not attach listing to typed turn: %s", exc)
+        async with sess._claim_user_turn():
+            await sess.interrupt()
+            sess.generate_reply(user_input=text)
+
     room_opts = room_io.RoomOptions(
         # Vision: feed camera/screen frames to the primary LLM (e.g., Gemma 4 E4B)
         video_input=settings.vision_enabled,
         # Only disable audio output if avatar actually started successfully.
         # If avatar failed, we MUST keep audio output enabled or the agent is mute.
         audio_output=not avatar_active,
+        # Only override the default when there is something to add; otherwise
+        # keep the SDK's own callback rather than reimplementing it.
+        text_input=(
+            room_io.TextInputOptions(text_input_cb=_text_turn)
+            if settings.dom_read_enabled
+            else NOT_GIVEN
+        ),
     )
 
     await session.start(
