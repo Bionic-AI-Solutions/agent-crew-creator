@@ -486,6 +486,34 @@ describe("controlUiVisibility", () => {
     );
   });
 
+  test("an iframe that does not cover the bar does not revoke control", () => {
+    // Replaced elements count as opaque wherever they overlap the bar, which
+    // is why an iframe elsewhere on the page must not be treated as covering
+    // it. A check that revokes on ordinary pages is as broken as one that
+    // misses an attack; verified in Chromium alongside this.
+    const { bar, doc, win } = build();
+    const frame = doc.createElement("iframe");
+    frame.id = "elsewhere";
+    doc.body.appendChild(frame);
+    (frame as any).getBoundingClientRect = () => ({
+      width: 400, height: 200, top: 300, left: 0, bottom: 500, right: 400,
+    });
+    assert.equal(controlUiVisibility(bar, win).visible, true);
+  });
+
+  test("a shadow-DOM component elsewhere does not revoke control", () => {
+    const { bar, doc, win } = build();
+    const card = doc.createElement("div");
+    doc.body.appendChild(card);
+    const inner = doc.createElement("div");
+    inner.id = "elsewhere";
+    card.attachShadow({ mode: "open" }).appendChild(inner);
+    (inner as any).getBoundingClientRect = () => ({
+      width: 300, height: 100, top: 400, left: 0, bottom: 500, right: 300,
+    });
+    assert.equal(controlUiVisibility(bar, win).visible, true);
+  });
+
   test("outermostHost climbs out of the shadow root to the light-DOM wrapper", () => {
     // This is what makes the hit test meaningful: an open shadow root
     // retargets elementFromPoint to its host, so the host is what we compare.
