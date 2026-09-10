@@ -28,6 +28,11 @@ MAX_PAGE_CHARS = 8000
 # screen that has since changed.
 MAX_PAGE_AGE_SECONDS = 120.0
 
+# Longest accessible name kept. The widget caps this too, but the payload
+# crosses the network from a browser, so this side does not take its word for
+# it -- the whole point of the cap is that the value is chosen by the page.
+MAX_NAME_CHARS = 120
+
 
 @dataclass
 class PageElement:
@@ -44,6 +49,24 @@ class PageListing:
     captured_at: float = 0.0
     elements: list[PageElement] = field(default_factory=list)
     truncated: int = 0
+
+
+def _clean(raw: str, limit: int) -> str:
+    """Flatten a page-authored string so it cannot forge structure.
+
+    The listing becomes one line per control in the model's context. A value
+    containing a newline could forge a line -- a second [PAGE] block, invented
+    refs, invented rules -- and it would be indistinguishable from the real
+    thing, because it would BE the real thing by the time the model saw it.
+    Collapsing whitespace removes the ability to forge a line rather than
+    relying on the model to disbelieve one.
+    """
+    # str.split() alone is not enough: it splits on whitespace, and NUL, BEL
+    # and friends are not whitespace, so they survived into the listing. Map
+    # every control character to a space first, then collapse.
+    mapped = "".join(" " if ch < " " or ch == "\x7f" else ch for ch in raw)
+    flat = " ".join(mapped.split())
+    return flat[:limit] if len(flat) > limit else flat
 
 
 def parse_listing(payload: str) -> PageListing | None:
@@ -69,17 +92,19 @@ def parse_listing(payload: str) -> PageListing | None:
             continue
         elements.append(
             PageElement(
-                ref=ref,
-                role=str(item.get("role") or ""),
-                name=str(item.get("name") or ""),
+                # Every one of these is written by the page, so every one is
+                # flattened and bounded here regardless of what the widget did.
+                ref=_clean(ref, 40),
+                role=_clean(str(item.get("role") or ""), 40),
+                name=_clean(str(item.get("name") or ""), MAX_NAME_CHARS),
                 visible=bool(item.get("visible")),
             )
         )
 
     captured = raw.get("capturedAt")
     return PageListing(
-        url=str(raw.get("url") or ""),
-        title=str(raw.get("title") or ""),
+        url=_clean(str(raw.get("url") or ""), 300),
+        title=_clean(str(raw.get("title") or ""), 200),
         # The widget sends epoch milliseconds; everything here is seconds.
         captured_at=float(captured) / 1000.0 if isinstance(captured, (int, float)) else 0.0,
         elements=elements,
@@ -107,10 +132,17 @@ def format_for_model(listing: PageListing, max_chars: int = MAX_PAGE_CHARS) -> s
     for element in ordered:
         name = element.name or "(no name)"
         mark = "" if element.visible else " (off screen)"
-        line = f"{element.ref} {element.role} \"{name}\"{mark}"
+        # json.dumps rather than an f-string quote: it escapes any quote or
+        # backslash in the name, so a control cannot close its own field and
+        # write whatever it likes after it.
+        line = f"{element.ref} {element.role} {json.dumps(name)}{mark}"
         if used + len(line) + 1 > max_chars:
-            dropped += len(ordered) - len(lines)
-            break
+            # Skip this one and keep going, rather than stopping. Stopping let
+            # a single oversized name hide every control after it -- one
+            # attribute on one element blanked the agent's whole view of the
+            # page, and the controls that mattered were usually later.
+            dropped += 1
+            continue
         lines.append(line)
         used += len(line) + 1
 

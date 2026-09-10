@@ -54,6 +54,33 @@ const INTERACTIVE_SELECTOR = [
 export const MAX_ELEMENTS = 200;
 
 /**
+ * Longest accessible name kept.
+ *
+ * A name is written by the page, so its length is chosen by the page. Without
+ * a cap, one element with a 50,000-character aria-label crowds out every real
+ * control in the agent's listing -- a page can blind the agent to itself with
+ * a single attribute.
+ */
+export const MAX_NAME_CHARS = 120;
+
+/**
+ * Flatten a name into something that cannot be mistaken for structure.
+ *
+ * The listing becomes one line per control in the model's context, so a name
+ * containing a newline could forge a line -- a whole fake [PAGE] block, fake
+ * refs, fake rules. Collapsing every run of whitespace, including newlines and
+ * control characters, removes the ability to forge a line at all rather than
+ * relying on the model to disbelieve one.
+ */
+export function cleanName(raw: string): string {
+  const flat = raw
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return flat.length > MAX_NAME_CHARS ? flat.slice(0, MAX_NAME_CHARS) + "…" : flat;
+}
+
+/**
  * Roles whose value is never read, whatever else is true of them.
  *
  * By tag and attribute rather than `instanceof`: an element inside a
@@ -76,7 +103,7 @@ function isPasswordField(el: Element): boolean {
  * accname algorithm -- enough to name a control the way a user would read it,
  * and short enough to reason about.
  */
-export function accessibleName(el: Element, doc: Document = el.ownerDocument): string {
+function rawAccessibleName(el: Element, doc: Document): string {
   // A password field is named but never described by its content, so no
   // branch below can reach its value.
   const ariaLabel = el.getAttribute("aria-label");
@@ -123,6 +150,16 @@ export function accessibleName(el: Element, doc: Document = el.ownerDocument): s
   if (valueAttr?.trim() && !isPasswordField(el)) return valueAttr.trim();
 
   return "";
+}
+
+/**
+ * An element's accessible name, flattened and bounded.
+ *
+ * Every caller goes through here; nothing reads the raw attribute, so there
+ * is no path by which an unflattened name reaches the listing.
+ */
+export function accessibleName(el: Element, doc: Document = el.ownerDocument): string {
+  return cleanName(rawAccessibleName(el, doc));
 }
 
 /**
