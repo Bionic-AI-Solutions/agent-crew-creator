@@ -46,7 +46,24 @@ export function signature(listing: ReturnType<typeof capturePage>): string {
   ]);
 }
 
-export function usePagePublisher(enabled: boolean) {
+/**
+ * How often an UNCHANGED listing is re-sent.
+ *
+ * The widget de-duplicates on content and the agent expires on time
+ * (MAX_PAGE_AGE_SECONDS = 120), and the two rules could not both hold: on a
+ * page whose controls did not change -- a settings screen, a form being
+ * filled, a documentation page -- nothing was re-sent, the agent's copy aged
+ * out at two minutes, and every conversation past that point silently fell
+ * back to vision-only with rule P2 applied to an empty listing. Well inside
+ * the agent's window, and one small JSON message a minute is nothing.
+ */
+export const KEEPALIVE_MS = 45_000;
+
+export function usePagePublisher(
+  enabled: boolean,
+  opts: { keepaliveMs?: number } = {},
+) {
+  const keepaliveMs = opts.keepaliveMs ?? KEEPALIVE_MS;
   const room = useRoomContext();
   // Held in a ref, not state: changing it must never re-render the widget.
   const lastSignature = useRef<string | null>(null);
@@ -65,6 +82,9 @@ export function usePagePublisher(enabled: boolean) {
     // that then went quiet the agent kept describing the state before the
     // change until the listing aged out two minutes later.
     let missed = false;
+    // When the last listing actually went out, so an unchanged one can still
+    // be re-sent before the agent's copy expires.
+    let lastSentAt = 0;
 
     const publish = async () => {
       if (cancelled || room.state !== "connected") return;
@@ -76,8 +96,10 @@ export function usePagePublisher(enabled: boolean) {
       try {
         const listing = capturePage(document, window);
         const sig = signature(listing);
-        if (sig === lastSignature.current) return;
+        const stale = Date.now() - lastSentAt >= keepaliveMs;
+        if (sig === lastSignature.current && !stale) return;
         await room.localParticipant.sendText(JSON.stringify(listing), { topic: PAGE_TOPIC });
+        lastSentAt = Date.now();
         // Only after the send resolves, and only if this effect is still the
         // live one. lastSignature is a ref shared across effect re-runs, so a
         // publish left in flight by a reconnect could resolve after the
@@ -141,8 +163,13 @@ export function usePagePublisher(enabled: boolean) {
 
     void publish();
 
+    // The keepalive itself: an unchanged page produces no mutation, click or
+    // navigation, so nothing else would ever call schedule() again.
+    const keepalive = window.setInterval(schedule, keepaliveMs);
+
     return () => {
       cancelled = true;
+      window.clearInterval(keepalive);
       if (timer !== undefined) window.clearTimeout(timer);
       observer.disconnect();
       room.off(RoomEvent.Connected, schedule);
@@ -153,7 +180,7 @@ export function usePagePublisher(enabled: boolean) {
       document.removeEventListener("keyup", schedule, true);
       lastSignature.current = null;
     };
-  }, [enabled, room]);
+  }, [enabled, room, keepaliveMs]);
 }
 
 /** Exposed for tests; the signature decides whether a change is sent at all. */

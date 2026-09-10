@@ -1207,6 +1207,62 @@ def test_the_printed_dropped_count_is_clamped():
     assert int(m.group(1)) <= MAX_REPORTED_DROPPED
 
 
+# ── the listing arrives without vision ──────────────────────────
+
+def test_page_reading_is_not_gated_on_vision(monkeypatch):
+    # start_page_reader sat inside `if settings.vision_enabled`, so a
+    # read-on/vision-off agent -- the configuration the schema comment calls
+    # the point of keeping them separate -- never registered the lk.page
+    # handler while its prompt insisted a [PAGE] block would arrive. This
+    # reads the entrypoint's source, because driving a real JobContext is
+    # not possible here; it pins that the call is guarded by reading, not by
+    # vision.
+    import inspect
+    import agent.main_agent as ma
+
+    src = inspect.getsource(ma.entrypoint)
+    lines = src.splitlines()
+    idx = next(i for i, ln in enumerate(lines) if "agent.start_page_reader(ctx.room)" in ln)
+    indent = len(lines[idx]) - len(lines[idx].lstrip())
+    # The nearest enclosing `if` at a shallower indent is its guard.
+    guard = next(
+        ln.strip() for ln in reversed(lines[:idx])
+        if ln.strip().startswith("if ") and (len(ln) - len(ln.lstrip())) < indent
+    )
+    assert "dom_read_enabled" in guard, guard
+    assert "vision_enabled" not in guard, guard
+
+
+def test_start_page_reader_registers_the_handler_without_vision(monkeypatch):
+    from config import settings
+    from agent.main_agent import MainAgent
+
+    monkeypatch.setattr(settings, "vision_enabled", False)
+    monkeypatch.setattr(settings, "dom_read_enabled", True)
+    monkeypatch.setattr(settings, "dom_control_enabled", False)
+    agent = MainAgent()
+
+    class _Room:
+        def __init__(self):
+            self.topics = []
+
+        def register_text_stream_handler(self, topic, handler):
+            self.topics.append(topic)
+
+    room = _Room()
+    asyncio.run(agent.start_page_reader(room))
+    assert "lk.page" in room.topics
+
+
+def test_cut_text_is_still_reported_when_the_page_could_not_be_read():
+    out = summarise_action_result(json.dumps({
+        "ok": False, "reason": "read_failed", "detail": "x",
+        "textTruncated": True, "typedChars": 2000,
+    }))
+    assert "Only the first 2000 characters" in out
+    assert "could not be read" in out
+
+
 # ── goal 4: an agent with DOM off is untouched ─────────────────
 #
 # On the REAL class. Two earlier versions of this test used a stand-in with

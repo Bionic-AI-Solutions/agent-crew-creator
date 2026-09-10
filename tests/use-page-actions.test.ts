@@ -116,6 +116,7 @@ function makeFakeRoom() {
 interface HarnessProps {
   room: any;
   enabled: boolean;
+  readEnabled?: boolean;
   denylist: string[];
   allowedOrigins: string[];
   getControlBar: () => Element | null;
@@ -130,6 +131,7 @@ interface HarnessProps {
 function Harness(props: HarnessProps) {
   const api = usePageActions({
     enabled: props.enabled,
+    readEnabled: props.readEnabled,
     denylist: props.denylist,
     allowedOrigins: props.allowedOrigins,
     getControlBar: props.getControlBar,
@@ -281,6 +283,55 @@ describe("usePageActions — registration", () => {
     assert.equal(registerRpcMethod.mock.callCount(), 4, "must not re-register");
     assert.equal(unregisterRpcMethod.mock.callCount(), 0, "must not unregister");
     h.unmount();
+  });
+});
+
+describe("usePageActions — reading stands on its own", () => {
+  test("a read-only agent gets read_page and nothing else", async () => {
+    // read_page was only registered together with the acting methods, so a
+    // read-only agent -- production's jarvistest token -- got
+    // UNSUPPORTED_METHOD for its one page tool. So did every control session
+    // before "Let it act" was pressed.
+    dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
+    const { room, handlers } = makeFakeRoom();
+    const revoked: string[] = [];
+    const h = mount(room, {
+      enabled: false, readEnabled: true, denylist: [], allowedOrigins: [ORIGIN],
+      getControlBar: () => null, onControlRevoked: (d) => revoked.push(d),
+    });
+    await flushMicrotasks();
+    assert.deepEqual([...handlers.keys()], [RPC_READ_PAGE]);
+    const page = await callRpc(handlers, RPC_READ_PAGE, {});
+    assert.equal(page.ok, true);
+    assert.ok(page.elements.some((e: any) => e.name === "Continue"));
+    // No bar exists in this mode, and nothing may pretend one was hidden.
+    await delay(1100);
+    assert.deepEqual(revoked, []);
+    void h;
+  });
+
+  test("control not yet switched on still reads", async () => {
+    dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
+    const { room, handlers } = makeFakeRoom();
+    const h = mount(room, {
+      enabled: false, readEnabled: true, denylist: [], allowedOrigins: [ORIGIN],
+      getControlBar: () => null,
+    });
+    await flushMicrotasks();
+    assert.ok(handlers.has(RPC_READ_PAGE));
+    assert.ok(!handlers.has(RPC_CLICK));
+    void h;
+  });
+
+  test("neither flag registers nothing", async () => {
+    const { room, handlers } = makeFakeRoom();
+    const h = mount(room, {
+      enabled: false, readEnabled: false, denylist: [], allowedOrigins: [],
+      getControlBar: () => null,
+    });
+    await flushMicrotasks();
+    assert.equal(handlers.size, 0);
+    void h;
   });
 });
 
@@ -1090,6 +1141,19 @@ describe("usePageActions — changed means what a person would notice", () => {
     const res = await callRpc(handlers, RPC_TYPE_TEXT, { ref, text: "kettles", expect: "Search" });
     assert.equal(res.ok, true, JSON.stringify(res));
     assert.equal(res.changed, true, "typed text must count as a change");
+  });
+
+  test("typing into a listed field behind hundreds of hidden inputs is a change", async () => {
+    // The first digest swept the first 500 fields in document order. Hidden
+    // CSRF-style inputs count, so a listed field behind 600 of them fell
+    // through every term of the fingerprint: the typing worked and the model
+    // was told nothing changed. Confirmed in Chromium.
+    const hidden = Array.from({ length: 600 }, (_, i) => `<input type="hidden" name="h${i}">`).join("");
+    const { handlers } = await mounted(hidden + '<input id="f" aria-label="Name" />');
+    const ref = refNamed(await readListing(handlers), "Name");
+    const res = await callRpc(handlers, RPC_TYPE_TEXT, { ref, text: "Salil", expect: "Name" });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(res.changed, true);
   });
 
   test("a click whose effect is text, not a control, is a change", async () => {

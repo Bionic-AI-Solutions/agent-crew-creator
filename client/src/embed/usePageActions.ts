@@ -88,7 +88,19 @@ export interface ConfirmRequest {
 }
 
 export interface PageActionsOptions {
+  /** The agent may act: registers click/type/scroll, shows and guards the bar. */
   enabled: boolean;
+  /**
+   * The agent may read: registers read_page on its own.
+   *
+   * read_page was only registered together with the acting methods, which
+   * meant a read-only agent -- exactly what production's jarvistest token is
+   * -- got UNSUPPORTED_METHOD for its one page tool, and so did every control
+   * session before the user pressed "Let it act". The agent side of that had
+   * been fixed; the browser side had never been checked against a real
+   * config. Reading needs no bar and no visibility check: nothing is pressed.
+   */
+  readEnabled?: boolean;
   denylist: string[];
   allowedOrigins: string[];
   /** The control bar, so we can verify the user can still see and stop this. */
@@ -198,39 +210,46 @@ function listingReply(changed: boolean | undefined, cap: Capture = safeCapture()
  *
  * Hashed rather than kept: this is compared, never sent.
  */
-function contentDigest(doc: Document): string {
+function contentDigest(doc: Document, page: ReturnType<typeof capturePage>): string {
   let text = "";
   try {
     text = doc.body ? safeTextContent(doc.body) : "";
   } catch {
     text = "";
   }
+  // The values of the LISTED controls -- resolved by ref, so this is exact
+  // for any field the agent can be typing into. The first version swept the
+  // first 500 fields in document order instead, and a listed field behind
+  // 600 hidden CSRF inputs fell through every term of the fingerprint: the
+  // typing worked, and the agent was told nothing changed. Confirmed in
+  // Chromium. Input values are not in body.textContent, so nothing else
+  // would have caught it.
   const values: string[] = [];
-  try {
-    const fields = doc.querySelectorAll(
-      "input,textarea,select,[contenteditable]:not([contenteditable=false])",
-    );
-    const limit = Math.min(fields.length, MAX_DIGEST_FIELDS);
-    for (let i = 0; i < limit; i++) {
-      const f = fields[i];
-      const tag = safeTagName(f).toLowerCase();
-      if (tag === "input" && (safeGetAttribute(f, "type") || "").toLowerCase() === "password") continue;
-      const asField = f as unknown as { value?: unknown; checked?: unknown };
-      const value =
-        tag === "input" || tag === "textarea" || tag === "select"
-          ? `${String(asField.value ?? "")}|${String(asField.checked ?? "")}`
-          : safeTextContent(f);
-      values.push(value);
+  for (const e of page.elements) {
+    let el: Element | null = null;
+    try {
+      el = resolveRef(e.ref, doc, window);
+    } catch {
+      el = null;
     }
-  } catch {
-    // A page that throws from here changes the digest, which reads as
-    // "changed": a re-read, not a lie.
+    if (!el) {
+      values.push("?");
+      continue;
+    }
+    const tag = safeTagName(el).toLowerCase();
+    if (tag === "input" && (safeGetAttribute(el, "type") || "").toLowerCase() === "password") {
+      values.push("");
+      continue;
+    }
+    const asField = el as unknown as { value?: unknown; checked?: unknown };
+    values.push(
+      tag === "input" || tag === "textarea" || tag === "select"
+        ? `${String(asField.value ?? "")}|${String(asField.checked ?? "")}`
+        : safeTextContent(el),
+    );
   }
   return `${hashText(text)}:${text.length}:${hashText(values.join("\u0001"))}`;
 }
-
-/** How many fields the digest reads. Bounded so a huge form is not O(page). */
-const MAX_DIGEST_FIELDS = 500;
 
 /** djb2. Not cryptographic and does not need to be: two snapshots are compared. */
 function hashText(text: string): string {
@@ -243,7 +262,7 @@ function fingerprintOf(page: ReturnType<typeof capturePage>): string {
   return JSON.stringify([
     page.url,
     page.elements.map((e) => [e.role, e.name, e.visible]),
-    contentDigest(document),
+    contentDigest(document, page),
   ]);
 }
 
@@ -293,6 +312,7 @@ function confirmKey(ref: string, name: string): string {
 export function usePageActions(options: PageActionsOptions) {
   const room = useRoomContext();
   const { enabled } = options;
+  const readEnabled = !!options.readEnabled;
 
   // Everything except `enabled` and `room` is read through a ref, so a
   // re-render never re-registers the RPC methods. It used to: EmbedClient
@@ -312,7 +332,7 @@ export function usePageActions(options: PageActionsOptions) {
   }, []);
 
   useEffect(() => {
-    if (!enabled || !room) return;
+    if ((!enabled && !readEnabled) || !room) return;
 
     let disposed = false;
     let lastUrl = window.location.href;
@@ -362,7 +382,10 @@ export function usePageActions(options: PageActionsOptions) {
         occluded = null;
       }
     };
-    observeBar();
+    // The bar exists only while acting is permitted. With reading alone
+    // there is nothing to observe and nothing to guard -- and a poll that ran
+    // anyway would "revoke" a bar that was never rendered, every second.
+    if (enabled) observeBar();
 
     /**
      * How long to allow for the observer to confirm a re-assertion worked.
@@ -650,9 +673,13 @@ export function usePageActions(options: PageActionsOptions) {
 
     const methods: Array<[string, (d: any) => Promise<string>]> = [
       [RPC_READ_PAGE, readPage],
-      [RPC_CLICK, click],
-      [RPC_TYPE_TEXT, typeText],
-      [RPC_SCROLL, scroll],
+      ...(enabled
+        ? ([
+            [RPC_CLICK, click],
+            [RPC_TYPE_TEXT, typeText],
+            [RPC_SCROLL, scroll],
+          ] as Array<[string, (d: any) => Promise<string>]>)
+        : []),
     ];
 
     for (const [name, handler] of methods) {
@@ -666,7 +693,7 @@ export function usePageActions(options: PageActionsOptions) {
     // The action-time check closes the window a timer leaves open; this
     // closes the opposite one, where the bar is hidden and the agent simply
     // waits. Control that nobody can see should not sit there armed.
-    const poll = window.setInterval(() => {
+    const poll = !enabled ? undefined : window.setInterval(() => {
       if (disposed) return;
       // A navigation invalidates every ref, and with it every approval the
       // user gave against one.
@@ -690,7 +717,7 @@ export function usePageActions(options: PageActionsOptions) {
 
     return () => {
       disposed = true;
-      window.clearInterval(poll);
+      if (poll !== undefined) window.clearInterval(poll);
       observer?.disconnect();
       for (const [name] of methods) {
         try {
@@ -702,7 +729,7 @@ export function usePageActions(options: PageActionsOptions) {
       }
       confirmedKeys.current.clear();
     };
-  }, [enabled, room]);
+  }, [enabled, readEnabled, room]);
 
   return { confirm };
 }

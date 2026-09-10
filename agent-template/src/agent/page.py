@@ -401,6 +401,18 @@ def summarise_action_result(reply: str, max_chars: int = MAX_PAGE_CHARS) -> str:
         unexamined=_bounded_count(data.get("unexamined")),
     )
 
+    # Computed first, because it applies whether or not the page could be
+    # read afterwards: the text was cut BEFORE the capture, and a capture that
+    # then failed used to lose the note, leaving the agent believing every
+    # character had been typed.
+    cut_note = ""
+    if data.get("textTruncated"):
+        typed = _bounded_count(data.get("typedChars"))
+        cut_note = (
+            f"Only the first {typed} characters of the text were typed; the rest "
+            f"was cut. Type the remainder separately if it matters.\n"
+        )
+
     if not data.get("ok"):
         reason = _clean(str(data.get("reason") or "refused"), 60)
         detail = _clean(str(data.get("detail") or ""), 300)
@@ -409,8 +421,8 @@ def summarise_action_result(reply: str, max_chars: int = MAX_PAGE_CHARS) -> str:
         # told the user the control they were looking at did not exist.
         if reason == "read_failed":
             return (
-                "The page could not be read this time. Work from what you can "
-                "see; do not conclude that any control is absent."
+                f"{cut_note}The page could not be read this time. Work from what "
+                "you can see; do not conclude that any control is absent."
             )
         if reason == "awaiting_user_confirmation":
             return (
@@ -440,10 +452,5 @@ def summarise_action_result(reply: str, max_chars: int = MAX_PAGE_CHARS) -> str:
         header = "The page changed. Here it is now:"
     else:
         header = "NOTHING CHANGED on the page. Say so; do not move on to the next step."
-    if data.get("textTruncated"):
-        typed = _bounded_count(data.get("typedChars"))
-        header = (
-            f"Only the first {typed} characters of the text were typed; the rest "
-            f"was cut. Type the remainder separately if it matters.\n{header}"
-        )
+    header = f"{cut_note}{header}"
     return f"{header}\n{format_for_model(listing, max_chars=max_chars)}"

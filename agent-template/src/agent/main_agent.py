@@ -2356,8 +2356,18 @@ async def entrypoint(ctx: JobContext):
         # above MainAgent.start_vision() -- so the agent wires up its own frame
         # capture here and attaches images in on_user_turn_completed().
         await agent.start_vision(ctx.room, session)
-        await agent.start_page_reader(ctx.room)
         logger.info("Vision enabled — camera/screenshare frames attach to user turns")
+
+    # Gated on reading, NOT on vision. This call sat inside the vision block
+    # above, so an agent with "Read the page" on and "Enable Vision" off --
+    # the configuration the schema comment describes as the point of keeping
+    # them separate -- never registered the lk.page handler at all. Its tools,
+    # its prompt and its turn hook were all gated on dom_read_enabled and all
+    # ready; the listing simply never arrived, and the room logged every
+    # publish as "ignoring text stream with topic 'lk.page', no callback
+    # attached". Goal 2 did nothing for that agent.
+    if settings.dom_read_enabled:
+        await agent.start_page_reader(ctx.room)
 
     # ── Background audio ────────────────────────────────────
     if settings.background_audio_enabled:

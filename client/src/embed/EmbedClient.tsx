@@ -119,6 +119,7 @@ function PageActions({ config }: { config?: EmbedConfig }) {
 
   const { confirm } = usePageActions({
     enabled: permitted && controlOn,
+    readEnabled: !!config?.allowDomRead,
     denylist,
     allowedOrigins,
     getControlBar,

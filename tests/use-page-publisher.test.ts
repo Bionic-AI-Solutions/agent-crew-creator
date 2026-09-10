@@ -11,7 +11,7 @@
  *
  * Run: npx tsx --test tests/use-page-publisher.test.ts
  */
-import { test, describe, mock } from "node:test";
+import { test, describe, mock, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import { JSDOM } from "jsdom";
@@ -101,12 +101,32 @@ function makeFakeRoom(state: string = "connected", holdSends = false) {
   };
 }
 
-function Harness(props: { room: any; enabled: boolean }) {
-  usePagePublisher(props.enabled);
+function Harness(props: { room: any; enabled: boolean; keepaliveMs?: number }) {
+  usePagePublisher(props.enabled, props.keepaliveMs ? { keepaliveMs: props.keepaliveMs } : {});
   return null;
 }
 
-function mount(room: any, enabled: boolean) {
+/**
+ * Everything mounted, so teardown can be unconditional.
+ *
+ * The hook holds timers -- the debounce and, now, the keepalive interval --
+ * that only unmounting clears. A failed assertion skips the unmount call
+ * that follows it, and a live interval then keeps node:test's process alive
+ * forever: the suite hangs instead of reporting the failure. Found the first
+ * time a mutation was supposed to fail this file and timed out instead.
+ */
+const mounted: Array<{ unmount: () => void }> = [];
+afterEach(() => {
+  while (mounted.length) {
+    try {
+      mounted.pop()!.unmount();
+    } catch {
+      // Teardown of an already-broken tree is not worth failing over.
+    }
+  }
+});
+
+function mount(room: any, enabled: boolean, keepaliveMs?: number) {
   const container = dom.window.document.createElement("div");
   dom.window.document.body.appendChild(container);
   const root = createRoot(container);
@@ -114,15 +134,17 @@ function mount(room: any, enabled: boolean) {
     React.createElement(
       RoomContext.Provider,
       { value: room },
-      React.createElement(Harness, { room, enabled })
+      React.createElement(Harness, { room, enabled, keepaliveMs })
     )
   );
-  return {
+  const handle = {
     unmount: () => {
       root.unmount();
       container.remove();
     },
   };
+  mounted.push(handle);
+  return handle;
 }
 
 describe("usePagePublisher", () => {
@@ -219,6 +241,29 @@ describe("usePagePublisher", () => {
 
     assert.equal(sendText.mock.callCount(), 0, "an unchanged listing must not be resent");
 
+    h.unmount();
+  });
+
+  test("an unchanged page is still re-sent before the agent's copy expires", async () => {
+    // The widget de-dupes on content; the agent expires on time. On a page
+    // whose controls never change, nothing was ever re-sent, the agent's copy
+    // aged out at two minutes, and the conversation silently went
+    // vision-only. Driven with a short keepalive so the test does not wait
+    // 45 seconds for what the default does.
+    dom.window.document.body.innerHTML = '<button aria-label="Static">Static</button>';
+    const { room, sendText } = makeFakeRoom("connected");
+    const h = mount(room, true, 300);
+    await flushMicrotasks();
+    await flushMicrotasks();
+    assert.equal(sendText.mock.callCount(), 1, "initial publish");
+
+    // No mutation, no click, no navigation. Only the keepalive can act.
+    await delay(MIN_INTERVAL + 700);
+    await flushMicrotasks();
+    assert.ok(
+      sendText.mock.callCount() >= 2,
+      `an unchanged listing must be re-sent by the keepalive (sent ${sendText.mock.callCount()})`,
+    );
     h.unmount();
   });
 
