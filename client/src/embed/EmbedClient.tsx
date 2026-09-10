@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePagePublisher } from "./usePagePublisher";
 import ReactDOM from "react-dom/client";
 import { Room, RoomEvent } from "livekit-client";
 import { RoomAudioRenderer, RoomContext, StartAudio } from "@livekit/components-react";
@@ -20,6 +21,15 @@ interface EmbedClientProps {
  * Popup-mode embed client. Renders a floating trigger button
  * and an expandable panel with the agent session.
  */
+/**
+ * Publishing has to happen inside RoomContext, and EmbedClient itself is what
+ * provides it — so the hook lives in a child that renders nothing.
+ */
+function PagePublisher({ enabled }: { enabled: boolean }) {
+  usePagePublisher(enabled);
+  return null;
+}
+
 export function EmbedClient({ platformOrigin, embedToken }: EmbedClientProps) {
   const room = useMemo(() => new Room(), []);
   const [popupOpen, setPopupOpen] = useState(false);
@@ -153,6 +163,7 @@ export function EmbedClient({ platformOrigin, embedToken }: EmbedClientProps) {
 
   return (
     <RoomContext.Provider value={room}>
+      <PagePublisher enabled={!!connectionDetails?.config.allowDomRead} />
       <RoomAudioRenderer />
       <StartAudio label="Start Audio" />
 
