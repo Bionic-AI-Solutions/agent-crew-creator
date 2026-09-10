@@ -6,6 +6,7 @@
  * This endpoint is only reachable from within the cluster.
  */
 import type { Express, Request, Response, NextFunction } from "express";
+import { agentDisplayName } from "../shared/agentDisplayName.js";
 import { eq, and } from "drizzle-orm";
 import { getDb } from "./db.js";
 import { apps, agentConfigs, userMemoryBlocks } from "../drizzle/platformSchema.js";
@@ -68,7 +69,7 @@ export function registerPlayerUiRoutes(app: Express): void {
           .map((a) => ({
           id: a.id,
           name: a.name,
-          displayName: a.name.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+          displayName: agentDisplayName(a.name),
           deployed: a.deployed,
           dispatchName: `${slug}-${a.name.trim()}`,
           capabilities: {

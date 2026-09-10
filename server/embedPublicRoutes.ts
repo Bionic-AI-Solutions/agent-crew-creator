@@ -9,6 +9,7 @@
  * browser fetch from any origin. Does NOT touch the global CORS config.
  */
 import type { Express, Request, Response } from "express";
+import { agentDisplayName } from "../shared/agentDisplayName.js";
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -268,7 +269,7 @@ export function registerEmbedRoutes(app: Express): void {
           // transcript panel had nothing to label its speech with but the
           // raw dispatch identity (agent-AJ_tAdF86dDz7PN). Carry the
           // configured name instead.
-          agentName: agent.name,
+          agentName: agentDisplayName(agent.name),
           allowAvatar: tokenRow.allowAvatar,
           showTranscription: tokenRow.showTranscription,
           theme: tokenRow.theme,
