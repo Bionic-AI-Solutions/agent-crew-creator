@@ -703,6 +703,15 @@ export default function LiveKitSection(props: Props) {
             the page <em>looks</em> like; this answers what is <em>on</em> it.
             Popup embeds only.
           </p>
+          {props.domReadEnabled && (
+            <p className="text-[10px] text-amber-600 ml-6">
+              Costs roughly a second per turn. The page listing rides on the
+              user's turn, which stops the agent from starting its reply early
+              — it waits for the listing rather than answering without having
+              seen the page. Worth it where the agent is guiding someone
+              through a screen; not worth it for a purely conversational agent.
+            </p>
+          )}
 
           <div className="flex items-center gap-2">
             <Checkbox
