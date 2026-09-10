@@ -89,12 +89,14 @@ _EXTRA_INVISIBLE = frozenset(
 # Python 3.11 (Unicode 14) while the browser's regex uses the runtime's ICU
 # (Unicode 17 on current Node) -- so asking each runtime for the category is
 # not the same question on both sides. The Egyptian hieroglyph format controls
-# became Cf in Unicode 15; here they still read as unassigned.
+# at U+13439-U+1343F became Cf in Unicode 15; here they still read as
+# unassigned. (U+13430-U+13438 have been Cf since Unicode 12, so this image
+# already strips those -- the bridge covers only the seven that differ.)
 #
 # Whenever the two disagree the newer answer wins, because the disagreement
 # always means the older table has not caught up. This set is the bridge, and
 # it should shrink to nothing the next time this image's Python moves.
-_CF_AFTER_UNICODE_14 = frozenset(chr(cp) for cp in range(0x13430, 0x13440))
+_CF_AFTER_UNICODE_14 = frozenset(chr(cp) for cp in range(0x13439, 0x13440))
 
 
 def _is_invisible(ch: str) -> bool:

@@ -11,6 +11,7 @@
  */
 import { useEffect, useRef } from "react";
 import { useRoomContext } from "@livekit/components-react";
+import { RoomEvent } from "livekit-client";
 import { capturePage } from "./domReader";
 
 export const PAGE_TOPIC = "lk.page";
@@ -124,6 +125,15 @@ export function usePagePublisher(enabled: boolean) {
       attributeFilter: ["aria-label", "aria-hidden", "hidden", "disabled", "role", "style"],
     });
 
+    // The room is usually still connecting when this mounts: EmbedClient
+    // renders the publisher as soon as connection details arrive, and
+    // connect() resolves later. publish() bails on a room that is not
+    // connected, and nothing re-ran it -- so the very first listing waited
+    // for an incidental DOM event, and a user whose first words were "what is
+    // on this page?" got no listing at all. Same gap on every reconnect.
+    room.on(RoomEvent.Connected, schedule);
+    room.on(RoomEvent.Reconnected, schedule);
+
     window.addEventListener("popstate", schedule);
     window.addEventListener("hashchange", schedule);
     document.addEventListener("click", schedule, true);
@@ -135,6 +145,8 @@ export function usePagePublisher(enabled: boolean) {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
       observer.disconnect();
+      room.off(RoomEvent.Connected, schedule);
+      room.off(RoomEvent.Reconnected, schedule);
       window.removeEventListener("popstate", schedule);
       window.removeEventListener("hashchange", schedule);
       document.removeEventListener("click", schedule, true);

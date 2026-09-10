@@ -2203,15 +2203,7 @@ async def entrypoint(ctx: JobContext):
         if client_id and settings.auto_summarize_on_disconnect and LETTA_AGENT_ID:
             try:
                 # Collect conversation from primary LLM context
-                messages = []
-                try:
-                    for msg in session.chat_ctx.items:
-                        role = getattr(msg, 'role', 'unknown')
-                        content = getattr(msg, 'content', '')
-                        if content and role in ('user', 'assistant'):
-                            messages.append(f"{role}: {content}")
-                except Exception:
-                    pass
+                messages = _conversation_for_summary(session)
 
                 if messages:
                     conversation_text = "\n".join(messages[-30:])  # last 30 turns max
@@ -2298,15 +2290,7 @@ async def entrypoint(ctx: JobContext):
         if user_email and platform_api and LETTA_AGENT_ID:
             try:
                 # Collect conversation turns for the summary
-                messages = []
-                try:
-                    for msg in session.chat_ctx.items:
-                        role = getattr(msg, 'role', 'unknown')
-                        content = getattr(msg, 'content', '')
-                        if content and role in ('user', 'assistant'):
-                            messages.append(f"{role}: {content}")
-                except Exception:
-                    pass
+                messages = _conversation_for_summary(session)
 
                 if messages:
                     conversation_text = "\n".join(messages[-50:])
@@ -2388,6 +2372,32 @@ def _is_page_block(item: str) -> bool:
     # an empty listing -- so requiring one identifies the block rather than
     # guessing at it.
     return re.search(r"^ref_\d+ ", stripped, re.MULTILINE) is not None
+
+
+def _conversation_for_summary(session) -> list[str]:
+    """The conversation as text, for a summary that leaves this process.
+
+    Goes through _spoken_text for the same reason _recent_turns does, and it
+    matters more here: both callers POST this to Letta, and one of them emails
+    Letta's reply to the user's real address. Stringifying msg.content
+    directly put the whole [PAGE] block in, so a control's name became text
+    attributed to the user, handed to a tool-using agent, and mailed out.
+
+    This path predates the page listing and was correct until the listing
+    existed -- which is why it needs saying here rather than being obvious.
+    """
+    messages: list[str] = []
+    try:
+        for msg in session.chat_ctx.items:
+            role = getattr(msg, "role", "unknown")
+            if role not in ("user", "assistant"):
+                continue
+            text = _spoken_text(msg)
+            if text:
+                messages.append(f"{role}: {text}")
+    except Exception as exc:
+        logger.warning("Could not read conversation for summary: %s", exc)
+    return messages
 
 
 def _spoken_text(msg) -> str:
