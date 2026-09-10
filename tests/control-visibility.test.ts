@@ -410,6 +410,82 @@ describe("controlUiVisibility", () => {
     }
   });
 
+  test("a scrim inside another component's open shadow root revokes control", () => {
+    // querySelectorAll("*") does not cross a shadow boundary, so this was
+    // invisible to the scan -- and it is not exotic: design-system modals put
+    // their backdrop inside a shadow root as a matter of course. Reproduced
+    // in Chromium (bar rendered 0 pixels while the check said visible).
+    const { bar, doc, win } = build({
+      styles: { veil: { pointerEvents: "none", backgroundColor: "rgb(255, 255, 255)" } },
+    });
+    const other = doc.createElement("div");
+    doc.body.appendChild(other);
+    const otherShadow = other.attachShadow({ mode: "open" });
+    const veil = doc.createElement("div");
+    veil.id = "veil";
+    otherShadow.appendChild(veil);
+    (veil as any).getBoundingClientRect = () => ({
+      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
+    });
+
+    const v = controlUiVisibility(bar, win);
+    assert.equal(v.visible, false);
+    assert.equal(v.reason, "control_ui_obscured");
+  });
+
+  test("an iframe laid over the bar revokes control", () => {
+    // An <iframe> reports background-color rgba(0,0,0,0) -- the white a
+    // person sees comes from the document inside it, which we cannot inspect
+    // and, cross-origin, are not allowed to. Every background check said
+    // "transparent" while it covered the bar completely. Consent banners and
+    // chat widgets are built exactly like this.
+    const { bar, doc, win } = build({
+      styles: {
+        veil: {
+          pointerEvents: "none",
+          backgroundColor: "rgba(0, 0, 0, 0)",
+          backgroundImage: "none",
+        },
+      },
+    });
+    const frame = doc.createElement("iframe");
+    frame.id = "veil";
+    doc.body.appendChild(frame);
+    (frame as any).getBoundingClientRect = () => ({
+      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
+    });
+
+    const v = controlUiVisibility(bar, win);
+    assert.equal(v.visible, false);
+    assert.equal(v.reason, "control_ui_obscured");
+  });
+
+  test("a scrim inside a CLOSED shadow root is a known, documented limit", () => {
+    // Pinned so the limit is visible in the suite rather than only in a
+    // comment. No API traverses a closed shadow root -- that is what closed
+    // means -- so this cannot be detected from inside the page, and reaching
+    // it needs script on the host (attachShadow is not something CSS can do),
+    // which is the residual risk the module header states plainly.
+    //
+    // If this test ever starts failing because the verdict became false,
+    // that is good news and the assertion should be updated, not silenced.
+    const { bar, doc, win } = build();
+    const other = doc.createElement("div");
+    doc.body.appendChild(other);
+    const closed = other.attachShadow({ mode: "closed" });
+    const veil = doc.createElement("div");
+    closed.appendChild(veil);
+    (veil as any).getBoundingClientRect = () => ({
+      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
+    });
+
+    assert.equal(
+      controlUiVisibility(bar, win).visible,
+      true,
+      "documents the known limit; see the module header",
+    );
+  });
+
   test("outermostHost climbs out of the shadow root to the light-DOM wrapper", () => {
     // This is what makes the hit test meaningful: an open shadow root
     // retargets elementFromPoint to its host, so the host is what we compare.

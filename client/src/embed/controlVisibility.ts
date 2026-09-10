@@ -33,6 +33,15 @@
  * `pointer-events: none` layer that hit testing skips); both are closed
  * below, and the honest expectation is that a third exists.
  *
+ * The one gap that is known and named rather than merely suspected: a scrim
+ * inside a CLOSED shadow root. No API traverses one -- that is what closed
+ * means -- so nothing in the page can find it, and a pointer-events:none
+ * layer inside one is skipped by hit testing too. Reaching that state needs
+ * script on the host page (attachShadow is not something CSS can do), which
+ * puts it squarely in the paragraph below rather than in the accident case
+ * these checks exist for. Open shadow roots, which is what component
+ * libraries actually use, ARE traversed.
+ *
  * That is a bounded problem rather than an open one, because of who the host
  * page belongs to. Control only runs on origins the token owner explicitly
  * allowlisted (see domCapabilities), so the page doing the hiding is the
@@ -152,16 +161,70 @@ function isOpaqueColour(colour: string | undefined): boolean {
  * build fades and backdrops -- has `background-color: rgba(0,0,0,0)` and went
  * straight through the colour check while covering the bar completely.
  */
-function paintsOver(style: {
-  backgroundColor?: string;
-  backgroundImage?: string;
-  backdropFilter?: string;
-}): boolean {
+function paintsOver(
+  el: Element,
+  style: {
+    backgroundColor?: string;
+    backgroundImage?: string;
+    backdropFilter?: string;
+  },
+): boolean {
+  // Elements that paint their own content, whatever CSS says about their
+  // background. An <iframe> laid over the bar reports
+  // `background-color: rgba(0,0,0,0)` because the white a person sees comes
+  // from the document inside it, which we cannot inspect at all when it is
+  // cross-origin -- so an overlay iframe covered the bar completely while
+  // every background check said "transparent". Consent banners and chat
+  // widgets are built exactly like this.
+  if (REPLACED_ELEMENTS.has(el.tagName.toLowerCase())) return true;
   if (isOpaqueColour(style.backgroundColor)) return true;
   const image = style.backgroundImage ?? "none";
   if (image !== "none" && image !== "") return true;
   const backdrop = style.backdropFilter ?? "none";
   return backdrop !== "none" && backdrop !== "";
+}
+
+/** Tags that render their own pixels rather than just a background. */
+const REPLACED_ELEMENTS = new Set([
+  "iframe", "frame", "object", "embed", "video", "canvas", "img",
+]);
+
+/**
+ * The elements the overlay scan will consider, newest-painted first.
+ *
+ * `querySelectorAll("*")` does not cross a shadow boundary, so a scrim inside
+ * some OTHER component's shadow root was invisible to this scan -- and that
+ * is not an exotic construction: design-system modals put their backdrop in a
+ * shadow root as a matter of course. Open roots are descended into here.
+ *
+ * A CLOSED shadow root cannot be traversed by anyone, so a scrim inside one
+ * is not findable by any in-page check. Reaching that state needs script on
+ * the host page, which is the residual risk this module's header already
+ * states plainly -- a page that can run script can press the buttons itself.
+ *
+ * Reverse order within each root, because overlays are appended last and the
+ * cap should truncate the page furniture rather than the backdrop.
+ */
+function overlayCandidates(win: VisibilityWindow, cap: number): Element[] {
+  const out: Element[] = [];
+  const roots: Array<{ querySelectorAll?(s: string): ArrayLike<Element> }> = [win.document];
+  while (roots.length > 0 && out.length < cap) {
+    const root = roots.shift()!;
+    let list: ArrayLike<Element> | undefined;
+    try {
+      list = root.querySelectorAll?.("*");
+    } catch {
+      continue;
+    }
+    if (!list) continue;
+    for (let i = list.length - 1; i >= 0 && out.length < cap; i--) {
+      const el = list[i];
+      out.push(el);
+      const nested = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+      if (nested) roots.push(nested);
+    }
+  }
+  return out;
 }
 
 /**
@@ -216,16 +279,8 @@ function opaqueOverlayAt(
   x: number,
   y: number,
 ): boolean {
-  const all = win.document.querySelectorAll?.("*");
-  if (!all) return false;
-  // Backwards. querySelectorAll returns document order, and the cap used to
-  // take the FIRST 4000 -- which on a large page is the header and the
-  // content, never the modal backdrop, because portals append theirs at the
-  // end of <body>. Scanning from the end puts the overlays first and the page
-  // furniture last, so the cap now truncates the part that never matters.
-  const limit = Math.min(all.length, MAX_OVERLAY_SCAN);
-  for (let i = 0; i < limit; i++) {
-    const el = all[all.length - 1 - i];
+  const candidates = overlayCandidates(win, MAX_OVERLAY_SCAN);
+  for (const el of candidates) {
     if (el === host || el === bar) continue;
     // Ours, or something we sit inside: not painted over us.
     if (el.contains?.(host) || host.contains?.(el)) continue;
@@ -253,7 +308,7 @@ function opaqueOverlayAt(
     if (position !== "fixed" && position !== "absolute" && position !== "sticky") continue;
     const opacity = parseFloat(style.opacity);
     if (Number.isFinite(opacity) && opacity < 0.3) continue;
-    if (paintsOver(style)) return true;
+    if (paintsOver(el, style)) return true;
   }
   return false;
 }
