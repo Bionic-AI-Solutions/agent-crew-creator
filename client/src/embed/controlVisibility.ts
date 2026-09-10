@@ -97,6 +97,7 @@ export interface VisibilityWindow {
     webkitMaskBoxImage?: string;
     clipPath?: string;
     contentVisibility?: string;
+    zIndex?: string;
   };
   document: {
     elementFromPoint(x: number, y: number): Element | null;
@@ -207,21 +208,46 @@ const REPLACED_ELEMENTS = new Set([
  */
 function overlayCandidates(win: VisibilityWindow, cap: number): Element[] {
   const out: Element[] = [];
-  const roots: Array<{ querySelectorAll?(s: string): ArrayLike<Element> }> = [win.document];
-  while (roots.length > 0 && out.length < cap) {
-    const root = roots.shift()!;
+  const pending: Array<{ list: ArrayLike<Element>; i: number }> = [];
+
+  const push = (root: { querySelectorAll?(s: string): ArrayLike<Element> }) => {
     let list: ArrayLike<Element> | undefined;
     try {
       list = root.querySelectorAll?.("*");
     } catch {
-      continue;
+      return;
     }
-    if (!list) continue;
-    for (let i = list.length - 1; i >= 0 && out.length < cap; i--) {
-      const el = list[i];
-      out.push(el);
-      const nested = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
-      if (nested) roots.push(nested);
+    if (!list || list.length === 0) return;
+    // Reading .shadowRoot is a property access with no layout cost, so every
+    // root is enumerated for hosts regardless of the candidate budget. Only
+    // the expensive per-element work below is rationed.
+    for (let i = list.length - 1; i >= 0; i--) {
+      const nested = (list[i] as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+      if (nested) push(nested);
+    }
+    pending.push({ list, i: list.length - 1 });
+  };
+  push(win.document);
+
+  // Round-robin, and the slice is divided by how many roots are waiting --
+  // never a fixed size. Draining each root in turn meant the roots that
+  // happened to be discovered first could spend the entire budget, and a
+  // scrim in a root discovered later was missed purely because the page was
+  // big, which the page controls. A fixed slice only moved the threshold:
+  // twenty crowded components still exhausted it before the twenty-first was
+  // reached. Dividing guarantees every waiting root gets at least one slot
+  // per pass, so no root can be starved by its neighbours' size.
+  let guard = 0;
+  while (pending.length > 0 && out.length < cap && guard++ <= cap) {
+    const share = Math.max(1, Math.floor((cap - out.length) / pending.length));
+    for (let r = 0; r < pending.length && out.length < cap; r++) {
+      const entry = pending[r];
+      const stop = Math.max(-1, entry.i - share);
+      for (; entry.i > stop && out.length < cap; entry.i--) out.push(entry.list[entry.i]);
+      if (entry.i < 0) {
+        pending.splice(r, 1);
+        r--;
+      }
     }
   }
   return out;
@@ -272,6 +298,17 @@ function hidingEffect(style: {
  * part of our own tree. Ancestors are excluded because body and html legally
  * have backgrounds and sit behind us, not over us.
  */
+/**
+ * The stacking level a candidate paints at, as a number we can compare.
+ *
+ * `auto` is treated as 0: an element with no z-index paints below one that
+ * has a positive index, which is all this comparison needs to decide.
+ */
+function stackingLevel(value: string | undefined): number {
+  const n = parseInt(value ?? "", 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function opaqueOverlayAt(
   win: VisibilityWindow,
   host: Element,
@@ -279,6 +316,19 @@ function opaqueOverlayAt(
   x: number,
   y: number,
 ): boolean {
+  // The bar sits at the maximum z-index (embed-styles.css), so anything
+  // painting at a lower one is BEHIND it and cannot be covering it, whatever
+  // its rect says. Without this the scan asked only "do these rectangles
+  // overlap", and answered yes for a full-bleed background video or canvas --
+  // pointer-events:none, z-index 0, an entirely ordinary hero-background
+  // pattern -- and revoked control on a page where the bar was plainly
+  // visible. Overlap is not occlusion.
+  let barLevel: number;
+  try {
+    barLevel = stackingLevel(win.getComputedStyle(bar).zIndex);
+  } catch {
+    return false;
+  }
   const candidates = overlayCandidates(win, MAX_OVERLAY_SCAN);
   for (const el of candidates) {
     if (el === host || el === bar) continue;
@@ -306,6 +356,10 @@ function opaqueOverlayAt(
     if (style.display === "none" || style.visibility === "hidden") continue;
     const position = style.position ?? "static";
     if (position !== "fixed" && position !== "absolute" && position !== "sticky") continue;
+    // Equal levels are treated as covering: at the same z-index the later
+    // element in paint order wins, and this cannot cheaply tell which that
+    // is, so it errs towards revoking.
+    if (stackingLevel(style.zIndex) < barLevel) continue;
     const opacity = parseFloat(style.opacity);
     if (Number.isFinite(opacity) && opacity < 0.3) continue;
     if (paintsOver(el, style)) return true;

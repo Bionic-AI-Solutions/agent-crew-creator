@@ -40,7 +40,11 @@ const GOOD_STYLE = {
   contentVisibility: "visible",
   backgroundColor: "rgb(255, 255, 255)",
   backdropFilter: "none",
+  zIndex: "0",
 };
+
+/** The real bar's stacking level, from embed-styles.css. */
+const BAR_Z = "2147483647";
 
 interface Scenario {
   /** Per-element style overrides, keyed by element id. */
@@ -73,6 +77,7 @@ function build(scenario: Scenario = {}) {
     ...VIEWPORT,
     getComputedStyle: (el: Element) => ({
       ...GOOD_STYLE,
+      ...((el as HTMLElement).id === "bar" ? { zIndex: BAR_Z } : {}),
       ...(scenario.styles?.[(el as HTMLElement).id ?? ""] ?? {}),
     }),
     document: {
@@ -218,7 +223,7 @@ describe("controlUiVisibility", () => {
     // (verified in Chromium), so hit testing reports a clean hit on the bar
     // underneath a layer the user plainly sees.
     const { bar, doc, wrapper, win } = build({
-      styles: { veil: { pointerEvents: "none", backgroundColor: "rgb(255, 255, 255)" } },
+      styles: { veil: { pointerEvents: "none", backgroundColor: "rgb(255, 255, 255)", zIndex: BAR_Z } },
     });
     const veil = doc.createElement("div");
     veil.id = "veil";
@@ -241,6 +246,7 @@ describe("controlUiVisibility", () => {
           pointerEvents: "none",
           backgroundColor: "rgba(0, 0, 0, 0)",
           backdropFilter: "none",
+          zIndex: BAR_Z,
         },
       },
     });
@@ -321,6 +327,7 @@ describe("controlUiVisibility", () => {
           pointerEvents: "none",
           backgroundColor: "rgba(0, 0, 0, 0)",
           backgroundImage: "linear-gradient(rgb(255,255,255), rgb(255,255,255))",
+          zIndex: BAR_Z,
         },
       },
     });
@@ -341,7 +348,7 @@ describe("controlUiVisibility", () => {
     // theirs at the end of <body>, which is where the cap had already
     // stopped. The scan runs backwards for exactly this.
     const { bar, doc, win } = build({
-      styles: { veil: { pointerEvents: "none", backgroundColor: "rgb(255, 255, 255)" } },
+      styles: { veil: { pointerEvents: "none", backgroundColor: "rgb(255, 255, 255)", zIndex: BAR_Z } },
     });
     for (let i = 0; i < 5000; i++) {
       const filler = doc.createElement("span");
@@ -367,7 +374,7 @@ describe("controlUiVisibility", () => {
     // second if it runs on the 1s heartbeat. Actions run it; the heartbeat
     // does not, and an action cannot slip past because it checks for itself.
     const { bar, doc, win } = build({
-      styles: { veil: { pointerEvents: "none", backgroundColor: "rgb(255, 255, 255)" } },
+      styles: { veil: { pointerEvents: "none", backgroundColor: "rgb(255, 255, 255)", zIndex: BAR_Z } },
     });
     const veil = doc.createElement("div");
     veil.id = "veil";
@@ -416,7 +423,7 @@ describe("controlUiVisibility", () => {
     // their backdrop inside a shadow root as a matter of course. Reproduced
     // in Chromium (bar rendered 0 pixels while the check said visible).
     const { bar, doc, win } = build({
-      styles: { veil: { pointerEvents: "none", backgroundColor: "rgb(255, 255, 255)" } },
+      styles: { veil: { pointerEvents: "none", backgroundColor: "rgb(255, 255, 255)", zIndex: BAR_Z } },
     });
     const other = doc.createElement("div");
     doc.body.appendChild(other);
@@ -445,6 +452,7 @@ describe("controlUiVisibility", () => {
           pointerEvents: "none",
           backgroundColor: "rgba(0, 0, 0, 0)",
           backgroundImage: "none",
+          zIndex: BAR_Z,
         },
       },
     });
@@ -512,6 +520,115 @@ describe("controlUiVisibility", () => {
       width: 300, height: 100, top: 400, left: 0, bottom: 500, right: 300,
     });
     assert.equal(controlUiVisibility(bar, win).visible, true);
+  });
+
+  test("a background video behind the bar does not revoke control", () => {
+    // Overlap is not occlusion. A full-bleed background video or canvas --
+    // pointer-events:none, z-index 0, an entirely ordinary hero pattern --
+    // overlaps the bar's rect while painting behind it. Checking only the
+    // rectangles revoked control on pages where the bar was plainly visible.
+    for (const tag of ["video", "canvas", "iframe", "img"]) {
+      const { bar, doc, win } = build({
+        styles: { bg: { pointerEvents: "none", zIndex: "0" } },
+      });
+      const bg = doc.createElement(tag);
+      bg.id = "bg";
+      doc.body.appendChild(bg);
+      (bg as any).getBoundingClientRect = () => ({
+        width: 1024, height: 768, top: 0, left: 0, bottom: 768, right: 1024,
+      });
+      assert.equal(controlUiVisibility(bar, win).visible, true, tag);
+    }
+  });
+
+  test("a scrim at the bar's own stacking level still revokes", () => {
+    // Equal levels err towards revoking: at the same z-index paint order
+    // decides, and this cannot cheaply tell which came last.
+    const { bar, doc, win } = build({
+      styles: { veil: { pointerEvents: "none", zIndex: BAR_Z } },
+    });
+    const veil = doc.createElement("div");
+    veil.id = "veil";
+    doc.body.appendChild(veil);
+    (veil as any).getBoundingClientRect = () => ({
+      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
+    });
+    const v = controlUiVisibility(bar, win);
+    assert.equal(v.visible, false);
+    assert.equal(v.reason, "control_ui_obscured");
+  });
+
+  test("one crowded shadow root does not starve another", () => {
+    // The budget used to be drained root by root. Roots are discovered in
+    // reverse document order, so a scrim in a host EARLY in the document is
+    // discovered last -- and if the hosts after it hold more elements than
+    // the whole budget, it never got any and the scrim was missed purely
+    // because the page was big, which the page controls.
+    const { bar, doc, win } = build({
+      styles: { veil: { pointerEvents: "none", zIndex: BAR_Z } },
+    });
+    const nowhere = () => ({
+      width: 0, height: 0, top: 0, left: 0, bottom: 0, right: 0,
+    });
+
+    // The scrim's host goes FIRST, so it is discovered LAST.
+    const scrimHost = doc.createElement("div");
+    doc.body.appendChild(scrimHost);
+    const veil = doc.createElement("div");
+    veil.id = "veil";
+    scrimHost.attachShadow({ mode: "open" }).appendChild(veil);
+    (veil as any).getBoundingClientRect = () => ({
+      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
+    });
+
+    // Then twenty crowded components after it -- 6000 elements, well past
+    // the whole scan budget.
+    for (let h = 0; h < 20; h++) {
+      const host = doc.createElement("div");
+      doc.body.appendChild(host);
+      const root = host.attachShadow({ mode: "open" });
+      for (let i = 0; i < 300; i++) {
+        const filler = doc.createElement("span");
+        (filler as any).getBoundingClientRect = nowhere;
+        root.appendChild(filler);
+      }
+    }
+
+    const v = controlUiVisibility(bar, win);
+    assert.equal(v.visible, false, "the scrim must still be found");
+    assert.equal(v.reason, "control_ui_obscured");
+  });
+
+  test("a big light DOM does not starve the shadow-root scan", () => {
+    // The scan budget used to be drained root by root, so a light DOM larger
+    // than the cap spent all of it before any shadow root was looked at --
+    // and a scrim inside one was missed purely because the page was big,
+    // which the page controls. Every root gets a share now.
+    const { bar, doc, win } = build({
+      styles: { veil: { pointerEvents: "none", zIndex: BAR_Z } },
+    });
+    const holder = doc.createElement("div");
+    doc.body.appendChild(holder);
+    const veil = doc.createElement("div");
+    veil.id = "veil";
+    holder.attachShadow({ mode: "open" }).appendChild(veil);
+    (veil as any).getBoundingClientRect = () => ({
+      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
+    });
+
+    // ...and then far more light-DOM elements than the whole budget, all
+    // AFTER the shadow host, which is the order that defeated the old scan.
+    for (let i = 0; i < 4500; i++) {
+      const filler = doc.createElement("span");
+      (filler as any).getBoundingClientRect = () => ({
+        width: 0, height: 0, top: 0, left: 0, bottom: 0, right: 0,
+      });
+      doc.body.appendChild(filler);
+    }
+
+    const v = controlUiVisibility(bar, win);
+    assert.equal(v.visible, false);
+    assert.equal(v.reason, "control_ui_obscured");
   });
 
   test("outermostHost climbs out of the shadow root to the light-DOM wrapper", () => {
