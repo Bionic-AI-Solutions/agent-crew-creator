@@ -336,3 +336,58 @@ class PageHolder:
         if listing is None or not listing.elements:
             return None
         return format_for_model(listing)
+
+
+def summarise_action_result(reply: str, max_chars: int = MAX_PAGE_CHARS) -> str:
+    """Turn the browser's answer into something the model can act on.
+
+    The shape of this reply decides what the agent is able to claim. Three
+    outcomes, kept plainly distinct, because collapsing any two of them is
+    how an agent ends up insisting it already did something:
+
+      refused  -- the user has to decide. NOT a failure, and not something to
+                  route around; the agent should say what it was about to do
+                  and ask.
+      nothing changed -- the click landed and the page did not move. The
+                  honest report is that nothing happened, which is exactly
+                  what the old vision-only agent could never tell.
+      changed  -- and here is the page now, so any claim about the result is
+                  checkable against it rather than asserted.
+    """
+    try:
+        data = json.loads(reply)
+    except (ValueError, TypeError):
+        return "The page gave an answer that could not be read. Do not assume anything happened."
+    if not isinstance(data, dict):
+        return "The page gave an answer that could not be read. Do not assume anything happened."
+
+    if not data.get("ok"):
+        reason = _clean(str(data.get("reason") or "refused"), 60)
+        detail = _clean(str(data.get("detail") or ""), 300)
+        if reason == "awaiting_user_confirmation":
+            return (
+                f"REFUSED by the browser: {detail} Tell the user what you were about to do "
+                "and ask them. Do not try another way round it."
+            )
+        return f"REFUSED by the browser ({reason}): {detail}"
+
+    listing = PageListing(
+        url=_clean(str(data.get("url") or ""), 300),
+        title="",
+        elements=[
+            PageElement(
+                ref=_clean(str(item.get("ref") or ""), 40),
+                role=_clean(str(item.get("role") or ""), 40),
+                name=_clean(str(item.get("name") or ""), MAX_NAME_CHARS),
+                visible=bool(item.get("visible")),
+            )
+            for item in (data.get("elements") or [])[:MAX_ELEMENTS]
+            if isinstance(item, dict) and item.get("ref")
+        ],
+    )
+    header = (
+        "The page changed. Here it is now:"
+        if data.get("changed")
+        else "NOTHING CHANGED on the page. Say so; do not move on to the next step."
+    )
+    return f"{header}\n{format_for_model(listing, max_chars=max_chars)}"

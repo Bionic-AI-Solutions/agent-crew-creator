@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePagePublisher } from "./usePagePublisher";
+import { usePageActions } from "./usePageActions";
 import ReactDOM from "react-dom/client";
 import { Room, RoomEvent } from "livekit-client";
 import { RoomAudioRenderer, RoomContext, StartAudio } from "@livekit/components-react";
@@ -10,7 +11,7 @@ import { useDocumentPip } from "./useDocumentPip";
 // is a separate document and inherits none of it, so it needs its own copy.
 // @ts-ignore — CSS imported as string
 import embedStyles from "./embed-styles.css?inline";
-import type { EmbedErrorDetails } from "./types";
+import type { EmbedConfig, EmbedErrorDetails } from "./types";
 
 interface EmbedClientProps {
   platformOrigin: string;
@@ -28,6 +29,60 @@ interface EmbedClientProps {
 function PagePublisher({ enabled }: { enabled: boolean }) {
   usePagePublisher(enabled);
   return null;
+}
+
+/**
+ * Control mode, and the banner that says it is on.
+ *
+ * The banner is not decoration and not optional. An agent that can click
+ * things on someone's page must be visible while it can, and the stop button
+ * has to be reachable at the moment someone wants it -- not in a settings
+ * panel, and not behind the popup being open.
+ *
+ * Control starts OFF every session, whatever the token permits. Nobody should
+ * arrive on a page to find an agent already able to press things.
+ */
+function PageActions({ config }: { config?: EmbedConfig }) {
+  const [controlOn, setControlOn] = useState(false);
+  const [lastEvent, setLastEvent] = useState<string | null>(null);
+  const permitted = !!config?.allowDomControl;
+
+  // Reverts to guidance whenever the permission goes away, so a token change
+  // or a reconnect cannot leave control quietly enabled.
+  useEffect(() => {
+    if (!permitted) setControlOn(false);
+  }, [permitted]);
+
+  usePageActions({
+    enabled: permitted && controlOn,
+    denylist: config?.domActionDenylist ?? [],
+    allowedOrigins: [window.location.origin],
+    onRefusal: (detail) => setLastEvent(`Asked you first: ${detail}`),
+    onAction: (summary) => setLastEvent(`Agent ${summary}`),
+  });
+
+  if (!permitted) return null;
+
+  return (
+    <div className={`bionic-control-bar ${controlOn ? "bionic-control-on" : ""}`}>
+      <span className="bionic-control-dot" aria-hidden="true" />
+      <span className="bionic-control-text">
+        {controlOn
+          ? lastEvent ?? "The agent can act on this page"
+          : "The agent can see this page but not touch it"}
+      </span>
+      <button
+        type="button"
+        className="bionic-control-btn"
+        onClick={() => {
+          setControlOn((on) => !on);
+          setLastEvent(null);
+        }}
+      >
+        {controlOn ? "Stop" : "Let it act"}
+      </button>
+    </div>
+  );
 }
 
 export function EmbedClient({ platformOrigin, embedToken }: EmbedClientProps) {
@@ -164,6 +219,7 @@ export function EmbedClient({ platformOrigin, embedToken }: EmbedClientProps) {
   return (
     <RoomContext.Provider value={room}>
       <PagePublisher enabled={!!connectionDetails?.config.allowDomRead} />
+      <PageActions config={connectionDetails?.config} />
       <RoomAudioRenderer />
       <StartAudio label="Start Audio" />
 

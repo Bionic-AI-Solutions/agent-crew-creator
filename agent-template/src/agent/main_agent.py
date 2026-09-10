@@ -1047,6 +1047,86 @@ class MainAgent(Agent):
             f"{vision_line}"
         )
 
+    # ── Acting on the page ───────────────────────────────────
+    #
+    # Registered unconditionally, and refused at the top of each one when
+    # DOM_CONTROL_ENABLED is off. The browser refuses independently and is
+    # the real gate; this is the cheaper first no, and it keeps the model
+    # from planning around a capability it does not have.
+    #
+    # Every one of these returns the FRESH listing, so a claim of success is
+    # always backed by a page that shows it -- the agent never has to guess
+    # whether something worked, which is where the repeated instructions and
+    # false confirmations came from.
+
+    async def _page_rpc(self, context: RunContext, method: str, payload: dict) -> str:
+        """Ask the browser to do something, and report exactly what it said."""
+        if not settings.dom_control_enabled:
+            return "Acting on the page is not enabled for this agent."
+        identity = self._page_actor_identity(context)
+        if not identity:
+            return "No one is connected to act for."
+        try:
+            room = context.session.room_io.room if context.session.room_io else None
+            if room is None:
+                return "Not connected to the page."
+            reply = await room.local_participant.perform_rpc(
+                destination_identity=identity,
+                method=method,
+                payload=json.dumps(payload),
+                response_timeout=10,
+            )
+        except Exception as exc:
+            # The browser not answering is not the same as it refusing, and
+            # the difference decides whether retrying is sane.
+            logger.warning("Page action %s failed: %s", method, exc)
+            return f"The page did not respond to {method}. Do not assume it happened."
+        from agent.page import summarise_action_result
+
+        return summarise_action_result(reply)
+
+    def _page_actor_identity(self, context: RunContext) -> str | None:
+        """The participant whose page we act on -- the visitor, never an agent."""
+        try:
+            room = context.session.room_io.room if context.session.room_io else None
+            if room is None:
+                return None
+            for participant in room.remote_participants.values():
+                if not participant.identity.startswith("agent-"):
+                    return participant.identity
+        except Exception:
+            return None
+        return None
+
+    @function_tool
+    async def read_page(self, context: RunContext) -> str:
+        """Read the controls currently on the user's page.
+
+        Use before acting, and again after acting, to see what changed.
+        """
+        return await self._page_rpc(context, "bionic.read_page", {})
+
+    @function_tool
+    async def click(self, context: RunContext, ref: str) -> str:
+        """Click one control, named by its ref from the current page listing.
+
+        Refs are only valid in the listing they came from. If the answer says
+        the ref is gone, read the page again rather than guessing.
+        """
+        return await self._page_rpc(context, "bionic.click", {"ref": ref})
+
+    @function_tool
+    async def type_text(self, context: RunContext, ref: str, text: str) -> str:
+        """Type into one field, named by its ref from the current page listing."""
+        return await self._page_rpc(context, "bionic.type_text", {"ref": ref, "text": text})
+
+    @function_tool
+    async def scroll(self, context: RunContext, ref: str = "", direction: str = "down") -> str:
+        """Scroll the page, or scroll a control into view when given its ref."""
+        return await self._page_rpc(
+            context, "bionic.scroll", {"ref": ref, "direction": direction}
+        )
+
     @function_tool
     async def delegate_to_letta(self, context: RunContext, task: str) -> str:
         """Delegate a complex task to the secondary agent (Letta) for deep processing.
