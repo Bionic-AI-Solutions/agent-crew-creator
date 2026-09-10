@@ -332,11 +332,29 @@ function pointHitsUs(win: VisibilityWindow, host: Element, x: number, y: number)
 /**
  * @param bar  the control bar element, inside the widget's shadow root
  * @param win  the host page's window
+ * @param opts.scanOverlays  run the expensive covered-by-something scan
+ *
+ * The overlay scan reads a rect for up to MAX_OVERLAY_SCAN elements, which on
+ * a 12k-element page measured 8ms unthrottled and 37ms at 4x CPU throttle --
+ * fine once, but this also runs on a 1s heartbeat, and 37ms every second is
+ * two dropped frames every second on a mid-range phone. Goal 1 is a smooth
+ * conversation; spending that much of every second to re-answer a question
+ * whose answer almost never changes is the wrong trade.
+ *
+ * So it is spent where it decides something. Every ACTION runs the full
+ * check, because that is the moment the agent is about to touch the page.
+ * The heartbeat runs the cheap checks only -- which still catch display,
+ * visibility, opacity, filter, mask, clip, size, off-screen and a normal
+ * covering overlay via the hit test. What the heartbeat alone can miss is a
+ * `pointer-events: none` scrim appearing while nothing is happening, and the
+ * next action catches that before anything is pressed.
  */
 export function controlUiVisibility(
   bar: Element | null | undefined,
   win: VisibilityWindow,
+  opts: { scanOverlays?: boolean } = {},
 ): VisibilityVerdict {
+  const scanOverlays = opts.scanOverlays ?? true;
   if (!bar) return hidden("control_ui_missing", "the control bar is not mounted");
   if (!bar.isConnected) {
     return hidden("control_ui_detached", "the control bar was removed from the page");
@@ -430,9 +448,11 @@ export function controlUiVisibility(
 
   // The hit test above cannot see a `pointer-events: none` layer, so every
   // point it called reachable is checked again for one.
-  for (const [x, py] of reachable) {
-    if (opaqueOverlayAt(win, host, bar, x, py)) {
-      return hidden("control_ui_obscured", "something on the page is covering the control bar");
+  if (scanOverlays) {
+    for (const [x, py] of reachable) {
+      if (opaqueOverlayAt(win, host, bar, x, py)) {
+        return hidden("control_ui_obscured", "something on the page is covering the control bar");
+      }
     }
   }
 

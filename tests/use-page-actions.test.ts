@@ -313,6 +313,49 @@ describe("usePageActions — the user can always see and stop it", () => {
     h.unmount();
   });
 
+  test("a click is refused when a click-through scrim covers the bar", async () => {
+    // Pins that the ACTION path runs the full visibility check. The 1s
+    // heartbeat skips the overlay scan for cost, so if actions skipped it
+    // too, a pointer-events:none scrim would hide the bar with control
+    // still live -- and nothing else would notice.
+    dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
+    const bar = makeVisibleBar();
+    const veil = dom.window.document.createElement("div");
+    veil.id = "veil";
+    veil.style.cssText =
+      "position:fixed;top:0;left:0;width:100%;height:400px;background:rgb(255,255,255);pointer-events:none";
+    dom.window.document.body.appendChild(veil);
+    (veil as any).getBoundingClientRect = () => ({
+      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
+    });
+
+    const { room, handlers } = makeFakeRoom();
+    let clicked = false;
+    dom.window.document.getElementById("go")!.addEventListener("click", () => {
+      clicked = true;
+    });
+    const revoked: string[] = [];
+    const h = mount(room, {
+      enabled: true,
+      denylist: [],
+      allowedOrigins: [ORIGIN],
+      getControlBar: () => bar,
+      onControlRevoked: (d) => revoked.push(d),
+    });
+    await flushMicrotasks();
+
+    const listing = await readListing(handlers);
+    const ref = refNamed(listing, "Continue");
+    const res = await callRpc(handlers, RPC_CLICK, { ref, expect: "Continue" });
+
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, "control_ui_obscured");
+    assert.equal(clicked, false, "nothing may be pressed behind a scrim");
+    assert.ok(revoked.length > 0, "control must be revoked");
+    veil.remove();
+    void h;
+  });
+
   test("a click goes through when the bar is visible", async () => {
     dom.window.document.body.innerHTML = '<button id="go">Continue</button>';
     const bar = makeVisibleBar();
@@ -558,7 +601,7 @@ describe("usePageActions — controls with no name", () => {
     await flushMicrotasks();
 
     const listing = await readListing(handlers);
-    const field = listing.find((e) => e.role === "textbox" || e.name === "");
+    const field = listing.find((e) => e.role === "password");
     assert.ok(field, "the password box should be listed");
     assert.equal(field!.name, "", "and listed with no name");
 
@@ -569,6 +612,70 @@ describe("usePageActions — controls with no name", () => {
     });
     assert.equal(res.ok, false);
     assert.equal(res.reason, "password_field");
+    void h;
+  });
+});
+
+describe("usePageActions — a password field's label never leaves the browser", () => {
+  test("no reply, refusal or summary ever contains it", async () => {
+    // A password field is listed with an empty name so nothing about it
+    // leaves the browser. That held in capturePage but not at act time, where
+    // the name was computed by a second, different definition -- so this
+    // sweeps every string that goes back to the model rather than trusting
+    // that one call site is right.
+    const SECRET_LABEL = "Passphrase for the vault";
+    dom.window.document.body.innerHTML =
+      `<input id="p" type="password" aria-label="${SECRET_LABEL}" />` +
+      '<button id="ok">Continue</button>';
+    const bar = makeVisibleBar();
+    const { room, handlers } = makeFakeRoom();
+
+    const said: string[] = [];
+    const h = mount(room, {
+      enabled: true,
+      denylist: [],
+      allowedOrigins: [ORIGIN],
+      getControlBar: () => bar,
+      onRefusal: (d) => said.push(d),
+      onAction: (sMsg) => said.push(sMsg),
+    });
+    await flushMicrotasks();
+
+    const listing = await readListing(handlers);
+    // A password input gets its own role, so it is unmistakable in a listing.
+    const field = listing.find((e) => e.role === "password")!;
+    assert.ok(field, "the password box should be listed");
+    assert.equal(field.name, "", "and must be listed with no name at all");
+
+    const replies: string[] = [JSON.stringify(listing)];
+    replies.push(
+      JSON.stringify(
+        await callRpc(handlers, RPC_TYPE_TEXT, {
+          ref: field.ref,
+          text: "hunter2",
+          expect: "(no name)",
+        }),
+      ),
+    );
+    replies.push(
+      JSON.stringify(
+        await callRpc(handlers, RPC_CLICK, { ref: field.ref, expect: "(no name)" }),
+      ),
+    );
+    // And with a WRONG expect, which takes the ref_moved path that quotes the
+    // live name back at the agent.
+    replies.push(
+      JSON.stringify(
+        await callRpc(handlers, RPC_CLICK, { ref: field.ref, expect: "something else" }),
+      ),
+    );
+
+    for (const text of [...replies, ...said]) {
+      assert.ok(
+        !text.includes(SECRET_LABEL),
+        `a password field's label reached the model in: ${text.slice(0, 200)}`,
+      );
+    }
     void h;
   });
 });

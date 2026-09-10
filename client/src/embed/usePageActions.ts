@@ -171,7 +171,11 @@ export function usePageActions(options: PageActionsOptions) {
      * "the Stop button is gone" is to stop.
      */
     const controlIsVisible = (): { ok: true } | { ok: false; reason: string; detail: string } => {
-      const verdict = controlUiVisibility(latest.current.getControlBar(), window);
+      // Actions always run the full check, overlay scan included: this is
+      // the moment something is about to be pressed.
+      const verdict = controlUiVisibility(latest.current.getControlBar(), window, {
+        scanOverlays: true,
+      });
       if (verdict.visible) return { ok: true };
       latest.current.onControlRevoked?.(verdict.detail);
       return { ok: false, reason: verdict.reason, detail: verdict.detail };
@@ -378,7 +382,13 @@ export function usePageActions(options: PageActionsOptions) {
         lastUrl = window.location.href;
         confirmedKeys.current.clear();
       }
-      const verdict = controlUiVisibility(latest.current.getControlBar(), window);
+      // The heartbeat skips the overlay scan -- see controlUiVisibility. It
+      // still catches everything that hides the bar by styling it, and an
+      // action cannot slip past while it is skipped, because every action
+      // runs the full check itself.
+      const verdict = controlUiVisibility(latest.current.getControlBar(), window, {
+        scanOverlays: false,
+      });
       if (!verdict.visible) latest.current.onControlRevoked?.(verdict.detail);
     }, VISIBILITY_POLL_MS);
 

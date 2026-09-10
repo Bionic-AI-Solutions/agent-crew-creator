@@ -361,6 +361,55 @@ describe("controlUiVisibility", () => {
     assert.equal(v.reason, "control_ui_obscured");
   });
 
+  test("the cheap heartbeat skips the overlay scan; a full check does not", () => {
+    // The scan reads a rect for thousands of elements -- 37ms at 4x CPU
+    // throttle on a 12k-element page, which is two dropped frames every
+    // second if it runs on the 1s heartbeat. Actions run it; the heartbeat
+    // does not, and an action cannot slip past because it checks for itself.
+    const { bar, doc, win } = build({
+      styles: { veil: { pointerEvents: "none", backgroundColor: "rgb(255, 255, 255)" } },
+    });
+    const veil = doc.createElement("div");
+    veil.id = "veil";
+    doc.body.appendChild(veil);
+    (veil as any).getBoundingClientRect = () => ({
+      width: 1024, height: 400, top: 0, left: 0, bottom: 400, right: 1024,
+    });
+
+    assert.equal(
+      controlUiVisibility(bar, win, { scanOverlays: false }).visible,
+      true,
+      "the heartbeat does not pay for the scan",
+    );
+    const full = controlUiVisibility(bar, win, { scanOverlays: true });
+    assert.equal(full.visible, false, "an action does");
+    assert.equal(full.reason, "control_ui_obscured");
+
+    // Default is the full check, so a caller that forgets is safe.
+    assert.equal(controlUiVisibility(bar, win).visible, false);
+  });
+
+  test("the cheap heartbeat still catches everything done by styling", () => {
+    // What the heartbeat gives up is narrow: only a pointer-events:none
+    // scrim. Everything that hides the bar by styling it is still caught
+    // without the scan.
+    for (const styles of [
+      { wrapper: { display: "none" } },
+      { bar: { visibility: "hidden" } },
+      { wrapper: { opacity: "0" } },
+      { wrapper: { filter: "opacity(0)" } },
+      { wrapper: { clipPath: "inset(100%)" } },
+      { wrapper: { contentVisibility: "hidden" } },
+    ]) {
+      const { bar, win } = build({ styles });
+      assert.equal(
+        controlUiVisibility(bar, win, { scanOverlays: false }).visible,
+        false,
+        JSON.stringify(styles),
+      );
+    }
+  });
+
   test("outermostHost climbs out of the shadow root to the light-DOM wrapper", () => {
     // This is what makes the hit test meaningful: an open shadow root
     // retargets elementFromPoint to its host, so the host is what we compare.
