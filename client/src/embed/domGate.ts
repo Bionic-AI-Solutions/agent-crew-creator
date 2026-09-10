@@ -45,16 +45,32 @@ export function matchesDenylist(name: string, denylist: string[]): string | null
   return null;
 }
 
-/** True for a control that submits a form, denylist or not. */
+/**
+ * True for a control that submits a form, denylist or not.
+ *
+ * Deliberately not `instanceof`: this gate has to judge elements inside
+ * same-origin iframes, and a node from another realm is not an instance of
+ * THIS realm's HTMLButtonElement. An instanceof check would quietly answer
+ * "not a submit button" for every control in a frame -- failing open, in the
+ * one place that must fail closed.
+ */
 export function submitsForm(el: Element): boolean {
-  if (el instanceof HTMLInputElement || el instanceof HTMLButtonElement) {
-    const type = (el.getAttribute("type") || "").toLowerCase();
-    if (type === "submit") return true;
-    // A <button> inside a form with no explicit type submits it. This is the
-    // single most commonly missed way to send something by accident.
-    if (el instanceof HTMLButtonElement && !type && el.form) return true;
-  }
+  const tag = el.tagName.toLowerCase();
+  if (tag !== "input" && tag !== "button") return false;
+  const type = (el.getAttribute("type") || "").toLowerCase();
+  if (type === "submit") return true;
+  // A <button> inside a form with no explicit type submits it. The single
+  // most commonly missed way to send something by accident.
+  if (tag === "button" && !type && el.closest("form")) return true;
   return false;
+}
+
+/** Realm-independent, for the same reason as submitsForm. */
+export function isPasswordField(el: Element): boolean {
+  return (
+    el.tagName.toLowerCase() === "input" &&
+    (el.getAttribute("type") || "").toLowerCase() === "password"
+  );
 }
 
 /**
@@ -92,7 +108,7 @@ export function evaluateAction(
 ): GateVerdict {
   // 1. Never read from or type into a password field. Not configurable, and
   //    checked first so nothing below can reach one.
-  if (el instanceof HTMLInputElement && el.type === "password") {
+  if (isPasswordField(el)) {
     return {
       allowed: false,
       reason: "password_field",

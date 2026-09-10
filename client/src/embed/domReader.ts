@@ -53,9 +53,19 @@ const INTERACTIVE_SELECTOR = [
  */
 export const MAX_ELEMENTS = 200;
 
-/** Roles whose value is never read, whatever else is true of them. */
+/**
+ * Roles whose value is never read, whatever else is true of them.
+ *
+ * By tag and attribute rather than `instanceof`: an element inside a
+ * same-origin iframe belongs to another realm and is not an instance of this
+ * realm's HTMLInputElement, so instanceof would answer "not a password field"
+ * for exactly the fields most worth protecting.
+ */
 function isPasswordField(el: Element): boolean {
-  return el instanceof HTMLInputElement && el.type === "password";
+  return (
+    el.tagName.toLowerCase() === "input" &&
+    (el.getAttribute("type") || "").toLowerCase() === "password"
+  );
 }
 
 /**
@@ -129,8 +139,9 @@ export function elementRole(el: Element): string {
   if (tag === "a") return "link";
   if (tag === "select") return "combobox";
   if (tag === "textarea") return "textbox";
-  if (el instanceof HTMLInputElement) {
-    const type = el.type.toLowerCase();
+  if (tag === "input") {
+    // Absent type means text, matching how the browser treats it.
+    const type = (el.getAttribute("type") || "text").toLowerCase();
     if (type === "checkbox" || type === "radio") return type;
     if (type === "submit" || type === "button" || type === "reset") return "button";
     if (type === "password") return "password";
