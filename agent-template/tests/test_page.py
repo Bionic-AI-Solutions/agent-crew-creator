@@ -1022,63 +1022,61 @@ def test_no_visitor_means_no_one_to_act_for():
 
 # ── goal 4: an agent with DOM off is untouched ─────────────────
 #
-# Not just the prompt. @function_tool registers at class-definition time, so
-# the tools exist on every agent unless something removes them.
+# On the REAL class. Two earlier versions of this test used a stand-in with
+# the attributes the code expected, and both passed while the code did
+# nothing at all on a real MainAgent -- once because FunctionTool keeps its
+# name at info.name rather than .name, once because update_tools() is a
+# coroutine that was never awaited. A stand-in can only confirm the shape you
+# invented; only the shipped class can confirm the shipped behaviour.
 
-def _tool_names(monkeypatch, *, read: bool, control: bool):
+def _real_agent_tool_names(monkeypatch, *, read: bool, control: bool) -> set[str]:
     from config import settings
-    import agent.main_agent as ma
+    from agent.main_agent import MainAgent
 
     monkeypatch.setattr(settings, "dom_read_enabled", read)
     monkeypatch.setattr(settings, "dom_control_enabled", control)
+    agent = MainAgent()
+    return {t.info.name for t in agent.tools}
 
-    # Only the tool-withholding step is exercised, on a stand-in: Agent.tools
-    # is a read-only property, and constructing a real agent would pull in
-    # models, plugins and a room. The method touches nothing else.
-    # Shaped like the real thing: livekit-agents' FunctionTool carries its
-    # name at `info.name`, NOT `.name`. An earlier version of this stand-in
-    # had a `.name`, so it passed while the code under test filtered on an
-    # attribute that does not exist and removed nothing at all.
-    class _Info:
-        def __init__(self, name):
-            self.name = name
 
-    class _FakeTool:
-        def __init__(self, name):
-            self.info = _Info(name)
-            self.id = "id-" + name
-
-    class _Stand:
-        def __init__(self):
-            self.tools = [
-                _FakeTool(n)
-                for n in ["read_page", "click", "type_text", "scroll", "delegate_to_letta"]
-            ]
-
-        def update_tools(self, new):
-            self.tools = list(new)
-
-    stand = _Stand()
-    ma.MainAgent._drop_disabled_page_tools(stand)
-    return {t.info.name for t in stand.tools}
+PAGE_TOOLS = {"read_page", "click", "type_text", "scroll"}
 
 
 def test_an_agent_with_dom_off_carries_no_page_tools(monkeypatch):
-    names = _tool_names(monkeypatch, read=False, control=False)
-    assert "read_page" not in names
-    assert not {"click", "type_text", "scroll"} & names
+    names = _real_agent_tool_names(monkeypatch, read=False, control=False)
+    assert not (PAGE_TOOLS & names), names
     assert "delegate_to_letta" in names, "unrelated tools must be left alone"
 
 
 def test_a_reading_agent_gets_read_page_but_cannot_act(monkeypatch):
-    names = _tool_names(monkeypatch, read=True, control=False)
+    names = _real_agent_tool_names(monkeypatch, read=True, control=False)
     assert "read_page" in names
-    assert not {"click", "type_text", "scroll"} & names
+    assert not ({"click", "type_text", "scroll"} & names), names
 
 
 def test_a_controlling_agent_gets_all_of_them(monkeypatch):
-    names = _tool_names(monkeypatch, read=True, control=True)
-    assert {"read_page", "click", "type_text", "scroll"} <= names
+    names = _real_agent_tool_names(monkeypatch, read=True, control=True)
+    assert PAGE_TOOLS <= names, names
+
+
+def test_the_page_tools_keep_their_run_context(monkeypatch):
+    # Wrapping a bound method must not turn `context: RunContext` into a
+    # parameter the model is asked to supply. If it did, every call would
+    # fail schema validation and the agent could never act.
+    import inspect
+    from agent.main_agent import MainAgent
+    from config import settings
+
+    monkeypatch.setattr(settings, "dom_read_enabled", True)
+    monkeypatch.setattr(settings, "dom_control_enabled", True)
+    agent = MainAgent()
+    by_name = {t.info.name: t for t in agent.tools}
+    for name in PAGE_TOOLS:
+        params = inspect.signature(by_name[name]).parameters
+        assert "self" not in params, name
+        # RunContext is injected by the framework, not requested from the model.
+        model_facing = [p for p, v in params.items() if "RunContext" not in str(v.annotation)]
+        assert "context" not in model_facing, (name, list(params))
 
 
 if __name__ == "__main__":

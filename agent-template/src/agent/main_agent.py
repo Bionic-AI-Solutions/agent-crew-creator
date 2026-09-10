@@ -560,60 +560,32 @@ class MainAgent(Agent):
         instructions = persona + "\n\n" + PRIMARY_HARDCODED_RULES
         if settings.dom_read_enabled:
             instructions += "\n" + page_rules()
-        super().__init__(instructions=instructions)
-
-        # And the page tools themselves, for the same reason the rules are
-        # conditional: an agent that cannot read or act on a page should not
-        # be carrying the schemas for doing so.
+        # The page tools go in through the constructor, filtered by what this
+        # agent is allowed to do -- and ONLY through the constructor.
         #
-        # @function_tool registers at class definition time, so every agent in
-        # the fleet had read_page/click/type_text/scroll on every turn -- four
-        # extra schemas of prompt on agents that will never use them, and a
-        # model that called one got "Acting on the page is not enabled for
-        # this agent" in the middle of a conversation. The goal was that
-        # existing agents stay untouched; this is what makes that true rather
-        # than merely intended.
-        self._drop_disabled_page_tools()
+        # Two earlier versions of this removed them after construction, and
+        # neither did anything. Agent.__init__ collects every @function_tool
+        # on the class unconditionally, and update_tools() is a coroutine,
+        # so an un-awaited call never runs its body. Both passed their test,
+        # because the test used a stand-in with the attributes the code
+        # expected rather than the shape that ships. The four methods below
+        # are therefore NOT decorated at class level: they are wrapped here,
+        # or not at all, and the goal that existing agents stay untouched is
+        # a property of construction rather than a hope about cleanup.
+        super().__init__(instructions=instructions, tools=self._page_tools())
 
-    @staticmethod
-    def _tool_name(tool) -> str | None:
-        """The name livekit-agents knows a tool by.
-
-        NOT `tool.name`. A registered @function_tool is a FunctionTool whose
-        only public attributes are `id` and `info`, and the name lives at
-        `info.name` -- so filtering on `.name` matched nothing and this whole
-        method was a no-op on the real class. It passed its test because the
-        test used a stand-in with a `.name`, which is precisely the hazard of
-        testing against a shape you invented rather than the one that ships.
-        """
-        info = getattr(tool, "info", None)
-        name = getattr(info, "name", None)
-        if isinstance(name, str):
-            return name
-        fallback = getattr(tool, "__name__", None)
-        return fallback if isinstance(fallback, str) else None
-
-    def _drop_disabled_page_tools(self) -> None:
-        """Remove the page tools this agent's configuration does not allow."""
-        unavailable: set[str] = set()
-        if not settings.dom_read_enabled:
-            unavailable.add("read_page")
-        if not settings.dom_control_enabled:
-            unavailable.update({"click", "type_text", "scroll"})
-        if not unavailable:
-            return
-        try:
-            kept = [t for t in self.tools if MainAgent._tool_name(t) not in unavailable]
-            if len(kept) != len(self.tools):
-                self.update_tools(kept)
-                logger.info(
-                    "Page tools withheld (not enabled for this agent): %s",
-                    ", ".join(sorted(unavailable)),
-                )
-        except Exception as exc:  # pragma: no cover - defensive
-            # Carrying an extra tool is a great deal better than failing to
-            # start, so this never raises.
-            logger.warning("Could not withhold page tools: %s", exc)
+    def _page_tools(self) -> list:
+        """The page tools this agent's configuration allows, wrapped for the LLM."""
+        tools: list = []
+        if settings.dom_read_enabled:
+            tools.append(function_tool(self.read_page))
+        if settings.dom_control_enabled:
+            tools.extend([
+                function_tool(self.click),
+                function_tool(self.type_text),
+                function_tool(self.scroll),
+            ])
+        return tools
 
     # ── Vision ───────────────────────────────────────────────
     #
@@ -1185,7 +1157,6 @@ class MainAgent(Agent):
             return None
         return None
 
-    @function_tool
     async def read_page(self, context: RunContext) -> str:
         """Read the controls currently on the user's page.
 
@@ -1193,7 +1164,6 @@ class MainAgent(Agent):
         """
         return await self._page_rpc(context, "bionic.read_page", {})
 
-    @function_tool
     async def click(self, context: RunContext, ref: str, expect: str) -> str:
         """Click one control on the user's page.
 
@@ -1212,7 +1182,6 @@ class MainAgent(Agent):
             context, "bionic.click", {"ref": ref, "expect": expect}
         )
 
-    @function_tool
     async def type_text(self, context: RunContext, ref: str, text: str, expect: str) -> str:
         """Type into one field on the user's page.
 
@@ -1225,7 +1194,6 @@ class MainAgent(Agent):
             context, "bionic.type_text", {"ref": ref, "text": text, "expect": expect}
         )
 
-    @function_tool
     async def scroll(self, context: RunContext, ref: str = "", direction: str = "down") -> str:
         """Scroll the page, or scroll a control into view when given its ref."""
         return await self._page_rpc(
