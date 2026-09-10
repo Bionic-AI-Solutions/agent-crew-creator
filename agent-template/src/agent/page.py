@@ -33,6 +33,15 @@ MAX_PAGE_AGE_SECONDS = 120.0
 # it -- the whole point of the cap is that the value is chosen by the page.
 MAX_NAME_CHARS = 120
 
+# How the [PAGE] block starts. Anything that begins with this is page-authored
+# text, not something a person said, and callers use it to tell the two apart.
+PAGE_BLOCK_PREFIX = "[PAGE]"
+
+# The widget already caps at 200. Re-applied here because the widget is not
+# the only thing that can publish to the topic, and because "bounded on
+# arrival" should mean bounded, not bounded in length only.
+MAX_ELEMENTS = 200
+
 
 @dataclass
 class PageElement:
@@ -64,7 +73,13 @@ def _clean(raw: str, limit: int) -> str:
     # str.split() alone is not enough: it splits on whitespace, and NUL, BEL
     # and friends are not whitespace, so they survived into the listing. Map
     # every control character to a space first, then collapse.
-    mapped = "".join(" " if ch < " " or ch == "\x7f" else ch for ch in raw)
+    # The same range the browser strips (C0, DEL, and C1). These two
+    # implementations clean the same string, so a character one removes and
+    # the other keeps means one of them is wrong -- C1 (0x80-0x9f) was kept
+    # here and stripped there.
+    mapped = "".join(
+        " " if ch < " " or "\x7f" <= ch <= "\x9f" else ch for ch in raw
+    )
     flat = " ".join(mapped.split())
     return flat[:limit] if len(flat) > limit else flat
 
@@ -85,6 +100,8 @@ def parse_listing(payload: str) -> PageListing | None:
 
     elements: list[PageElement] = []
     for item in raw.get("elements") or []:
+        if len(elements) >= MAX_ELEMENTS:
+            break
         if not isinstance(item, dict):
             continue
         ref = str(item.get("ref") or "")
@@ -127,7 +144,13 @@ def format_for_model(listing: PageListing, max_chars: int = MAX_PAGE_CHARS) -> s
     ]
 
     lines: list[str] = []
-    used = len(header)
+    # Reserve room for the trailing "(N more...)" line up front. It used to be
+    # appended after the loop with no budget of its own, so the block could
+    # exceed max_chars by however long that line happened to be -- and the
+    # existing test tolerated it with a 15% fudge factor rather than catching
+    # it.
+    suffix_budget = 40
+    used = len(header) + suffix_budget
     dropped = listing.truncated
     for element in ordered:
         name = element.name or "(no name)"

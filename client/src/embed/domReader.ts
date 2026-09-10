@@ -77,7 +77,18 @@ export function cleanName(raw: string): string {
     .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return flat.length > MAX_NAME_CHARS ? flat.slice(0, MAX_NAME_CHARS) + "…" : flat;
+  if (flat.length <= MAX_NAME_CHARS) return flat;
+  // Truncate to MAX_NAME_CHARS - 1 so the result including the ellipsis is
+  // exactly MAX_NAME_CHARS. Adding it on top produced 121 characters, and the
+  // agent re-cleans to 120 -- cutting off the ellipsis and nothing else, so
+  // the model saw truncated text that looked complete.
+  let cut = flat.slice(0, MAX_NAME_CHARS - 1);
+  // Never end on half a character. A lone surrogate survives JSON but is not
+  // encodable as UTF-8, so it would be a crash waiting for the first consumer
+  // that touches the raw name instead of a JSON-escaped copy of it.
+  const last = cut.charCodeAt(cut.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
+  return cut + "…";
 }
 
 /**

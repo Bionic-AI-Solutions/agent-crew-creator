@@ -20,6 +20,7 @@ import {
   MAX_NAME_CHARS,
   cleanName,
 } from "../client/src/embed/domReader.ts";
+import { signatureForTest } from "../client/src/embed/usePagePublisher.ts";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", {
   url: "https://mail.example.com/inbox",
@@ -103,8 +104,21 @@ describe("cleanName", () => {
 
   test("bounds the length, so one attribute cannot crowd out the page", () => {
     const out = cleanName("A".repeat(50_000));
-    assert.ok(out.length <= MAX_NAME_CHARS + 1);
+    // Exactly at the cap, ellipsis included. Producing MAX+1 meant the agent's
+    // own re-clean to MAX cut off the ellipsis and nothing else, so truncated
+    // text arrived looking complete.
+    assert.equal(out.length, MAX_NAME_CHARS);
     assert.ok(out.endsWith("…"));
+  });
+
+  test("never truncates through the middle of a character", () => {
+    // A lone surrogate survives JSON but cannot be encoded as UTF-8, so it is
+    // a crash waiting for the first consumer that touches the raw name.
+    const out = cleanName("A".repeat(MAX_NAME_CHARS - 2) + "\u{1F600}x");
+    const beforeEllipsis = out.slice(0, -1);
+    const lastCode = beforeEllipsis.charCodeAt(beforeEllipsis.length - 1);
+    assert.ok(!(lastCode >= 0xd800 && lastCode <= 0xdbff), "ends on a lone high surrogate");
+    assert.doesNotThrow(() => Buffer.from(out, "utf8"));
   });
 
   test("leaves an ordinary name exactly as it reads", () => {
@@ -250,5 +264,27 @@ describe("resolveRef", () => {
     const page = capturePage(document, window);
     document.body.innerHTML = "<button>Replaced</button>";
     assert.equal(resolveRef(page.elements[0].ref, document, window)?.textContent, "Replaced");
+  });
+});
+
+describe("publisher signature", () => {
+  // The signature decides whether a change is published at all, so a
+  // collision is a silently missed update, not a cosmetic issue.
+  test("two different pages cannot share a signature via a separator", () => {
+    const a = { url: "u", title: "", capturedAt: 0, elements: [
+      { ref: "ref_1", role: "button|EXTRA", name: "X", visible: true },
+    ] };
+    const b = { url: "u", title: "", capturedAt: 0, elements: [
+      { ref: "ref_1", role: "button", name: "EXTRA|X", visible: true },
+    ] };
+    assert.notEqual(signatureForTest(a as never), signatureForTest(b as never));
+  });
+
+  test("an unchanged page produces an unchanged signature", () => {
+    // The whole point: an idle page must cost nothing.
+    const page = { url: "u", title: "", capturedAt: 0, elements: [
+      { ref: "ref_1", role: "button", name: "Save", visible: true },
+    ] };
+    assert.equal(signatureForTest(page as never), signatureForTest({ ...page } as never));
   });
 });

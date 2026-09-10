@@ -28,18 +28,21 @@ const MIN_INTERVAL_MS = 1200;
 /**
  * A page that has not changed is not worth sending again.
  *
- * Separators are printable on purpose. This used raw NUL/SOH/STX, which JS
- * strings tolerate perfectly well and git does not: it classified the file as
- * binary, so `git diff` reported "Bin 0 -> 3733 bytes" and the whole file
- * became invisible to code review and blame. A separator only has to be a
- * character an accessible name cannot contain, and by the time a listing gets
- * here every name has been flattened to single spaces.
+ * JSON rather than a joined string. The previous version separated fields
+ * with "|", which is a character real UI text contains all the time --
+ * breadcrumbs, "Yes | No", price ranges -- so two genuinely different pages
+ * could produce the same signature and a real change would be silently
+ * treated as no change. JSON quotes and escapes each field, so nothing a
+ * page can write moves a boundary.
+ *
+ * (An earlier version used raw NUL/SOH/STX, which no page contains but which
+ * made git classify this file as binary and hide its diff entirely.)
  */
-function signature(listing: ReturnType<typeof capturePage>): string {
-  return [
+export function signature(listing: ReturnType<typeof capturePage>): string {
+  return JSON.stringify([
     listing.url,
-    ...listing.elements.map((e) => `${e.role}|${e.name}|${e.visible}`),
-  ].join("\n");
+    listing.elements.map((e) => [e.role, e.name, e.visible]),
+  ]);
 }
 
 export function usePagePublisher(enabled: boolean) {
@@ -64,8 +67,12 @@ export function usePagePublisher(enabled: boolean) {
         const listing = capturePage(document, window);
         const sig = signature(listing);
         if (sig === lastSignature.current) return;
-        lastSignature.current = sig;
         await room.localParticipant.sendText(JSON.stringify(listing), { topic: PAGE_TOPIC });
+        // Only after the send resolves. Recording it first meant a send that
+        // threw -- the reconnect case this function already worries about --
+        // left the agent on a stale listing permanently, because the next
+        // identical capture would be skipped as unchanged.
+        lastSignature.current = sig;
       } catch (error) {
         // The agent degrades to vision-only without a listing. It must not
         // lose the session because a page could not be read -- a host page
@@ -116,3 +123,6 @@ export function usePagePublisher(enabled: boolean) {
     };
   }, [enabled, room]);
 }
+
+/** Exposed for tests; the signature decides whether a change is sent at all. */
+export { signature as signatureForTest };

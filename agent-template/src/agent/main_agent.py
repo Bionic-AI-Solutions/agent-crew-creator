@@ -1746,13 +1746,13 @@ async def entrypoint(ctx: JobContext):
         try:
             msg = ev.item
             role = getattr(msg, "role", None)
-            text = getattr(msg, "text_content", None)
-            if not text or not text.strip():
+            text = _spoken_text(msg)
+            if not text:
                 return
             # Still tracked: delegate_to_letta sends the last few turns along
             # as spoken context, so a delegated task knows what led to it.
             label = "Primary AI" if role == "assistant" else "User"
-            agent._recent_turns.append(f"[{label}]: {text.strip()[:300]}")
+            agent._recent_turns.append(f"[{label}]: {text}")
         except Exception as e:
             logger.warning("Failed to record turn: %s", e)
 
@@ -2333,6 +2333,37 @@ async def entrypoint(ctx: JobContext):
         flush_langfuse()
 
     ctx.add_shutdown_callback(_shutdown)
+
+
+def _spoken_text(msg) -> str:
+    """What the user actually said, with page text excluded.
+
+    ChatMessage.text_content joins every string content item with newlines, so
+    the [PAGE] block attached for the model ends up inside it. _recent_turns is
+    then handed to delegate_to_letta as `[User]: ...` -- as things a person
+    said -- and Letta is a separate agent with tools that never sees the PAGE
+    rules. A control on the page could therefore put instructions in front of
+    a tool-using agent, labelled as the user asking for them.
+
+    So the block is filtered out here rather than being made more convincing
+    downstream: the listing is for the model deciding what to say, and is not
+    conversation.
+    """
+    from agent.page import PAGE_BLOCK_PREFIX
+
+    items = getattr(msg, "content", None) or []
+    parts = [
+        item.strip()
+        for item in items
+        if isinstance(item, str)
+        and item.strip()
+        and not item.lstrip().startswith(PAGE_BLOCK_PREFIX)
+    ]
+    if parts:
+        return "\n".join(parts).strip()[:300]
+    # A message with no string parts of its own (or only a page block) has
+    # nothing a person said in it.
+    return ""
 
 
 def _resolve_agent_name() -> str:
