@@ -824,6 +824,18 @@ class MainAgent(Agent):
                     # evicted because they are wrong.
                     self._evict_old_pages(turn_ctx)
                     new_message.content.append(block)
+                    # NOTE: this disables preemptive generation for the turn.
+                    # ChatMessage.raw_text_content joins every string content
+                    # item, so appending here changes the text the framework
+                    # compares against the transcript it speculated on, and
+                    # _transcripts_equivalent fails -- costing the ~1s/turn
+                    # that preemptive_generation exists to save.
+                    #
+                    # Left as is deliberately: a reply speculated before the
+                    # listing arrived is a reply that did not see the page,
+                    # which is precisely the guessing this feature removes.
+                    # Vision escapes the same fate only because ImageContent
+                    # is not a string and raw_text_content skips it.
                     logger.info("Page: attached %d chars of page listing", len(block))
             except Exception as exc:
                 # Same contract as vision: an enhancement that fails must not
@@ -2392,7 +2404,11 @@ def _conversation_for_summary(session) -> list[str]:
             role = getattr(msg, "role", "unknown")
             if role not in ("user", "assistant"):
                 continue
-            text = _spoken_text(msg)
+            # No limit here. The 300-character cap belongs to the delegation
+            # path, where five turns ride along as context; a summary that is
+            # about to be written up and emailed should not be silently cut
+            # mid-sentence, which is what reusing the default did.
+            text = _spoken_text(msg, limit=None)
             if text:
                 messages.append(f"{role}: {text}")
     except Exception as exc:
@@ -2400,7 +2416,7 @@ def _conversation_for_summary(session) -> list[str]:
     return messages
 
 
-def _spoken_text(msg) -> str:
+def _spoken_text(msg, limit: int | None = 300) -> str:
     """What the user actually said, with page text excluded.
 
     ChatMessage.text_content joins every string content item with newlines, so
@@ -2423,7 +2439,8 @@ def _spoken_text(msg) -> str:
         and not _is_page_block(item)
     ]
     if parts:
-        return "\n".join(parts).strip()[:300]
+        text = "\n".join(parts).strip()
+        return text[:limit] if limit is not None else text
     # A message with no string parts of its own (or only a page block) has
     # nothing a person said in it.
     return ""

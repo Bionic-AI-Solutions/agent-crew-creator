@@ -672,24 +672,53 @@ def test_the_unicode_gap_is_recorded_against_this_python():
 def test_only_the_newest_listing_survives_in_history():
     """Old blocks are not merely expensive, they are wrong: refs renumber on
     every capture, so a retained block describes a page that no longer exists
-    using refs that now mean something else."""
+    using refs that now mean something else.
+
+    Driven through the SDK's real ChatContext and ChatMessage, not stand-ins.
+    The whole mechanism rests on ChatContext.copy() sharing message objects
+    rather than deep-copying them -- so a test built on hand-rolled classes
+    would assert the assumption instead of exercising it, and would keep
+    passing on the day a future SDK version made it false.
+    """
+    from livekit.agents.llm import ChatContext
     from agent.main_agent import MainAgent
 
-    class Msg:
-        def __init__(self, content):
-            self.content = content
+    ctx = ChatContext.empty()
+    ctx.add_message(role="user", content=[
+        "what is this?", '[PAGE] Old\nhttps://e\nref_1 button "Gone"',
+    ])
+    ctx.add_message(role="user", content=[
+        '[PAGE] Older\nhttps://e\nref_1 button "Also gone"',
+    ])
+    ctx.add_message(role="assistant", content=["just talking"])
 
-    class Ctx:
-        items = [
-            Msg(["what is this?", '[PAGE] Old\nhttps://e\nref_1 button "Gone"']),
-            Msg(['[PAGE] Older\nhttps://e\nref_1 button "Also gone"']),
-            Msg(["just talking"]),
-        ]
+    # What on_user_turn_completed is handed is a copy, so eviction has to
+    # reach the originals through it or it does nothing durable.
+    working_copy = ctx.copy()
+    MainAgent._evict_old_pages(object.__new__(MainAgent), working_copy)
 
-    ctx = Ctx()
-    MainAgent._evict_old_pages(object.__new__(MainAgent), ctx)
-    remaining = [part for m in ctx.items for part in m.content]
+    remaining = [
+        part
+        for msg in ctx.items
+        for part in (msg.content or [])
+        if isinstance(part, str)
+    ]
     assert remaining == ["what is this?", "just talking"]
+
+
+def test_eviction_reaches_the_real_context_through_a_copy():
+    """Names the SDK behaviour the eviction depends on, so that if a future
+    version deep-copies items this fails here rather than silently letting
+    stale listings pile up again."""
+    from livekit.agents.llm import ChatContext
+
+    ctx = ChatContext.empty()
+    ctx.add_message(role="user", content=["hello"])
+    copied = ctx.copy()
+    assert copied.items[0] is ctx.items[0], (
+        "ChatContext.copy() no longer shares message objects; _evict_old_pages "
+        "cannot work through the copy it is handed"
+    )
 
 
 # ── round 7 ────────────────────────────────────────────────────

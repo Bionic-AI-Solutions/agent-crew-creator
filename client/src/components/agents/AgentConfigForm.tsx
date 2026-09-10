@@ -16,6 +16,9 @@ interface Props {
   agentId: number;
 }
 
+/** Mirrors MAX_DENYLIST_TERM_CHARS in server/agentRouter.ts. */
+const MAX_DENYLIST_TERM_CHARS = 60;
+
 export default function AgentConfigForm({ agentId }: Props) {
   const { setSelectedAgentId } = useAppContext();
   const utils = trpc.useUtils();
@@ -79,7 +82,12 @@ export default function AgentConfigForm({ agentId }: Props) {
 
   const updateMutation = trpc.agentsCrud.update.useMutation({
     onSuccess: () => {
-      toast.success("Agent saved");
+      toast.success(
+        denylistWasTrimmed
+          ? "Agent saved — denylist terms were tidied to what is enforced"
+          : "Agent saved",
+      );
+      setDomActionDenylist(denylistTerms.join(", "));
       utils.agentsCrud.getById.invalidate({ id: agentId });
     },
     onError: (err) => toast.error(err.message),
@@ -104,6 +112,20 @@ export default function AgentConfigForm({ agentId }: Props) {
     onError: (err) => toast.error(err.message),
   });
 
+  // Parsed once, and the field is rewritten from the result on save.
+  //
+  // The server truncates a term over 60 characters rather than refusing it,
+  // so without echoing that back the operator kept seeing their original text
+  // above an "Agent saved" toast while a shorter term was what actually got
+  // enforced. For a field whose entire job is to block dangerous actions,
+  // believing a phrase is protecting something when only its first 60
+  // characters are is the wrong thing to be wrong about.
+  const denylistTerms = domActionDenylist
+    .split(",")
+    .map((s) => s.trim().toLowerCase().slice(0, MAX_DENYLIST_TERM_CHARS))
+    .filter(Boolean);
+  const denylistWasTrimmed = denylistTerms.join(", ") !== domActionDenylist.trim();
+
   const handleDeploy = () => {
     // Save all fields first, then deploy (which auto-provisions Letta if needed)
     updateMutation.mutate(
@@ -125,10 +147,7 @@ export default function AgentConfigForm({ agentId }: Props) {
         domReadEnabled,
         // Never persist a combination the server would reject anyway.
         domControlEnabled: domControlEnabled && domReadEnabled,
-        domActionDenylist: domActionDenylist
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean),
+        domActionDenylist: denylistTerms,
         backgroundAudioEnabled,
         busyAudioEnabled,
         lettaAgentName: lettaAgentName || null,
