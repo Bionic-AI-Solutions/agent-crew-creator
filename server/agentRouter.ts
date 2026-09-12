@@ -469,14 +469,14 @@ export const agentRouter = router({
           const { isSupportedVoiceProvider, listVoicesForProvider } = await import(
             "./services/voiceProviders.js"
           );
-          if (isSupportedVoiceProvider(newTtsProvider)) {
+          if (isSupportedVoiceProvider(newTtsProvider, "tts")) {
             const [app2] = await ctx.db.select().from(apps).where(eq(apps.id, existing.appId)).limit(1);
             if (app2) {
               const { readAppSecret } = await import("./vaultClient.js");
               const vault = (await readAppSecret(app2.slug)) || {};
               const apiKey = vault[`agent_${existing.id}_${newTtsProvider}_api_key`];
               if (apiKey) {
-                const voices = await listVoicesForProvider(newTtsProvider, apiKey);
+                const voices = await listVoicesForProvider(newTtsProvider, apiKey, "tts");
                 const ids = new Set(voices.map((v) => v.id));
                 if (!ids.has(newTtsVoice)) {
                   // Build a short suggestion list — voices that name-match the typed value.
@@ -544,6 +544,24 @@ export const agentRouter = router({
         } catch (err) {
           if (err instanceof TRPCError) throw err;
           log.warn("gpu-ai voice validation failed (non-fatal)", { error: String(err) });
+        }
+      }
+
+      // stt_model validation -- see checkSttModel. Fails open (logged) when
+      // the gateway cannot answer, so an outage never blocks a save.
+      const newSttProvider = (updates.sttProvider ?? existing.sttProvider ?? "").trim().toLowerCase();
+      const newSttModel = updates.sttModel === undefined ? existing.sttModel : updates.sttModel;
+      const sttChanged = updates.sttProvider !== undefined || updates.sttModel !== undefined;
+      if (sttChanged && newSttModel && newSttProvider) {
+        const { checkSttModel } = await import("./services/voiceProviders.js");
+        const check = await checkSttModel(newSttProvider, newSttModel);
+        if (check.outcome === "rejected") throw new TRPCError({ code: "BAD_REQUEST", message: check.message });
+        if (check.outcome === "skipped") {
+          log.warn("STT model validation skipped: gpu-ai voice list unavailable (non-fatal)", {
+            provider: newSttProvider, model: newSttModel, error: check.error,
+          });
+        } else {
+          log.info("Validated stt_model", { provider: newSttProvider, model: newSttModel });
         }
       }
 
@@ -909,21 +927,28 @@ export const agentRouter = router({
       const pipeline = input.pipeline ?? "tts";
       const fallback = fallbackVoicesFor(input.provider, pipeline);
 
-      if (!isSupportedVoiceProvider(input.provider)) {
+      // The pipeline goes to every lookup, not just the fallback: gpu-ai
+      // serves both, and resolving it by name alone handed the STT picker
+      // the TTS voice list.
+      if (!isSupportedVoiceProvider(input.provider, pipeline)) {
         return { voices: fallback, hasKey: false as const, supported: false as const,
                  source: "fallback" as const, keySource: "none" as const };
       }
       // Keyless in-cluster providers (gpu-ai) have no Vault entry to read and
       // must not be gated on one -- that gate is what hid the cloned voices.
-      if (!voiceProviderNeedsKey(input.provider)) {
+      if (!voiceProviderNeedsKey(input.provider, pipeline)) {
         try {
-          const voices = await listVoicesForProvider(input.provider, "");
+          const voices = await listVoicesForProvider(input.provider, "", pipeline);
+          // An in-cluster provider never legitimately serves nothing; an
+          // empty parse means the endpoint's shape changed. Report it as a
+          // discovery failure rather than as an empty catalogue.
+          if (voices.length === 0) throw new Error("live discovery returned an empty list");
           return { voices, hasKey: true as const, supported: true as const,
                    source: "live" as const, keySource: "none" as const };
         } catch (err) {
           // An in-cluster blip must not empty the picker mid-edit.
           log.warn("live voice discovery failed; serving fallback", {
-            provider: input.provider, error: String(err).slice(0, 200),
+            provider: input.provider, pipeline, error: String(err).slice(0, 200),
           });
           return { voices: fallback, hasKey: true as const, supported: true as const,
                    source: "fallback" as const, keySource: "none" as const };
@@ -943,7 +968,7 @@ export const agentRouter = router({
         return { voices: fallback, hasKey: false as const, supported: true as const,
                  source: "fallback" as const, keySource };
       }
-      const voices = await listVoicesForProvider(input.provider, apiKey);
+      const voices = await listVoicesForProvider(input.provider, apiKey, pipeline);
       return { voices, hasKey: true as const, supported: true as const,
                source: "live" as const, keySource };
     }),
@@ -1724,6 +1749,23 @@ export const agentRouter = router({
       await assertAppMembership(ctx, agent.appId);
       const [app] = await ctx.db.select().from(apps).where(eq(apps.id, agent.appId)).limit(1);
       if (!app) throw new Error("App not found");
+
+      // An agent saved while the STT picker listed TTS voices holds a voice
+      // name in stt_model; the deployer ships it verbatim and the agent
+      // deploys deaf. The save path checks this too, but Deploy/Redeploy
+      // reads the stored row directly, so it is checked here as well.
+      if (agent.sttModel && agent.sttProvider) {
+        const { checkSttModel } = await import("./services/voiceProviders.js");
+        const check = await checkSttModel(agent.sttProvider, agent.sttModel);
+        if (check.outcome === "rejected") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: `Cannot deploy: ${check.message} Pick an STT model in the builder and deploy again.` });
+        }
+        if (check.outcome === "skipped") {
+          log.warn("STT model check skipped before deploy: gpu-ai voice list unavailable (non-fatal)", {
+            agentId: agent.id, provider: agent.sttProvider, model: agent.sttModel, error: check.error,
+          });
+        }
+      }
 
       // Update status
       await ctx.db

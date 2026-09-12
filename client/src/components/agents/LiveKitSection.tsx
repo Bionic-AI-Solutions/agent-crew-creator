@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Image, Mic, Upload, Volume2, Brain, Save, X, User } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
+import { pickerOptions, type PickerVoice } from "./pickerOptions";
 
 /**
  * A key is optional here. An agent with no override of its own runs on the
@@ -138,6 +139,8 @@ function LiveVoicePicker({
   pipeline?: "tts" | "stt";
 }) {
   const [filter, setFilter] = useState("");
+  // The STT side of this picker lists transcription models, not voices.
+  const noun = pipeline === "stt" ? "models" : "voices";
   const { data, isLoading, isError, error } = trpc.agentsCrud.listProviderVoices.useQuery(
     { agentId, provider, pipeline },
     { enabled: !!provider, retry: false },
@@ -156,33 +159,27 @@ function LiveVoicePicker({
     return (
       <div className="text-xs text-amber-600">
         {data?.hasKey === false
-          ? "No key for this provider — neither on this agent nor shared in Vault. Add one below to load voices."
-          : "No voices available for this provider."}
+          ? `No key for this provider — neither on this agent nor shared in Vault. Add one below to load ${noun}.`
+          : `No ${noun} available for this provider.`}
       </div>
     );
   }
 
   if (isLoading) {
-    return <Input value="Loading voices…" disabled />;
+    return <Input value={`Loading ${noun}…`} disabled />;
   }
   if (isError) {
     return (
       <div className="text-xs text-destructive">
-        {(error as any)?.message || "Failed to load voices"}
+        {(error as any)?.message || `Failed to load ${noun}`}
       </div>
     );
   }
 
-  const voices: Array<{ id: string; name?: string; description?: string; language?: string }> =
-    data?.voices ?? [];
-  const filtered = filter
-    ? voices.filter((v) => {
-        const haystack = `${v.id} ${v.name || ""} ${v.description || ""}`.toLowerCase();
-        return haystack.includes(filter.toLowerCase());
-      })
-    : voices;
-  const valueInList = filtered.some((v) => v.id === value);
-  const options = !valueInList && value ? [{ id: value }, ...filtered] : filtered;
+  const voices: PickerVoice[] = data?.voices ?? [];
+  // See pickerOptions: the current value is always rendered, labelled when
+  // the provider does not list it.
+  const options = pickerOptions(voices, filter, value, `not in the ${provider} ${noun.replace(/s$/, "")} list`);
 
   return (
     <div className="space-y-1">
@@ -190,12 +187,12 @@ function LiveVoicePicker({
         <Input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder={`Search ${voices.length} voices…`}
+          placeholder={`Search ${voices.length} ${noun}…`}
           className="h-8 text-xs"
         />
       )}
       <Select value={value} onValueChange={onChange}>
-        <SelectTrigger><SelectValue placeholder="Select voice" /></SelectTrigger>
+        <SelectTrigger><SelectValue placeholder={pipeline === "stt" ? "Select model" : "Select voice"} /></SelectTrigger>
         <SelectContent className="max-h-72">
           {options.length === 0 ? (
             <div className="px-2 py-1 text-xs text-muted-foreground">No matches</div>
@@ -217,7 +214,7 @@ function LiveVoicePicker({
       </Select>
       {voices.length > 0 && (
         <p className="text-[10px] text-muted-foreground">
-          {voices.length} voices available • live from {provider}
+          {voices.length} {noun} available • {data?.source === "fallback" ? "fallback list" : `live from ${provider}`}
         </p>
       )}
     </div>

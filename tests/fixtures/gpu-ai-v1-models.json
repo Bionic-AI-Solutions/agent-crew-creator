@@ -1,0 +1,285 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "qwen3.6-35b-a3b-fp8",
+      "object": "model",
+      "created": 1789192589,
+      "owned_by": "vllm",
+      "root": "/app/models/text_generation/qwen3.6-35b-a3b-fp8",
+      "parent": null,
+      "max_model_len": 131072,
+      "permission": [
+        {
+          "id": "modelperm-b86ce13ce8d4f311",
+          "object": "model_permission",
+          "created": 1789192589,
+          "allow_create_engine": false,
+          "allow_sampling": true,
+          "allow_logprobs": true,
+          "allow_search_indices": false,
+          "allow_view": true,
+          "allow_fine_tuning": false,
+          "organization": "*",
+          "group": null,
+          "is_blocking": false
+        }
+      ],
+      "capabilities": [
+        "text",
+        "tools",
+        "vision",
+        "video",
+        "structured-output"
+      ]
+    },
+    {
+      "id": "qwen3.5-27b-fp8",
+      "object": "model",
+      "created": 1789192589,
+      "owned_by": "vllm",
+      "root": "/app/models/text_generation/qwen3.6-35b-a3b-fp8",
+      "parent": null,
+      "max_model_len": 131072,
+      "permission": [
+        {
+          "id": "modelperm-a85ca2c32162778f",
+          "object": "model_permission",
+          "created": 1789192589,
+          "allow_create_engine": false,
+          "allow_sampling": true,
+          "allow_logprobs": true,
+          "allow_search_indices": false,
+          "allow_view": true,
+          "allow_fine_tuning": false,
+          "organization": "*",
+          "group": null,
+          "is_blocking": false
+        }
+      ],
+      "capabilities": [
+        "text",
+        "tools",
+        "vision",
+        "video",
+        "structured-output"
+      ]
+    },
+    {
+      "id": "gemma-4-e4b-it",
+      "object": "model",
+      "created": 1789192589,
+      "owned_by": "vllm",
+      "root": "/app/models/text_generation/qwen3.6-35b-a3b-fp8",
+      "parent": null,
+      "max_model_len": 131072,
+      "permission": [
+        {
+          "id": "modelperm-85970840ebfb5bd0",
+          "object": "model_permission",
+          "created": 1789192589,
+          "allow_create_engine": false,
+          "allow_sampling": true,
+          "allow_logprobs": true,
+          "allow_search_indices": false,
+          "allow_view": true,
+          "allow_fine_tuning": false,
+          "organization": "*",
+          "group": null,
+          "is_blocking": false
+        }
+      ],
+      "capabilities": [
+        "text",
+        "tools",
+        "vision",
+        "video",
+        "structured-output"
+      ]
+    },
+    {
+      "id": "gemma-4-e4b-it-think",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "vllm",
+      "capabilities": [
+        "text",
+        "tools",
+        "vision",
+        "video",
+        "structured-output",
+        "reasoning"
+      ],
+      "max_model_len": 131072
+    },
+    {
+      "id": "qwen3.6-35b-a3b-fp8-think",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "vllm",
+      "capabilities": [
+        "text",
+        "tools",
+        "vision",
+        "video",
+        "structured-output",
+        "reasoning"
+      ],
+      "max_model_len": 131072
+    },
+    {
+      "id": "qwen3.5-27b-fp8-think",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "vllm",
+      "capabilities": [
+        "text",
+        "tools",
+        "vision",
+        "video",
+        "structured-output",
+        "reasoning"
+      ],
+      "max_model_len": 131072
+    },
+    {
+      "id": "qwen3.6-35b-a3b-fp8-batch",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "batch-tier",
+      "capabilities": [
+        "text",
+        "tools",
+        "vision",
+        "video",
+        "structured-output",
+        "batch"
+      ],
+      "max_model_len": 131072
+    },
+    {
+      "id": "qwen3-embedding-0.6b",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "sentence-transformers",
+      "capabilities": [
+        "embeddings"
+      ],
+      "max_model_len": 32768
+    },
+    {
+      "id": "qwen3-reranker-0.6b",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "qwen",
+      "capabilities": [
+        "rerank"
+      ],
+      "max_model_len": 32768
+    },
+    {
+      "id": "indic-parler-tts",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "ai4bharat",
+      "capabilities": [
+        "tts"
+      ],
+      "max_model_len": 2048
+    },
+    {
+      "id": "f5-tts",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "ai4bharat-indicf5",
+      "capabilities": [
+        "tts",
+        "voice-cloning",
+        "indic"
+      ],
+      "max_model_len": 2048
+    },
+    {
+      "id": "indextts2",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "index-tts",
+      "capabilities": [
+        "tts",
+        "voice-cloning",
+        "emotion"
+      ],
+      "max_model_len": 2048
+    },
+    {
+      "id": "faster-whisper",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "systran",
+      "capabilities": [
+        "stt"
+      ],
+      "max_model_len": 2048
+    },
+    {
+      "id": "faster-whisper-batch",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "batch-tier",
+      "capabilities": [
+        "stt",
+        "batch"
+      ],
+      "max_model_len": 2048
+    },
+    {
+      "id": "tts-1-batch",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "batch-tier",
+      "capabilities": [
+        "tts",
+        "batch"
+      ],
+      "max_model_len": 2048
+    },
+    {
+      "id": "sensevoice",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "funaudio-llm",
+      "capabilities": [
+        "stt",
+        "emotion",
+        "events",
+        "multilingual"
+      ],
+      "max_model_len": 2048
+    },
+    {
+      "id": "svara-tts-v1",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "kenpath",
+      "capabilities": [
+        "tts",
+        "voice-cloning",
+        "indian",
+        "multilingual"
+      ],
+      "max_model_len": 5000
+    },
+    {
+      "id": "ezvc",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "springlab-iitm",
+      "capabilities": [
+        "voice-conversion",
+        "any-to-any",
+        "language-agnostic"
+      ],
+      "max_model_len": 2048
+    }
+  ]
+}

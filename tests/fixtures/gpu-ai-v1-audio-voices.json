@@ -1,0 +1,843 @@
+{
+  "object": "list",
+  "data": {
+    "voices": [
+      {
+        "id": "Eric-ov",
+        "name": "Eric",
+        "language": "en",
+        "languages": [
+          "en"
+        ],
+        "gender": null,
+        "engine": "omnivoice",
+        "engine_display": "OmniVoice",
+        "engine_abbrev": "ov",
+        "native_id": "03201d89d428",
+        "meta": {
+          "slug": "eric",
+          "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+          "created_at": "1784574203",
+          "registry_voice_id": "03201d89d428"
+        }
+      },
+      {
+        "id": "Severus",
+        "name": "Severus",
+        "language": "en",
+        "languages": [
+          "en"
+        ],
+        "gender": null,
+        "engine": "omnivoice",
+        "engine_display": "OmniVoice",
+        "engine_abbrev": "ov",
+        "native_id": "efcc32af8e4a",
+        "meta": {
+          "slug": "severus",
+          "reference_text": "I can tell you how to bottle fame, brew glory, and even put a stopper in death.",
+          "created_at": "1781767727.3112547",
+          "registry_voice_id": "0faf3a2b63c3"
+        }
+      },
+      {
+        "id": "Anika-ov",
+        "name": "Anika",
+        "language": "hi",
+        "languages": [
+          "hi",
+          "en"
+        ],
+        "gender": null,
+        "engine": "omnivoice",
+        "engine_display": "OmniVoice",
+        "engine_abbrev": "ov",
+        "native_id": "123a839323c6",
+        "meta": {
+          "slug": "anika",
+          "reference_text": "\u0906\u091c \u0915\u093e \u0926\u093f\u0928 \u092c\u0939\u0941\u0924 \u0905\u091a\u094d\u091b\u093e \u0930\u0939\u093e\u0964 \u0939\u092e\u0928\u0947 \u0905\u092a\u0928\u093e \u0915\u093e\u092e \u0938\u092e\u092f \u092a\u0930 \u092a\u0942\u0930\u093e \u0915\u093f\u092f\u093e, \u0914\u0930 \u0915\u0932 \u090f\u0915 \u0928\u0908 \u0936\u0941\u0930\u0941\u0906\u0924 \u0915\u0930\u0947\u0902\u0917\u0947\u0964 \u092e\u0947\u0939\u0928\u0924 \u0938\u0947 \u0939\u0940 \u0938\u092b\u0932\u0924\u093e \u092e\u093f\u0932\u0924\u0940 \u0939\u0948\u0964",
+          "created_at": "1784575397",
+          "registry_voice_id": "123a839323c6"
+        }
+      },
+      {
+        "id": "Bill-ov",
+        "name": "Bill",
+        "language": "en",
+        "languages": [
+          "en"
+        ],
+        "gender": null,
+        "engine": "omnivoice",
+        "engine_display": "OmniVoice",
+        "engine_abbrev": "ov",
+        "native_id": "225e36e14b9c",
+        "meta": {
+          "slug": "bill",
+          "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+          "created_at": "1784574561",
+          "registry_voice_id": "225e36e14b9c"
+        }
+      },
+      {
+        "id": "Matilda-ov",
+        "name": "Matilda",
+        "language": "en",
+        "languages": [
+          "en"
+        ],
+        "gender": null,
+        "engine": "omnivoice",
+        "engine_display": "OmniVoice",
+        "engine_abbrev": "ov",
+        "native_id": "2a8875453849",
+        "meta": {
+          "slug": "matilda",
+          "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+          "created_at": "1784574013",
+          "registry_voice_id": "2a8875453849"
+        }
+      },
+      {
+        "id": "Customer Care Tripti \u2013 Calm, Experienced Voice for Hindi AI Bots & Agents-ov",
+        "name": "Customer Care Tripti \u2013 Calm, Experienced Voice for Hindi AI Bots & Agents",
+        "language": "hi",
+        "languages": [
+          "hi",
+          "en"
+        ],
+        "gender": null,
+        "engine": "omnivoice",
+        "engine_display": "OmniVoice",
+        "engine_abbrev": "ov",
+        "native_id": "449503dc8787",
+        "meta": {
+          "slug": "customer-care-tripti-calm-experienced-voice-for-hindi-ai-bots-agents",
+          "reference_text": "\u0906\u091c \u0915\u093e \u0926\u093f\u0928 \u092c\u0939\u0941\u0924 \u0905\u091a\u094d\u091b\u093e \u0930\u0939\u093e\u0964 \u0939\u092e\u0928\u0947 \u0905\u092a\u0928\u093e \u0915\u093e\u092e \u0938\u092e\u092f \u092a\u0930 \u092a\u0942\u0930\u093e \u0915\u093f\u092f\u093e, \u0914\u0930 \u0915\u0932 \u090f\u0915 \u0928\u0908 \u0936\u0941\u0930\u0941\u0906\u0924 \u0915\u0930\u0947\u0902\u0917\u0947\u0964 \u092e\u0947\u0939\u0928\u0924 \u0938\u0947 \u0939\u0940 \u0938\u092b\u0932\u0924\u093e \u092e\u093f\u0932\u0924\u0940 \u0939\u0948\u0964",
+          "created_at": "1784575747",
+          "registry_voice_id": "449503dc8787"
+        }
+      },
+      {
+        "id": "River-ov",
+        "name": "River",
+        "language": "en",
+        "languages": [
+          "en"
+        ],
+        "gender": null,
+        "engine": "omnivoice",
+        "engine_display": "OmniVoice",
+        "engine_abbrev": "ov",
+        "native_id": "504603f02372",
+        "meta": {
+          "slug": "river",
+          "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+          "created_at": "1784573790",
+          "registry_voice_id": "504603f02372"
+        }
+      },
+      {
+        "id": "Kanika-ov",
+        "name": "Kanika",
+        "language": "hi",
+        "languages": [
+          "hi",
+          "en"
+        ],
+        "gender": null,
+        "engine": "omnivoice",
+        "engine_display": "OmniVoice",
+        "engine_abbrev": "ov",
+        "native_id": "5306ce25fb1b",
+        "meta": {
+          "slug": "kanika",
+          "reference_text": "\u0906\u091c \u0915\u093e \u0926\u093f\u0928 \u092c\u0939\u0941\u0924 \u0905\u091a\u094d\u091b\u093e \u0930\u0939\u093e\u0964 \u0939\u092e\u0928\u0947 \u0905\u092a\u0928\u093e \u0915\u093e\u092e \u0938\u092e\u092f \u092a\u0930 \u092a\u0942\u0930\u093e \u0915\u093f\u092f\u093e, \u0914\u0930 \u0915\u0932 \u090f\u0915 \u0928\u0908 \u0936\u0941\u0930\u0941\u0906\u0924 \u0915\u0930\u0947\u0902\u0917\u0947\u0964 \u092e\u0947\u0939\u0928\u0924 \u0938\u0947 \u0939\u0940 \u0938\u092b\u0932\u0924\u093e \u092e\u093f\u0932\u0924\u0940 \u0939\u0948\u0964",
+          "created_at": "1784575434",
+          "registry_voice_id": "5306ce25fb1b"
+        }
+      }
+    ],
+    "engines": [
+      {
+        "slug": "omnivoice",
+        "display_name": "OmniVoice",
+        "healthy": true,
+        "voice_count": 38,
+        "last_error": null,
+        "last_probe_at": 1789192567.6610777
+      },
+      {
+        "slug": "kokoro",
+        "display_name": "Kokoro (AMD batch)",
+        "healthy": true,
+        "voice_count": 68,
+        "last_error": null,
+        "last_probe_at": 1789192567.6615937
+      },
+      {
+        "slug": "indic-tts",
+        "display_name": "Indic Parler-TTS (AMD batch)",
+        "healthy": false,
+        "voice_count": 0,
+        "last_error": "ConnectError: [Errno -2] Name or service not known",
+        "last_probe_at": 1789192567.6618254
+      },
+      {
+        "slug": "openai",
+        "display_name": "OpenAI",
+        "healthy": true,
+        "voice_count": 11,
+        "last_error": null,
+        "last_probe_at": 1789192567.6620908
+      },
+      {
+        "slug": "elevenlabs",
+        "display_name": "ElevenLabs",
+        "healthy": true,
+        "voice_count": 37,
+        "last_error": null,
+        "last_probe_at": 1789192567.6624472
+      },
+      {
+        "slug": "sarvam",
+        "display_name": "Sarvam AI",
+        "healthy": true,
+        "voice_count": 37,
+        "last_error": null,
+        "last_probe_at": 1789192567.662679
+      }
+    ],
+    "indic_presets": [
+      {
+        "name": "Divya",
+        "language": "hi",
+        "gender": "female",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Rohit",
+        "language": "hi",
+        "gender": "male",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Mary",
+        "language": "en",
+        "gender": "female",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Thoma",
+        "language": "en",
+        "gender": "male",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Aditi",
+        "language": "bn",
+        "gender": "female",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Tapan",
+        "language": "bn",
+        "gender": "male",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Sita",
+        "language": "ta",
+        "gender": "female",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Karan",
+        "language": "ta",
+        "gender": "male",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Sunita",
+        "language": "te",
+        "gender": "female",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Ravi",
+        "language": "te",
+        "gender": "male",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Amrita",
+        "language": "mr",
+        "gender": "female",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Dinesh",
+        "language": "mr",
+        "gender": "male",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Meera",
+        "language": "gu",
+        "gender": "female",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Jatin",
+        "language": "gu",
+        "gender": "male",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Priya",
+        "language": "kn",
+        "gender": "female",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Vikas",
+        "language": "kn",
+        "gender": "male",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Nisha",
+        "language": "ml",
+        "gender": "female",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Raghav",
+        "language": "ml",
+        "gender": "male",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Kavya",
+        "language": "pa",
+        "gender": "female",
+        "engine": "indic-parler-tts"
+      },
+      {
+        "name": "Aakash",
+        "language": "pa",
+        "gender": "male",
+        "engine": "indic-parler-tts"
+      }
+    ],
+    "cloned_voices": [
+      {
+        "name": "Eric",
+        "engine": "omnivoice",
+        "voice_id": "03201d89d428",
+        "engine_voice_id": "03201d89d428",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "eric",
+        "created_at": "1784574203",
+        "updated_at": "1784574203",
+        "audio_hash": "399e5dc8370566e5",
+        "audio_size_bytes": "412466"
+      },
+      {
+        "engine_voice_id": "efcc32af8e4a",
+        "language": "en",
+        "name": "Severus",
+        "voice_id": "0faf3a2b63c3",
+        "reference_text": "I can tell you how to bottle fame, brew glory, and even put a stopper in death.",
+        "slug": "severus",
+        "created_at": "1781767727.3112547",
+        "engine": "omnivoice",
+        "updated_at": "1782200731",
+        "audio_size_bytes": "429678",
+        "audio_hash": "078b77829cab8566"
+      },
+      {
+        "engine": "omnivoice",
+        "voice_id": "123a839323c6",
+        "engine_voice_id": "123a839323c6",
+        "language": "hi",
+        "name": "Anika",
+        "reference_text": "\u0906\u091c \u0915\u093e \u0926\u093f\u0928 \u092c\u0939\u0941\u0924 \u0905\u091a\u094d\u091b\u093e \u0930\u0939\u093e\u0964 \u0939\u092e\u0928\u0947 \u0905\u092a\u0928\u093e \u0915\u093e\u092e \u0938\u092e\u092f \u092a\u0930 \u092a\u0942\u0930\u093e \u0915\u093f\u092f\u093e, \u0914\u0930 \u0915\u0932 \u090f\u0915 \u0928\u0908 \u0936\u0941\u0930\u0941\u0906\u0924 \u0915\u0930\u0947\u0902\u0917\u0947\u0964 \u092e\u0947\u0939\u0928\u0924 \u0938\u0947 \u0939\u0940 \u0938\u092b\u0932\u0924\u093e \u092e\u093f\u0932\u0924\u0940 \u0939\u0948\u0964",
+        "languages": "hi,en",
+        "slug": "anika",
+        "created_at": "1784575397",
+        "updated_at": "1784575397",
+        "audio_hash": "de6d4dcc78e14c72",
+        "audio_size_bytes": "396862"
+      },
+      {
+        "name": "Bill",
+        "engine": "omnivoice",
+        "voice_id": "225e36e14b9c",
+        "engine_voice_id": "225e36e14b9c",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "bill",
+        "created_at": "1784574561",
+        "updated_at": "1784574561",
+        "audio_hash": "3bff5d892fd684a6",
+        "audio_size_bytes": "517234"
+      },
+      {
+        "name": "Matilda",
+        "engine": "omnivoice",
+        "voice_id": "2a8875453849",
+        "engine_voice_id": "2a8875453849",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "matilda",
+        "created_at": "1784574013",
+        "updated_at": "1784574013",
+        "audio_hash": "e3d8ff72fd0a6351",
+        "audio_size_bytes": "436986"
+      },
+      {
+        "engine": "omnivoice",
+        "voice_id": "449503dc8787",
+        "engine_voice_id": "449503dc8787",
+        "language": "hi",
+        "name": "Customer Care Tripti \u2013 Calm, Experienced Voice for Hindi AI Bots & Agents",
+        "reference_text": "\u0906\u091c \u0915\u093e \u0926\u093f\u0928 \u092c\u0939\u0941\u0924 \u0905\u091a\u094d\u091b\u093e \u0930\u0939\u093e\u0964 \u0939\u092e\u0928\u0947 \u0905\u092a\u0928\u093e \u0915\u093e\u092e \u0938\u092e\u092f \u092a\u0930 \u092a\u0942\u0930\u093e \u0915\u093f\u092f\u093e, \u0914\u0930 \u0915\u0932 \u090f\u0915 \u0928\u0908 \u0936\u0941\u0930\u0941\u0906\u0924 \u0915\u0930\u0947\u0902\u0917\u0947\u0964 \u092e\u0947\u0939\u0928\u0924 \u0938\u0947 \u0939\u0940 \u0938\u092b\u0932\u0924\u093e \u092e\u093f\u0932\u0924\u0940 \u0939\u0948\u0964",
+        "languages": "hi,en",
+        "slug": "customer-care-tripti-calm-experienced-voice-for-hindi-ai-bots-agents",
+        "created_at": "1784575747",
+        "updated_at": "1784575747",
+        "audio_hash": "70d06bcfc35459f5",
+        "audio_size_bytes": "421382"
+      },
+      {
+        "name": "River",
+        "engine": "omnivoice",
+        "voice_id": "504603f02372",
+        "engine_voice_id": "504603f02372",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "river",
+        "created_at": "1784573790",
+        "updated_at": "1784573790",
+        "audio_hash": "9fbe7300794b96ea",
+        "audio_size_bytes": "445902"
+      },
+      {
+        "engine": "omnivoice",
+        "voice_id": "5306ce25fb1b",
+        "engine_voice_id": "5306ce25fb1b",
+        "language": "hi",
+        "name": "Kanika",
+        "reference_text": "\u0906\u091c \u0915\u093e \u0926\u093f\u0928 \u092c\u0939\u0941\u0924 \u0905\u091a\u094d\u091b\u093e \u0930\u0939\u093e\u0964 \u0939\u092e\u0928\u0947 \u0905\u092a\u0928\u093e \u0915\u093e\u092e \u0938\u092e\u092f \u092a\u0930 \u092a\u0942\u0930\u093e \u0915\u093f\u092f\u093e, \u0914\u0930 \u0915\u0932 \u090f\u0915 \u0928\u0908 \u0936\u0941\u0930\u0941\u0906\u0924 \u0915\u0930\u0947\u0902\u0917\u0947\u0964 \u092e\u0947\u0939\u0928\u0924 \u0938\u0947 \u0939\u0940 \u0938\u092b\u0932\u0924\u093e \u092e\u093f\u0932\u0924\u0940 \u0939\u0948\u0964",
+        "languages": "hi,en",
+        "slug": "kanika",
+        "created_at": "1784575434",
+        "updated_at": "1784575434",
+        "audio_hash": "8db19f507f8ddecf",
+        "audio_size_bytes": "441444"
+      },
+      {
+        "engine": "omnivoice",
+        "voice_id": "55ab6fdaf0fa",
+        "engine_voice_id": "55ab6fdaf0fa",
+        "language": "hi",
+        "name": "Saavi \u2013 Natural Hindi Customer Care Agent",
+        "reference_text": "\u0906\u091c \u0915\u093e \u0926\u093f\u0928 \u092c\u0939\u0941\u0924 \u0905\u091a\u094d\u091b\u093e \u0930\u0939\u093e\u0964 \u0939\u092e\u0928\u0947 \u0905\u092a\u0928\u093e \u0915\u093e\u092e \u0938\u092e\u092f \u092a\u0930 \u092a\u0942\u0930\u093e \u0915\u093f\u092f\u093e, \u0914\u0930 \u0915\u0932 \u090f\u0915 \u0928\u0908 \u0936\u0941\u0930\u0941\u0906\u0924 \u0915\u0930\u0947\u0902\u0917\u0947\u0964 \u092e\u0947\u0939\u0928\u0924 \u0938\u0947 \u0939\u0940 \u0938\u092b\u0932\u0924\u093e \u092e\u093f\u0932\u0924\u0940 \u0939\u0948\u0964",
+        "languages": "hi,en",
+        "slug": "saavi-natural-hindi-customer-care-agent",
+        "created_at": "1784575690",
+        "updated_at": "1784575690",
+        "audio_hash": "a5cd527e914ef22b",
+        "audio_size_bytes": "410236"
+      },
+      {
+        "engine": "omnivoice",
+        "voice_id": "67aba974274c",
+        "engine_voice_id": "67aba974274c",
+        "language": "en",
+        "name": "Mark",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "languages": "en,hi",
+        "slug": "mark",
+        "created_at": "1784574695",
+        "updated_at": "1784574695",
+        "audio_hash": "1e3cfe6aecc14a07",
+        "audio_size_bytes": "374570"
+      },
+      {
+        "engine_voice_id": "fc5ddbe790c2",
+        "language": "en",
+        "name": "Sudhir",
+        "voice_id": "6af6d28e51ed",
+        "reference_text": "So reducing risk in achieving startup success, why? Because your time has a return on investment.",
+        "slug": "sudhir",
+        "created_at": "1779310533.773542",
+        "engine": "omnivoice",
+        "updated_at": "1784510014",
+        "audio_size_bytes": "290958",
+        "audio_hash": "2df703b59ae1dd57"
+      },
+      {
+        "engine_voice_id": "0548b9b1334c",
+        "language": "hi",
+        "name": "SirShree",
+        "voice_id": "73021d4cf20b",
+        "reference_text": "\u0924\u094b \u0909\u0938\u0947 \u092b\u093f\u0930 \u0938\u0947 \u091c\u0917\u093e\u092f\u093e \u091c\u093e\u090f, \u0915\u0939\u0940\u0902 \u0935\u0939\u093e \u0906\u0924\u094d\u092e\u093e \u0926\u092c \u0924\u094b \u0928\u0939\u0940\u0902 \u0917\u0908, \u0927\u0942\u0932 \u092e\u0947\u0902, \u0927\u0941\u0928\u094d\u0926 \u092e\u0947\u0902, \u0909\u0938\u0947 \u092b\u093f\u0930 \u0938\u0947 \u091c\u0917\u093e\u092f\u093e \u091c\u093e\u090f.",
+        "languages": "hi,en",
+        "slug": "sirshree",
+        "created_at": "1779310534.701607",
+        "engine": "omnivoice",
+        "updated_at": "1785271484",
+        "audio_size_bytes": "469776",
+        "audio_hash": "91d289376cc6089a"
+      },
+      {
+        "engine_voice_id": "5126121a4125",
+        "language": "en",
+        "name": "Don LaFontaine",
+        "voice_id": "7731347f1f78",
+        "reference_text": "One man has the power to change that, and to spread his voice across the earth, for all of mankind to hear. One man.",
+        "slug": "don-lafontaine",
+        "created_at": "1781767727.3079238",
+        "engine": "omnivoice",
+        "updated_at": "1785711437",
+        "audio_size_bytes": "390798",
+        "audio_hash": "f2f5169d22dc2d89"
+      },
+      {
+        "name": "Jessica",
+        "engine": "omnivoice",
+        "voice_id": "7c52cba2afb8",
+        "engine_voice_id": "7c52cba2afb8",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "jessica",
+        "created_at": "1784574147",
+        "updated_at": "1784574147",
+        "audio_hash": "650bb0aeb73607ef",
+        "audio_size_bytes": "403548"
+      },
+      {
+        "engine_voice_id": "d9086eae01b1",
+        "language": "en",
+        "name": "Julie Andrews",
+        "voice_id": "7d16bb2f756c",
+        "reference_text": "If I may, it's a true story. Many years ago, I was working on the Fox Studios and I was finishing up The Sound of Music.",
+        "slug": "julie-andrews",
+        "created_at": "1781767727.3121545",
+        "engine": "omnivoice",
+        "updated_at": "1785270573",
+        "audio_size_bytes": "425838",
+        "audio_hash": "bde7316a8c87c537"
+      },
+      {
+        "engine": "omnivoice",
+        "voice_id": "898cf097ee83",
+        "engine_voice_id": "898cf097ee83",
+        "language": "hi",
+        "name": "Monika Sogam",
+        "reference_text": "\u0906\u091c \u0915\u093e \u0926\u093f\u0928 \u092c\u0939\u0941\u0924 \u0905\u091a\u094d\u091b\u093e \u0930\u0939\u093e\u0964 \u0939\u092e\u0928\u0947 \u0905\u092a\u0928\u093e \u0915\u093e\u092e \u0938\u092e\u092f \u092a\u0930 \u092a\u0942\u0930\u093e \u0915\u093f\u092f\u093e, \u0914\u0930 \u0915\u0932 \u090f\u0915 \u0928\u0908 \u0936\u0941\u0930\u0941\u0906\u0924 \u0915\u0930\u0947\u0902\u0917\u0947\u0964 \u092e\u0947\u0939\u0928\u0924 \u0938\u0947 \u0939\u0940 \u0938\u092b\u0932\u0924\u093e \u092e\u093f\u0932\u0924\u0940 \u0939\u0948\u0964",
+        "languages": "hi,en",
+        "slug": "monika-sogam",
+        "created_at": "1784575547",
+        "updated_at": "1784575547",
+        "audio_hash": "883be76cb73b166c",
+        "audio_size_bytes": "425840"
+      },
+      {
+        "name": "Spuds Oxley",
+        "engine": "omnivoice",
+        "voice_id": "8d93c3742ff2",
+        "engine_voice_id": "8d93c3742ff2",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "spuds-oxley",
+        "created_at": "1784574753",
+        "updated_at": "1784574753",
+        "audio_hash": "2043b5576cbaf444",
+        "audio_size_bytes": "577420"
+      },
+      {
+        "engine_voice_id": "ceac41cbfa8f",
+        "language": "hi",
+        "name": "aditya",
+        "voice_id": "9007b685ce46",
+        "reference_text": "\u0906\u091c \u0939\u092e \u090f\u0915 \u0928\u0908 \u092f\u093e\u0924\u094d\u0930\u093e \u0936\u0941\u0930\u0942 \u0915\u0930 \u0930\u0939\u0947 \u0939\u0948\u0902\u0964 \u091c\u094d\u091e\u093e\u0928 \u0939\u0940 \u0938\u092c\u0938\u0947 \u092c\u0921\u093c\u0940 \u0936\u0915\u094d\u0924\u093f \u0939\u0948\u0964 \u0939\u0930 \u0926\u093f\u0928 \u0915\u0941\u091b \u0928\u092f\u093e \u0938\u0940\u0916\u0928\u093e \u091a\u093e\u0939\u093f\u090f\u0964 \u092e\u0947\u0939\u0928\u0924 \u0915\u093e \u092b\u0932 \u0939\u092e\u0947\u0936\u093e \u092e\u0940\u0920\u093e \u0939\u094b\u0924\u093e \u0939\u0948\u0964",
+        "languages": "hi,en",
+        "slug": "aditya",
+        "created_at": "1779310533.526643",
+        "engine": "omnivoice",
+        "updated_at": "1784510249",
+        "audio_size_bytes": "371118",
+        "audio_hash": "bd25cd3bcda5ed30"
+      },
+      {
+        "name": "Brian",
+        "engine": "omnivoice",
+        "voice_id": "90234ad6478d",
+        "engine_voice_id": "90234ad6478d",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "brian",
+        "created_at": "1784574372",
+        "updated_at": "1784574372",
+        "audio_hash": "b9a8048c305a55ce",
+        "audio_size_bytes": "399090"
+      },
+      {
+        "name": "Will",
+        "engine": "omnivoice",
+        "voice_id": "9085b56524d6",
+        "engine_voice_id": "9085b56524d6",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "will",
+        "created_at": "1784574069",
+        "updated_at": "1784574069",
+        "audio_hash": "0ec20c0a46a4637c",
+        "audio_size_bytes": "474880"
+      },
+      {
+        "name": "Sarah",
+        "engine": "omnivoice",
+        "voice_id": "963149d8863e",
+        "engine_voice_id": "963149d8863e",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "sarah",
+        "created_at": "1784573519",
+        "updated_at": "1784573519",
+        "audio_hash": "a06b227f94bf69ec",
+        "audio_size_bytes": "425840"
+      },
+      {
+        "name": "Lily",
+        "engine": "omnivoice",
+        "voice_id": "a45a9f3d4516",
+        "engine_voice_id": "a45a9f3d4516",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "lily",
+        "created_at": "1784574504",
+        "updated_at": "1784574504",
+        "audio_hash": "82f2ce9f89c5f59d",
+        "audio_size_bytes": "432528"
+      },
+      {
+        "name": "Chris",
+        "engine": "omnivoice",
+        "voice_id": "aa0b1ac0aa32",
+        "engine_voice_id": "aa0b1ac0aa32",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "chris",
+        "created_at": "1784574316",
+        "updated_at": "1784574316",
+        "audio_hash": "7a0ca779720d99f9",
+        "audio_size_bytes": "401320"
+      },
+      {
+        "name": "Alice",
+        "engine": "omnivoice",
+        "voice_id": "b84799bc51f1",
+        "engine_voice_id": "b84799bc51f1",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "alice",
+        "created_at": "1784573956",
+        "updated_at": "1784573956",
+        "audio_hash": "7919cece7e1bf122",
+        "audio_size_bytes": "452590"
+      },
+      {
+        "name": "Charlie",
+        "engine": "omnivoice",
+        "voice_id": "c354e15542ee",
+        "engine_voice_id": "c354e15542ee",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "charlie",
+        "created_at": "1784573651",
+        "updated_at": "1784573651",
+        "audio_hash": "4e6fc38035422f51",
+        "audio_size_bytes": "486026"
+      },
+      {
+        "name": "Harry",
+        "engine": "omnivoice",
+        "voice_id": "cf61c37eae2d",
+        "engine_voice_id": "cf61c37eae2d",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "harry",
+        "created_at": "1784573826",
+        "updated_at": "1784573826",
+        "audio_hash": "a0beb5b03220a8e3",
+        "audio_size_bytes": "434756"
+      },
+      {
+        "engine": "omnivoice",
+        "voice_id": "cf8a35790b07",
+        "engine_voice_id": "cf8a35790b07",
+        "language": "hi",
+        "name": "Kabir R \u2013 Reliable Hindi Customer Care",
+        "reference_text": "\u0906\u091c \u0915\u093e \u0926\u093f\u0928 \u092c\u0939\u0941\u0924 \u0905\u091a\u094d\u091b\u093e \u0930\u0939\u093e\u0964 \u0939\u092e\u0928\u0947 \u0905\u092a\u0928\u093e \u0915\u093e\u092e \u0938\u092e\u092f \u092a\u0930 \u092a\u0942\u0930\u093e \u0915\u093f\u092f\u093e, \u0914\u0930 \u0915\u0932 \u090f\u0915 \u0928\u0908 \u0936\u0941\u0930\u0941\u0906\u0924 \u0915\u0930\u0947\u0902\u0917\u0947\u0964 \u092e\u0947\u0939\u0928\u0924 \u0938\u0947 \u0939\u0940 \u0938\u092b\u0932\u0924\u093e \u092e\u093f\u0932\u0924\u0940 \u0939\u0948\u0964",
+        "languages": "hi,en",
+        "slug": "kabir-r-reliable-hindi-customer-care",
+        "created_at": "1784575603",
+        "updated_at": "1784575603",
+        "audio_hash": "b356e0e027ec2293",
+        "audio_size_bytes": "392404"
+      },
+      {
+        "name": "Daniel",
+        "engine": "omnivoice",
+        "voice_id": "d13fa8787e95",
+        "engine_voice_id": "d13fa8787e95",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "daniel",
+        "created_at": "1784574448",
+        "updated_at": "1784574448",
+        "audio_hash": "df5cb1b2df8d33d9",
+        "audio_size_bytes": "590794"
+      },
+      {
+        "name": "Laura",
+        "engine": "omnivoice",
+        "voice_id": "d29860597c6c",
+        "engine_voice_id": "d29860597c6c",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "laura",
+        "created_at": "1784573575",
+        "updated_at": "1784573575",
+        "audio_hash": "22cbcf23a0ecc9fb",
+        "audio_size_bytes": "421382"
+      },
+      {
+        "engine_voice_id": "07c6f132e475",
+        "language": "en",
+        "name": "Shardul",
+        "voice_id": "d3d723fd3269",
+        "reference_text": "hi guys a very good morning to all of you i think the team bionic is on the right track and we're doing some really good stuff in terms of gaining mileage.",
+        "boundary_check": "clean",
+        "languages": "",
+        "slug": "shardul",
+        "created_at": "1788802905.5235584",
+        "engine": "omnivoice",
+        "updated_at": "1788928237.208982",
+        "audio_size_bytes": "432044",
+        "audio_hash": "6820425375c5262e"
+      },
+      {
+        "name": "Liam",
+        "engine": "omnivoice",
+        "voice_id": "d494c1bd94a8",
+        "engine_voice_id": "d494c1bd94a8",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "liam",
+        "created_at": "1784573881",
+        "updated_at": "1784573881",
+        "audio_hash": "3eb643371be6226e",
+        "audio_size_bytes": "432528"
+      },
+      {
+        "engine": "omnivoice",
+        "voice_id": "d76cc40870e4",
+        "engine_voice_id": "d76cc40870e4",
+        "language": "hi",
+        "name": "Tarini",
+        "reference_text": "\u0906\u091c \u0915\u093e \u0926\u093f\u0928 \u092c\u0939\u0941\u0924 \u0905\u091a\u094d\u091b\u093e \u0930\u0939\u093e\u0964 \u0939\u092e\u0928\u0947 \u0905\u092a\u0928\u093e \u0915\u093e\u092e \u0938\u092e\u092f \u092a\u0930 \u092a\u0942\u0930\u093e \u0915\u093f\u092f\u093e, \u0914\u0930 \u0915\u0932 \u090f\u0915 \u0928\u0908 \u0936\u0941\u0930\u0941\u0906\u0924 \u0915\u0930\u0947\u0902\u0917\u0947\u0964 \u092e\u0947\u0939\u0928\u0924 \u0938\u0947 \u0939\u0940 \u0938\u092b\u0932\u0924\u093e \u092e\u093f\u0932\u0924\u0940 \u0939\u0948\u0964",
+        "languages": "hi,en",
+        "slug": "tarini",
+        "created_at": "1784575491",
+        "updated_at": "1784575491",
+        "audio_hash": "ed47d7889eaa033a",
+        "audio_size_bytes": "414694"
+      },
+      {
+        "name": "George",
+        "engine": "omnivoice",
+        "voice_id": "d8eeebe2d990",
+        "engine_voice_id": "d8eeebe2d990",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "george",
+        "created_at": "1784573707",
+        "updated_at": "1784573707",
+        "audio_hash": "7bce5ea1b61d8c49",
+        "audio_size_bytes": "423610"
+      },
+      {
+        "name": "Bella",
+        "engine": "omnivoice",
+        "voice_id": "e7dd785a9a42",
+        "engine_voice_id": "e7dd785a9a42",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "bella",
+        "created_at": "1784574259",
+        "updated_at": "1784574259",
+        "audio_hash": "0d0fc1008a9f8890",
+        "audio_size_bytes": "454818"
+      },
+      {
+        "name": "Hope",
+        "engine": "omnivoice",
+        "voice_id": "e95958214a9d",
+        "engine_voice_id": "e95958214a9d",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "hope",
+        "created_at": "1784574638",
+        "updated_at": "1784574638",
+        "audio_hash": "02ee63a7b5fe48ef",
+        "audio_size_bytes": "434756"
+      },
+      {
+        "name": "Adam",
+        "engine": "omnivoice",
+        "voice_id": "ef4f1c2197c6",
+        "engine_voice_id": "ef4f1c2197c6",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "adam",
+        "created_at": "1784572343",
+        "updated_at": "1784572343",
+        "audio_hash": "f96f31aab912a131",
+        "audio_size_bytes": "434756"
+      },
+      {
+        "name": "Roger",
+        "engine": "omnivoice",
+        "voice_id": "f7caf2b02d4a",
+        "engine_voice_id": "f7caf2b02d4a",
+        "language": "en",
+        "reference_text": "The morning launch went smoothly, and the whole team felt a quiet sense of pride. Tomorrow we begin the next chapter, with clear goals and steady hands.",
+        "slug": "roger",
+        "created_at": "1784573482",
+        "updated_at": "1784573482",
+        "audio_hash": "ec913159aebb4c4b",
+        "audio_size_bytes": "434756"
+      },
+      {
+        "engine_voice_id": "6cfbff4fe3cc",
+        "language": "en",
+        "name": "Morgan Freeman",
+        "voice_id": "f9636bce5e9c",
+        "reference_text": "Don't let it drown in a noisy world, because in the end, no man, woman, or algorithm knows what's right for you. Always trust your inner voice.",
+        "slug": "morgan-freeman",
+        "created_at": "1781767727.3099604",
+        "engine": "omnivoice",
+        "updated_at": "1785271484",
+        "audio_size_bytes": "525198",
+        "audio_hash": "6ca366fb8e925ac8"
+      }
+    ],
+    "total_count": 191
+  }
+}
