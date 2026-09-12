@@ -72,6 +72,24 @@ export function gpuAiBase(): string {
     .replace(/\/v1$/, "");
 }
 
+/**
+ * STT model ids the gateway advertises but cannot serve. One source for the
+ * picker, the fallback and the save gate, so they cannot disagree.
+ *
+ * TODO(gateway-sensevoice): remove "sensevoice" once the gateway's
+ * sensevoice backend answers. Its config default is http://ai-sensevoice:8000
+ * and no such Service exists in the cluster; every transcription answers
+ * HTTP 500 "[Errno -2] Name or service not known" (verified live 2026-09-12).
+ */
+export const WITHHELD_STT_MODELS: ReadonlyMap<string, string> = new Map([
+  ["sensevoice", "its backend is not deployed on the gateway (every request fails with a DNS error)"],
+]);
+
+/** The gateway resolves STT model names with strip().lower(); so do we. */
+export function normalizeModelName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
 const PROVIDERS: Record<string, VoiceProviderConfig> = {
   "gpu-ai": {
     key: "gpu-ai",
@@ -114,6 +132,38 @@ const PROVIDERS: Record<string, VoiceProviderConfig> = {
           language: v.language || v.lang || undefined,
           description: bits.length ? bits.join(" • ") : undefined,
         }];
+      });
+    },
+  },
+  // gpu-ai's STT side. Same in-cluster server, different list: /v1/models
+  // tags every entry with `capabilities`, and "stt" marks the engines that
+  // /v1/audio/transcriptions accepts as `model` (what plugins.py sends as
+  // stt_model). Keyed "provider:pipeline" because a by-name lookup resolved
+  // gpu-ai to the TTS entry above, so the Agent Builder's STT picker was
+  // handed the 191 TTS voices.
+  "gpu-ai:stt": {
+    key: "gpu-ai",
+    label: "GPU-AI",
+    pipeline: "stt",
+    requiresKey: false,
+    authHeader: () => ({}),
+    listUrl: () => `${gpuAiBase()}/v1/models`,
+    parse: (raw) => {
+      const arr: any[] = Array.isArray(raw?.data) ? raw.data : [];
+      return arr.flatMap((m): VoiceOption[] => {
+        const caps: string[] = Array.isArray(m?.capabilities) ? m.capabilities : [];
+        if (typeof m?.id !== "string" || !m.id || !caps.includes("stt")) return [];
+        // "<id>-batch" is the FIFO batch lane on the AMD node. A live voice
+        // turn queued behind batch transcription is not a working STT, so
+        // the picker does not offer it; the runtime can still be pointed at
+        // it deliberately via stt_model.
+        if (caps.includes("batch")) return [];
+        // Advertised but unservable -- see WITHHELD_STT_MODELS. Compared
+        // the way the gate compares, so the two can never disagree.
+        if (WITHHELD_STT_MODELS.has(normalizeModelName(m.id))) return [];
+        const extras = caps.filter((c) => c !== "stt");
+        const description = [m.owned_by, ...extras].filter(Boolean).join(" • ");
+        return [{ id: m.id, name: m.id, description: description || undefined }];
       });
     },
   },
@@ -249,12 +299,41 @@ const PROVIDERS: Record<string, VoiceProviderConfig> = {
   },
 };
 
+type Pipeline = "tts" | "stt";
+
+/**
+ * Resolve a provider's config for a pipeline. gpu-ai serves both pipelines
+ * from one name, so the pipeline-scoped key is tried first. With a pipeline
+ * given, a by-name hit on the other pipeline is a miss: asking a TTS-only
+ * provider for STT models must read as unsupported, not answer with voices.
+ * Without a pipeline (key probes, which only have a key to test) the
+ * by-name entry stands, as before.
+ */
+function findConfig(provider: string, pipeline?: Pipeline): VoiceProviderConfig | undefined {
+  const name = provider.toLowerCase();
+  // "provider:pipeline" is an internal key, never a provider name a caller
+  // may pass: otherwise a crafted "gpu-ai:stt" resolves by name, reads as
+  // keyless, and the key-probe flow would store a key under that name.
+  if (name.includes(":")) return undefined;
+  // Own-property lookups only: "constructor" or "__proto__" must not read as
+  // a provider (it did under bracket indexing: "Failed to reach undefined").
+  if (pipeline && hasOwn(PROVIDERS, `${name}:${pipeline}`)) return PROVIDERS[`${name}:${pipeline}`];
+  if (!hasOwn(PROVIDERS, name)) return undefined;
+  const cfg = PROVIDERS[name];
+  if (pipeline && cfg.pipeline !== pipeline) return undefined;
+  return cfg;
+}
+
+function hasOwn(table: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(table, key);
+}
+
 /**
  * Whether this provider's voice list needs an API key. False for in-cluster
  * providers, whose list can be fetched for any agent with no key configured.
  */
-export function voiceProviderNeedsKey(provider: string): boolean {
-  const cfg = PROVIDERS[provider.toLowerCase()];
+export function voiceProviderNeedsKey(provider: string, pipeline?: Pipeline): boolean {
+  const cfg = findConfig(provider, pipeline);
   return cfg ? cfg.requiresKey !== false : true;
 }
 
@@ -273,58 +352,121 @@ export function voiceProviderNeedsKey(provider: string): boolean {
  * A fallback is for keeping the form usable while something is down. It is not
  * a catalogue, and nothing should ever validate a user's choice against it.
  */
-const FALLBACK_VOICES: Record<string, VoiceOption[]> = {
-  "gpu-ai": [
-    { id: "Sudhir", name: "Sudhir", language: "en" },
-    { id: "Severus", name: "Severus", language: "en" },
-    { id: "SirShree", name: "SirShree", language: "en" },
-    { id: "Morgan Freeman", name: "Morgan Freeman", language: "en" },
-    { id: "Julie Andrews", name: "Julie Andrews", language: "en" },
-    { id: "Don LaFontaine", name: "Don LaFontaine", language: "en" },
-  ],
-  elevenlabs: [
-    { id: "21m00Tcm4TlvDq8ikWAM", name: "Rachel" },
-    { id: "EXAVITQu4vr4xnSDxMaL", name: "Sarah" },
-    { id: "onwK4e9ZLuTAKqWW03F9", name: "Daniel" },
-  ],
-  cartesia: [
-    { id: "a0e99841-438c-4a64-b679-ae501e7d6091", name: "Barbershop Man" },
-    { id: "248be419-c632-4f23-adf1-5324ed7dbf1d", name: "British Lady" },
-  ],
-  async: [{ id: "e0f39dc4-f691-4e78-bba5-5c636692cc04", name: "Default" }],
-  // STT side — model ids, same shape.
-  "gpu-ai-stt": [
-    { id: "whisper-large-v3", name: "Whisper Large v3 (best quality)" },
-    { id: "whisper-large-v3-turbo", name: "Whisper Large v3 Turbo (faster)" },
-    { id: "whisper-large-v3-turbo-ct2", name: "Whisper Large v3 Turbo CT2 (fastest)" },
-    { id: "faster-whisper", name: "Faster Whisper (default)" },
-    { id: "sensevoice", name: "SenseVoice (multilingual)" },
-  ],
-  "faster-whisper": [
-    { id: "whisper-large-v3-turbo-ct2", name: "Large v3 Turbo (CTranslate2)" },
-    { id: "whisper-large-v3", name: "Large v3" },
-  ],
-  deepgram: [
-    { id: "nova-3", name: "Nova-3" },
-    { id: "nova-2", name: "Nova-2" },
-  ],
+// Keyed by pipeline first, so a provider can never be answered with the other
+// pipeline's list: an STT request for a TTS-only provider gets [], not its
+// voices with a `supported: false` flag nobody renders.
+const FALLBACK_VOICES: Record<Pipeline, Record<string, VoiceOption[]>> = {
+  tts: {
+    "gpu-ai": [
+      { id: "Sudhir", name: "Sudhir", language: "en" },
+      { id: "Severus", name: "Severus", language: "en" },
+      { id: "SirShree", name: "SirShree", language: "en" },
+      { id: "Morgan Freeman", name: "Morgan Freeman", language: "en" },
+      { id: "Julie Andrews", name: "Julie Andrews", language: "en" },
+      { id: "Don LaFontaine", name: "Don LaFontaine", language: "en" },
+    ],
+    elevenlabs: [
+      { id: "21m00Tcm4TlvDq8ikWAM", name: "Rachel" },
+      { id: "EXAVITQu4vr4xnSDxMaL", name: "Sarah" },
+      { id: "onwK4e9ZLuTAKqWW03F9", name: "Daniel" },
+    ],
+    cartesia: [
+      { id: "a0e99841-438c-4a64-b679-ae501e7d6091", name: "Barbershop Man" },
+      { id: "248be419-c632-4f23-adf1-5324ed7dbf1d", name: "British Lady" },
+    ],
+    async: [{ id: "e0f39dc4-f691-4e78-bba5-5c636692cc04", name: "Default" }],
+  },
+  stt: {
+    // What the live parse above yields from the gateway's /v1/models
+    // (captured 2026-09-12, tests/fixtures/gpu-ai-v1-models.json): the
+    // stt-capable ids minus the batch lane and minus sensevoice (see the
+    // parse). The whisper-large-v3* aliases the endpoint also accepts are
+    // deliberately not here: a fallback is for keeping the form usable, not
+    // a second catalogue.
+    "gpu-ai": [
+      { id: "faster-whisper", name: "faster-whisper", description: "systran" },
+    ],
+    "faster-whisper": [
+      { id: "whisper-large-v3-turbo-ct2", name: "Large v3 Turbo (CTranslate2)" },
+      { id: "whisper-large-v3", name: "Large v3" },
+    ],
+    deepgram: [
+      { id: "nova-3", name: "Nova-3" },
+      { id: "nova-2", name: "Nova-2" },
+    ],
+  },
 };
 
 /**
- * Fallback list for a provider, or [] if there is nothing sensible to show.
- * `pipeline` disambiguates gpu-ai, which serves both TTS voices and STT models.
+ * Fallback list for a provider on a pipeline, or [] if there is nothing
+ * sensible to show — including a provider that does not serve that pipeline.
  */
 export function fallbackVoicesFor(
   provider: string,
-  pipeline: "tts" | "stt" = "tts",
+  pipeline: Pipeline = "tts",
 ): VoiceOption[] {
-  const key =
-    provider === "gpu-ai" && pipeline === "stt" ? "gpu-ai-stt" : provider.toLowerCase();
-  return FALLBACK_VOICES[key] ?? [];
+  const table = FALLBACK_VOICES[pipeline];
+  const name = provider.toLowerCase();
+  const list = hasOwn(table, name) ? table[name] : [];
+  // The fallback derives its exclusions from the same map as the live
+  // parse; a hand-written literal drifted the moment the map changed.
+  return pipeline === "stt"
+    ? list.filter((v) => !WITHHELD_STT_MODELS.has(normalizeModelName(v.id)))
+    : list;
 }
 
-export function isSupportedVoiceProvider(provider: string): boolean {
-  return Object.prototype.hasOwnProperty.call(PROVIDERS, provider.toLowerCase());
+/** Typed outcome of the stt_model check: absence and failure never share a shape. */
+export type SttModelCheck =
+  | { outcome: "ok" }
+  | { outcome: "rejected"; message: string }
+  | { outcome: "skipped"; error: string };
+
+/**
+ * Is this stt_model deployable on this provider? Used by both the save path
+ * and the deploy path, so an agent poisoned before the gate existed is
+ * caught at either. Rejects exactly two classes: an id the gateway advertises
+ * but cannot serve (WITHHELD_STT_MODELS), and a gpu-ai TTS voice name -- the
+ * damage the STT picker did while it listed voices. It is deliberately not a
+ * membership test against /v1/models: the transcription endpoint accepts
+ * whisper-large-v3* aliases that list does not advertise, and a gate on that
+ * list locked agents running on them out of saving. gpu-ai and
+ * faster-whisper share the runtime endpoint (plugins.py), so both are
+ * checked; other providers are not gpu-ai's business. "skipped" means the
+ * check could not run (gateway unreachable, or an empty voice list, which
+ * clears nothing); the caller decides how loudly to say so.
+ */
+export async function checkSttModel(provider: string, model: string): Promise<SttModelCheck> {
+  // Provider names get the same treatment as model names: "GPU-AI " must
+  // not slip past a gate that "gpu-ai" would hit.
+  const p = normalizeModelName(provider);
+  if (p !== "gpu-ai" && p !== "faster-whisper") return { outcome: "ok" };
+  const wanted = normalizeModelName(model);
+  const withheld = WITHHELD_STT_MODELS.get(wanted);
+  if (withheld) {
+    return { outcome: "rejected", message: `STT model '${model}' is not available on gpu-ai right now: ${withheld}.` };
+  }
+  try {
+    const voices = await listVoicesForProvider("gpu-ai", "", "tts");
+    if (voices.length === 0) return { outcome: "skipped", error: "gpu-ai voice list came back empty" };
+    const voiceNames = new Set(voices.flatMap((v) => [v.id, v.name].filter((x): x is string => !!x)).map(normalizeModelName));
+    if (!voiceNames.has(wanted)) return { outcome: "ok" };
+    let available = "";
+    try {
+      available = (await listVoicesForProvider("gpu-ai", "", "stt")).map((m) => m.id).join(", ");
+    } catch {
+      /* the rejection stands without the hint */
+    }
+    return {
+      outcome: "rejected",
+      message: `'${model}' is a gpu-ai TTS voice, not an STT model.` + (available ? ` Available STT models: ${available}.` : ""),
+    };
+  } catch (err) {
+    return { outcome: "skipped", error: String(err).slice(0, 200) };
+  }
+}
+
+export function isSupportedVoiceProvider(provider: string, pipeline?: Pipeline): boolean {
+  return findConfig(provider, pipeline) !== undefined;
 }
 
 /**
@@ -337,12 +479,14 @@ export function isSupportedVoiceProvider(provider: string): boolean {
 export async function listVoicesForProvider(
   provider: string,
   apiKey: string,
+  pipeline?: Pipeline,
 ): Promise<VoiceOption[]> {
-  const cfg = PROVIDERS[provider.toLowerCase()];
+  const cfg = findConfig(provider, pipeline);
   if (!cfg) {
+    const supported = Array.from(new Set(Object.values(PROVIDERS).map((p) => p.key))).join(", ");
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: `Voice/STT provider '${provider}' is not supported (supported: ${Object.keys(PROVIDERS).join(", ")})`,
+      message: `Voice/STT provider '${provider}' is not supported${pipeline ? ` for ${pipeline}` : ""} (supported: ${supported})`,
     });
   }
 
@@ -401,7 +545,7 @@ export async function listVoicesForProvider(
 
   const voices = cfg.parse(parsed);
   voices.sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
-  log.info("Discovered voices/models", { provider, count: voices.length });
+  log.info("Discovered voices/models", { provider, pipeline: cfg.pipeline, count: voices.length });
   return voices;
 }
 

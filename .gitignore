@@ -12,3 +12,6 @@ node_modules
 # Local Letta / IDE session artifacts
 .letta/
 agent-template/.letta/
+
+# TypeScript incremental build state
+*.tsbuildinfo
